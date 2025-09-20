@@ -3,6 +3,7 @@
  * @author Narukami
  * @description Adds an option to edit images before sending.
  * @version 0.0.0
+ * @source https://github.com/Naru-kami/EditImageUploads
  */
 
 module.exports = function (meta) {
