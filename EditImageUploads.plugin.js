@@ -794,7 +794,7 @@ module.exports = function (meta) {
       }));
       const [mode, setMode] = useState(null);
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
-      const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 5, color: "#3498DB" }));
+      const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 5, color: "#000000" }));
 
       /** @type { React.RefObject<HTMLCanvasElement | null> } */
       const canvas = useRef(null);
@@ -1072,8 +1072,8 @@ module.exports = function (meta) {
                 className: "aux-input",
                 children: [
                   jsx(BdApi.Components.ColorInput, {
-                    value: strokeStyle.color,
-                    colors: [1752220, 3066993, 3447003, 10181046, 15277667, 15844367, 15105570, 15158332, 9807270, 6323595],
+                    value: strokeStyle.color,                                           // Can't use x < 256: 0 -> "#0". No zero padding
+                    colors: [1752220, 3066993, 3447003, 10181046, 15277667, 15844367, 15105570, 15158332, "#000000", 16777215],
                     onChange: c => setStrokeStyle(s => ({ ...s, color: c }))
                   }),
                   jsx(Components.NumberSlider, {
@@ -1189,11 +1189,12 @@ module.exports = function (meta) {
       }, []);
 
       const handleTextCommit = useCallback(() => {
-        oldValue.current = !isNaN(Number(textValue)) && textValue !== "" ? Math.max(minValue ?? Number(textValue), Number(textValue)) : oldValue.current;
+        const newValue = !isNaN(Number(textValue)) && textValue !== "" ? Math.max(minValue ?? Number(textValue), Number(textValue)) : oldValue.current;
+        if (oldValue.current === newValue) return;
+
+        oldValue.current = newValue
         setTextValue(oldValue.current + "");
-        if (value !== oldValue.current) {
-          onChange?.(oldValue.current);
-        }
+        onChange?.(oldValue.current);
 
         const val = utils.logScaling(oldValue.current, { minValue, centerValue, maxValue })
         setSliderValue(val);
