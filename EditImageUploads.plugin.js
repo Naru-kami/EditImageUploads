@@ -757,7 +757,6 @@ module.exports = function (meta) {
             internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, null,
               jsx(internals.nativeUI.ConfirmModal, {
                 ...e,
-                header: "",
                 className: `${meta.slug}Root`,
                 confirmText: "Save",
                 cancelText: "Cancel",
@@ -960,6 +959,26 @@ module.exports = function (meta) {
 
       return jsx(Fragment, {
         children: [
+          jsx("div", {
+            className: "canvas-dims",
+            children: [
+              jsx(Components.NumberSlider, {
+                value: Math.round(transform.width),
+                decimals: 0,
+                onChange: v => setTransform(T => ({ ...T, width: v })),
+                withSlider: false,
+                minValue: 0,
+              }),
+              "x",
+              jsx(Components.NumberSlider, {
+                value: Math.round(transform.height),
+                decimals: 0,
+                onChange: v => setTransform(T => ({ ...T, height: v })),
+                withSlider: false,
+                minValue: 0,
+              }),
+            ]
+          }),
           jsx("div", {
             className: "canvas-wrapper",
             children: [
@@ -1296,8 +1315,22 @@ module.exports = function (meta) {
   margin-block: auto;
 }
 
+.canvas-dims {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  padding-bottom: 4px;
+  margin-bottom: 8px;
+  color: var(--interactive-active);
+  border-bottom: 1px solid var(--border-normal);
+  & .number-input {
+    text-align: center;
+  }
+}
+
 .canvas-wrapper {
-  height: calc(100% - 54px);
+  height: calc(100% - 100px);
   display: grid;
   place-items: center;
   position: relative;
@@ -1348,21 +1381,22 @@ module.exports = function (meta) {
 
 @keyframes pulsing {
   from {opacity: 0}
-  to {opacity: 1}
+  to {opacity: 0.8}
 }
 
 .canvas-wrapper:has(> .rotating)::after {
   content: "+";
   font-size: 1.5em;
   line-height: 0.42;
-  color: rgba(0, 0, 0, 0.7);
-  background: rgba(255, 255, 255, 0.7);
+  color: #000;
+  background: #fff;
   position: absolute;
   pointer-events: none;
   width: 12px;
   height: 12px;
   border-radius: 50%;
   border: 1px solid currentColor;
+  outline: 1px solid #fff;
   animation: pulsing 2s infinite alternate ease-out;
 }
 
@@ -1404,7 +1438,9 @@ module.exports = function (meta) {
 
 .image-actions {
   display: flex;
-  margin-top: 12px;
+  border-top: 1px solid var(--border-normal);
+  margin-top: 8px;
+  padding-top: 4px;
   min-height: 42px;
   align-items: end;
 }
