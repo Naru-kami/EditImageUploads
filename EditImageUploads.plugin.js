@@ -230,6 +230,7 @@ module.exports = function (meta) {
      * @param {{minValue: number, centerValue: number, maxValue: number}} params
      */
     logScaling(x, { minValue, centerValue, maxValue }) {
+      x = utils.clamp(minValue, x, maxValue);
       if (x <= centerValue) {
         const val = (Math.log(x) - Math.log(minValue)) / (Math.log(centerValue) - Math.log(minValue));
         return Math.round(val / 2 * 100);
@@ -334,33 +335,32 @@ module.exports = function (meta) {
      *  onSubmit?: (e: PointerEvent) => void
      * }} props
     */
-    usePointerCapture({ onStart, onChange, onSubmit }) {
+    usePointerCapture({ onStart, onChange, onSubmit, button = 1 }) {
       /** @type {React.RefObject<null | number>} */
       const pointerId = useRef(null);
 
       /** @type {(e: PointerEvent) => void} */
       const onPointerDown = useCallback(e => {
-        if (!(e.buttons & 1)) return;
+        if (!(e.buttons & button)) return;
 
-        pointerId.current = e.pointerId;
         e.currentTarget.setPointerCapture(e.pointerId);
+        pointerId.current = e.pointerId;
         onStart?.(e);
       }, [onStart]);
 
       /** @type {(e: PointerEvent) => void} */
       const onPointerMove = useCallback(e => {
-        if (!(e.buttons & 1) || pointerId.current !== e.pointerId) return;
+        if (!(e.buttons & button) || pointerId.current !== e.pointerId) return;
 
         onChange?.(e);
       }, [onChange]);
 
       /** @type {(e: PointerEvent) => void} */
       const onPointerUp = useCallback(e => {
-        if (!!(e.buttons & 1) || pointerId.current !== e.pointerId) return;
+        if (!!(e.buttons & button) || pointerId.current !== e.pointerId) return;
 
         e.currentTarget.releasePointerCapture(e.pointerId);
         pointerId.current = null;
-
         onSubmit?.(e);
       }, [onSubmit]);
 
@@ -384,12 +384,13 @@ module.exports = function (meta) {
       /** @type {(e: PointerEvent) => void} */
       const onStart = useCallback(e => {
         const rect = e.currentTarget.getBoundingClientRect();
-        const cx = rect.x + rect.width / 2;
-        const cy = rect.y + rect.height / 2;
 
         rotateRef.current = {
-          cx, cy,
-          startAngle: utils.atan2(e.clientX - cx, e.clientY - cy)
+          startAngle: utils.atan2(
+            e.clientX - (rect.x + rect.width / 2),
+            e.clientY - (rect.y + rect.height / 2)
+          ),
+          rect,
         }
       }, []);
 
@@ -397,7 +398,11 @@ module.exports = function (meta) {
       const onChange = useCallback(e => {
         if (rotateRef.current == null) return;
 
-        let theta = utils.atan2(e.clientX - rotateRef.current.cx, e.clientY - rotateRef.current.cy) - rotateRef.current.startAngle;
+        const { startAngle, rect } = rotateRef.current;
+        let theta = -startAngle + utils.atan2(
+          e.clientX - (rect.x + rect.width / 2),
+          e.clientY - (rect.y + rect.height / 2)
+        );
         theta = Math.round((theta + 360) % 360 * 10) / 10;
 
         onRotate?.(new DOMMatrix().rotateSelf(theta));
@@ -405,7 +410,12 @@ module.exports = function (meta) {
 
       /** @type {(e: PointerEvent) => void} */
       const onSubmit = useCallback(e => {
-        let theta = utils.atan2(e.clientX - rotateRef.current.cx, e.clientY - rotateRef.current.cy) - rotateRef.current.startAngle;
+        const { startAngle, rect } = rotateRef.current;
+
+        let theta = -startAngle + utils.atan2(
+          e.clientX - (rect.x + rect.width / 2),
+          e.clientY - (rect.y + rect.height / 2)
+        );
         theta = Math.round((theta + 360) % 360 * 10) / 10;
 
         onRotateEnd?.(new DOMMatrix().rotateSelf(theta));
@@ -421,14 +431,14 @@ module.exports = function (meta) {
      *  onPanEnd?:(M: DOMMatrix) => void ,
      * }} params
      */
-    usePan({ onPan, onPanEnd }) {
+    usePan({ onPan, onPanEnd, button = 1 }) {
       const panRef = useRef(null);
 
       const onStart = useCallback(e => {
         const rect = e.currentTarget.getBoundingClientRect();
         panRef.current = {
-          x: e.clientX,
-          y: e.clientY,
+          x: (e.clientX - rect.x) / rect.width,
+          y: (e.clientY - rect.y) / rect.height,
           rect,
         };
       }, []);
@@ -437,24 +447,26 @@ module.exports = function (meta) {
       const onChange = useCallback(e => {
         if (panRef.current == null) return;
 
+        const { x, y, rect } = panRef.current;
         onPan?.(new DOMMatrix().translateSelf(
-          (e.clientX - panRef.current.x) / panRef.current.rect.width * e.currentTarget.width,
-          (e.clientY - panRef.current.y) / panRef.current.rect.height * e.currentTarget.height
+          ((e.clientX - rect.x) / rect.width - x) * e.currentTarget.width,
+          ((e.clientY - rect.y) / rect.height - y) * e.currentTarget.height
         ));
 
       }, [onPan]);
 
       /** @type {(e: PointerEvent) => void} */
       const onSubmit = useCallback(e => {
+        const { x, y, rect } = panRef.current;
         onPanEnd?.(new DOMMatrix().translateSelf(
-          (e.clientX - panRef.current.x) / panRef.current.rect.width * e.currentTarget.width,
-          (e.clientY - panRef.current.y) / panRef.current.rect.height * e.currentTarget.height
+          ((e.clientX - rect.x) / rect.width - x) * e.currentTarget.width,
+          ((e.clientY - rect.y) / rect.height - y) * e.currentTarget.height
         ));
 
         panRef.current = null;
       }, [onPanEnd]);
 
-      return hooks.usePointerCapture({ onStart, onChange, onSubmit });
+      return hooks.usePointerCapture({ onStart, onChange, onSubmit, button });
     },
 
     /**
@@ -465,88 +477,95 @@ module.exports = function (meta) {
      *  fixedAspect?: boolean,
      * }} params
      */
-    useCrop({ onCropStart, onCrop, onCropEnd, fixedAspect }) {
+    useCrop({ onCrop, onCropEnd, fixedAspect }) {
       /** @type {React.RefObject<null | {x: number, y: number, rect: DOMRect}>} */
       const cropRef = useRef(null);
 
       /** @type {(e: PointerEvent) => void} */
       const onStart = useCallback(e => {
+        e.currentTarget.classList.add("pointerdown");
         const rect = e.currentTarget.getBoundingClientRect();
         cropRef.current = {
-          x: e.clientX,
-          y: e.clientY,
+          x: (e.clientX - rect.x) / rect.width,
+          y: (e.clientY - rect.y) / rect.height,
           rect
         };
-        onCropStart?.(rect);
-      }, [onCropStart]);
+        onCrop?.({
+          x: cropRef.current.x * 100,
+          y: cropRef.current.y * 100,
+          dx: 0,
+          dy: 0,
+        });
+      }, [onCrop]);
 
       /** @type {(e: PointerEvent) => void} */
       const onChange = useCallback(e => {
-        const minWidth = cropRef.current.rect.x - cropRef.current.x;
-        const maxWidth = minWidth + cropRef.current.rect.width;
-        const minHeight = cropRef.current.rect.y - cropRef.current.y;
-        const maxHeight = minHeight + cropRef.current.rect.height;
+        const { x, y, rect } = cropRef.current;
 
-        let dw = utils.clamp(minWidth, e.clientX - cropRef.current.x, maxWidth);
-        let dh = utils.clamp(minHeight, e.clientY - cropRef.current.y, maxHeight);
+        const minWidth = -x;
+        const maxWidth = minWidth + 1;
+        const minHeight = -y;
+        const maxHeight = minHeight + 1;
+
+        let dw = utils.clamp(minWidth, (e.clientX - rect.x) / rect.width - x, maxWidth);
+        let dh = utils.clamp(minHeight, (e.clientY - rect.y) / rect.height - y, maxHeight);
 
         if (fixedAspect) {
-          const aspect = e.currentTarget.width / e.currentTarget.height;
-
-          dw = utils.maxAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh) * aspect);
-          dh = utils.maxAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw) / aspect);
+          dw = utils.maxAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh));
+          dh = utils.maxAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw));
 
           dw = utils.clamp(minWidth, dw, maxWidth);
           dh = utils.clamp(minHeight, dh, maxHeight);
 
-          dw = utils.minAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh) * aspect);
-          dh = utils.minAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw) / aspect);
+          dw = utils.minAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh));
+          dh = utils.minAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw));
         }
 
         onCrop?.({
-          x: (cropRef.current.x - cropRef.current.rect.x) / cropRef.current.rect.width * 100,
-          y: (cropRef.current.y - cropRef.current.rect.y) / cropRef.current.rect.height * 100,
-          dx: dw / cropRef.current.rect.width * 100,
-          dy: dh / cropRef.current.rect.height * 100,
+          x: x * 100,
+          y: y * 100,
+          dx: dw * 100,
+          dy: dh * 100,
         });
       }, [onCrop, fixedAspect]);
 
       /** @type {(e: PointerEvent) => void} */
       const onSubmit = useCallback(e => {
-        const minWidth = cropRef.current.rect.x - cropRef.current.x;
-        const maxWidth = minWidth + cropRef.current.rect.width;
-        const minHeight = cropRef.current.rect.y - cropRef.current.y;
-        const maxHeight = minHeight + cropRef.current.rect.height;
+        e.currentTarget.classList.remove("pointerdown");
+        const { x, y, rect } = cropRef.current;
 
-        let dw = utils.clamp(minWidth, e.clientX - cropRef.current.x, maxWidth);
-        let dh = utils.clamp(minHeight, e.clientY - cropRef.current.y, maxHeight);
+        const minWidth = -x;
+        const maxWidth = minWidth + 1;
+        const minHeight = -y;
+        const maxHeight = minHeight + 1;
+
+        let dw = utils.clamp(minWidth, (e.clientX - rect.x) / rect.width - x, maxWidth);
+        let dh = utils.clamp(minHeight, (e.clientY - rect.y) / rect.height - y, maxHeight);
 
         if (fixedAspect) {
-          const aspect = e.currentTarget.width / e.currentTarget.height;
-
-          dw = utils.maxAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh) * aspect);
-          dh = utils.maxAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw) / aspect);
+          dw = utils.maxAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh));
+          dh = utils.maxAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw));
 
           dw = utils.clamp(minWidth, dw, maxWidth);
           dh = utils.clamp(minHeight, dh, maxHeight);
 
-          dw = utils.minAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh) * aspect);
-          dh = utils.minAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw) / aspect);
+          dw = utils.minAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh));
+          dh = utils.minAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw));
         }
 
         // canvas center
-        const cx = cropRef.current.rect.x + cropRef.current.rect.width / 2;
-        const cy = cropRef.current.rect.y + cropRef.current.rect.height / 2;
+        const cx = 0.5;
+        const cy = 0.5;
         // crop center
         const ccx = cropRef.current.x + dw / 2;
         const ccy = cropRef.current.y + dh / 2;
 
         onCropEnd?.({
-          width: Math.abs(dw) / cropRef.current.rect.width * e.currentTarget.width,
-          height: Math.abs(dh) / cropRef.current.rect.height * e.currentTarget.height,
+          width: Math.abs(dw) * e.currentTarget.width,
+          height: Math.abs(dh) * e.currentTarget.height,
           M: new DOMMatrix().translateSelf(
-            (cx - ccx) / cropRef.current.rect.width * e.currentTarget.width,
-            (cy - ccy) / cropRef.current.rect.height * e.currentTarget.height
+            (cx - ccx) * e.currentTarget.width,
+            (cy - ccy) * e.currentTarget.height
           )
         });
 
@@ -596,34 +615,7 @@ module.exports = function (meta) {
         }, wait);
       }, [onScale, onScaleEnd]);
 
-      /** @type {(e: MouseEvent) => void} */
-      const onMouseUp = useCallback(e => {
-        if (e.button !== 0 && e.button !== 2) return;
-
-        const currentScale = Math.max(...utils.getScales(M.multiply(initial)));
-        const delta = e.button === 0 && e.ctrlKey || e.button === 2 ? -0.1 : 0.1;
-        const updatedScale = Number(Math.max(0.1, currentScale + delta).toFixed(2));
-
-        const rect = e.currentTarget.getBoundingClientRect();
-        const Tx = ((e.clientX - rect.x) / rect.width - 0.5) * e.currentTarget.width;
-        const Ty = ((e.clientY - rect.y) / rect.height - 0.5) * e.currentTarget.height;
-
-        const T = new DOMMatrix().translateSelf(Tx, Ty);
-        const T_inv = new DOMMatrix().translateSelf(-Tx, -Ty);
-        const S = new DOMMatrix().scaleSelf(updatedScale, updatedScale);
-        const S_inv = new DOMMatrix().scaleSelf(1 / currentScale, 1 / currentScale);
-
-        M.preMultiplySelf(T.multiplySelf(S).multiplySelf(S_inv).multiplySelf(T_inv));
-
-        onScale?.({ s: updatedScale, M: new DOMMatrix().multiply(M) });
-
-        timer.current && clearTimeout(timer.current);
-        timer.current = setTimeout(() => {
-          untransformedScale !== updatedScale && onScaleEnd?.(new DOMMatrix().multiply(M));
-        }, wait);
-      }, [onScale, onScaleEnd]);
-
-      return { onWheel, onMouseUp }
+      return { onWheel }
     },
 
     /**
@@ -749,7 +741,7 @@ module.exports = function (meta) {
     },
 
     EditIcon({ args }) {
-      // forwardRef for submit()
+      // forwardRef for replace()
       const userActions = useRef(null);
 
       return jsx(Components.IconButton, {
@@ -763,7 +755,7 @@ module.exports = function (meta) {
                 cancelText: "Cancel",
                 confirmButtonColor: internals.Button.Colors.BRAND,
                 onConfirm: () => {
-                  userActions.current?.submit({
+                  userActions.current?.replace({
                     draftType: args.draftType,
                     upload: args.upload,
                   })
@@ -806,10 +798,6 @@ module.exports = function (meta) {
 
       const cropHandlers = hooks.useCrop({
         fixedAspect,
-        onCropStart: rect => {
-          overlay.current.style.width = rect.width + "px";
-          overlay.current.style.height = rect.height + "px";
-        },
         onCrop: ({ x, y, dx, dy }) => {
           overlay.current.style.setProperty("--x1", Math.min(x, x + dx) + "%");
           overlay.current.style.setProperty("--x2", Math.max(x, x + dx) + "%");
@@ -817,6 +805,7 @@ module.exports = function (meta) {
           overlay.current.style.setProperty("--y2", Math.max(y, y + dy) + "%");
         },
         onCropEnd: C => {
+          ["--x1", "--x2", "--y1", "--y2"].forEach(k => overlay.current.style.removeProperty(k));
           overlay.current.removeAttribute("style");
           setTransform(T => ({ ...T, ...C, M: C.M.multiplySelf(T.M) }));
         }
@@ -869,7 +858,7 @@ module.exports = function (meta) {
       });
 
       useImperativeHandle(ref, () => ({
-        submit: ({ draftType, upload }) => {
+        replace: ({ draftType, upload }) => {
           if (!canvas.current) {
             BdApi.UI.showToast("Reference lost. Failed to save changes.", { type: "error" });
             return;
@@ -901,48 +890,36 @@ module.exports = function (meta) {
         const ctrl = new AbortController();
 
         addEventListener("keydown", e => {
-          if (!e.ctrlKey) return;
-
           switch (e.key) {
-            case "z":
+            case e.ctrlKey && "z":
               transformHistActions.undo();
               return;
 
-            case "y":
+            case e.ctrlKey && "y":
               transformHistActions.redo();
               return;
 
-            case "Control":
-              !e.repeat && canvas.current.matches(".scaling") &&
-                canvas.current.classList.add("out");
-          }
-        }, ctrl);
-
-        addEventListener("keyup", e => {
-          switch (e.key) {
-            case "c":
+            case !e.repeat && !e.ctrlKey && "c":
               setMode(m => m === 0 ? null : 0);
               return;
 
-            case "r":
+            case !e.repeat && !e.ctrlKey && "r":
               setMode(m => m === 1 ? null : 1);
               return;
 
-            case "p":
+            case !e.repeat && !e.ctrlKey && "m":
               setMode(m => m === 2 ? null : 2);
               return;
 
-            case "s":
+            case !e.repeat && !e.ctrlKey && "s":
               setMode(m => m === 3 ? null : 3);
               return;
 
-            case "d":
+            case !e.repeat && !e.ctrlKey && "d":
               setMode(m => m === 4 ? null : 4);
               return;
-
-            case "Control":
-              canvas.current.matches(".out") && canvas.current.classList.remove("out");
           }
+
         }, ctrl);
 
         return () => ctrl.abort();
@@ -958,7 +935,8 @@ module.exports = function (meta) {
         utils.draw([bitmap, cachedStrokes.current], canvas.current, transform);
       }, [transform]);
 
-      return jsx(Fragment, {
+      return jsx("div", {
+        className: "image-editor",
         children: [
           jsx("div", {
             className: "canvas-dims",
@@ -988,7 +966,7 @@ module.exports = function (meta) {
                 ref: canvas,
                 ...([cropHandlers, rotateHandlers, panHandlers, scaleHandlers, drawHandlers][mode] ?? {})
               }),
-              (mode === 0 || mode === 4) && jsx("div", {
+              jsx("div", {
                 className: "canvas-overlay",
                 ref: overlay,
                 children: [
@@ -1014,7 +992,7 @@ module.exports = function (meta) {
                 onClick: () => setMode(m => m === 1 ? null : 1)
               }),
               jsx(Components.IconButton, {
-                tooltip: "Pan (P)",
+                tooltip: "Move (M)",
                 d: utils.paths.Pan,
                 active: mode === 2,
                 onClick: () => setMode(m => m === 2 ? null : 2)
@@ -1062,7 +1040,7 @@ module.exports = function (meta) {
                   ref: auxRef,
                   suffix: "x",
                   decimals: 2,
-                  minValue: 0.1,
+                  minValue: 0.01,
                   centerValue: 1,
                   maxValue: 10,
                   value: Number(Math.hypot(transform.M.a, transform.M.b).toFixed(2)),
@@ -1092,8 +1070,8 @@ module.exports = function (meta) {
                 className: "aux-input",
                 children: [
                   jsx(BdApi.Components.ColorInput, {
-                    value: strokeStyle.color,                                           // Can't use x < 256: 0 -> "#0". No zero padding
-                    colors: [1752220, 3066993, 3447003, 10181046, 15277667, 15844367, 15105570, 15158332, "#000000", 16777215],
+                    value: strokeStyle.color,
+                    colors: ["#000000", 16777215, 16771899, 16750592, 16007990, 15277667, 10233776, 2201331, 1087112, 5025616],
                     onChange: c => setStrokeStyle(s => ({ ...s, color: c }))
                   }),
                   jsx(Components.NumberSlider, {
@@ -1316,6 +1294,12 @@ module.exports = function (meta) {
   margin-block: auto;
 }
 
+.image-editor {
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+}
+
 .canvas-dims {
   display: flex;
   justify-content: center;
@@ -1331,7 +1315,9 @@ module.exports = function (meta) {
 }
 
 .canvas-wrapper {
-  height: calc(100% - 100px);
+  height: 100%;
+  overflow: hidden;
+  position: relative;
   display: grid;
   place-items: center;
   position: relative;
@@ -1341,18 +1327,20 @@ module.exports = function (meta) {
 .canvas {
   max-width: 100%;
   max-height: 100%;
+  box-sizing: border-box;
   display: block;
+  anchor-name: --canvas;
   overflow: hidden;
-  background: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2216%22%20height%3D%2216%22%3E%3Cpath%20d%3D%22M8%200h8v8H0v8h8z%22%20fill%3D%22%238F8F8F%22%2F%3E%3Cpath%20d%3D%22M0%200h8v16h8V8H0z%22%20fill%3D%22%23BFBFBF%22%2F%3E%3C%2Fsvg%3E");
+  touch-action: none;
+  border: 1px solid var(--border-normal);
+  background: repeating-conic-gradient(#6666 0 25%, #9996 0 50%) 0 0 / 20px 20px fixed content-box;
 }                   
 
 .canvas.cropping {
-  box-shadow: 0 0 12px 0 rgb(from currentColor r g b / 0.4);
   cursor: crosshair;
 }
 
 .canvas.rotating {
-  box-shadow: 0 0 12px 0 rgb(from currentColor r g b / 0.4);
   cursor: grab;
   &:active {
     cursor: grabbing;
@@ -1360,20 +1348,10 @@ module.exports = function (meta) {
 }
 
 .canvas.moving {
-  box-shadow: 0 0 12px 0 rgb(from currentColor r g b / 0.4);
   cursor: move;
 }
 
-.canvas.scaling {
-  box-shadow: 0 0 12px 0 rgb(from currentColor r g b / 0.4);
-  cursor: zoom-in;
-  &.out {
-    cursor: zoom-out;
-  }
-}
-
 .canvas.drawing {
-  box-shadow: 0 0 12px 0 rgb(from currentColor r g b / 0.4);
   cursor: crosshair;
   &:active {
     cursor: none;
@@ -1385,16 +1363,18 @@ module.exports = function (meta) {
   to {opacity: 0.8}
 }
 
-.canvas-wrapper:has(> .rotating)::after {
+.canvas.rotating + .canvas-overlay::after {
   content: "+";
-  font-size: 1.5em;
-  line-height: 0.42;
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  line-height: 0;
+  display: grid;
+  place-items: center;
   color: #000;
   background: #fff;
-  position: absolute;
-  pointer-events: none;
-  width: 12px;
-  height: 12px;
+  height: 0.5em;
+  aspect-ratio: 1;
   border-radius: 50%;
   border: 1px solid currentColor;
   outline: 1px solid #fff;
@@ -1404,9 +1384,11 @@ module.exports = function (meta) {
 .canvas-overlay {
   position: absolute;
   pointer-events: none;
+  overflow: hidden;
+  inset: anchor(--canvas inside)
 }
 
-.canvas.cropping:active + .canvas-overlay > .cropper-region {
+.canvas.cropping.pointerdown + .canvas-overlay > .cropper-region {
   width: 100%;
   height: 100%;
   background: rgba(0, 0, 0, 0.7);
@@ -1417,9 +1399,10 @@ module.exports = function (meta) {
   );
 }
 
-.canvas.cropping:active + .canvas-overlay > .cropper-border {
+.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border {
   position: absolute;
   outline: 1px dashed currentColor;
+  outline-offset: -1px;
   left: var(--x1, 0%);
   right: calc(100% - var(--x2, 0%));
   top: var(--y1, 0%);
