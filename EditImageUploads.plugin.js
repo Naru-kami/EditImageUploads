@@ -9,11 +9,11 @@
 module.exports = function (meta) {
   "use strict";
 
-  const { React, Patcher, Webpack, Webpack: { Filters }, DOM, Logger } = BdApi;
+  const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI } = BdApi;
   /** @type {typeof import("react")} */
-  const { createElement: jsx, useState, useEffect, useRef, useImperativeHandle, useCallback, useMemo, Fragment } = React;
+  const { createElement: jsx, useState, useEffect, useRef, useImperativeHandle, useCallback, useMemo, cloneElement } = React;
 
-  var internals;
+  var internals, ctrl;
 
   function init() {
     if (internals) return;
@@ -21,7 +21,7 @@ module.exports = function (meta) {
     internals = utils.getBulk({
       uploadDispatcher: { filter: Filters.byKeys("setFile") }, // 166459
       uploadCard: { filter: Filters.bySource(".attachmentItemSmall]:") }, // 898463
-      nativeUI: { filter: m => m.ConfirmModal }, // 481060
+      nativeUI: { filter: m => m.showToast }, // 481060
       Button: { filter: Filters.byKeys("Colors", "Link"), searchExports: true }, // 693789
 
       actionButtonClass: { filter: Filters.byKeys("dangerous", "button") },
@@ -31,14 +31,20 @@ module.exports = function (meta) {
 
     Object.assign(internals, {
       keys: {
-        uploadCard: utils.getKeyInModule(internals.uploadCard, f => f.toString().includes(".attachmentItemSmall]:")),
-        FocusRing: utils.getKeyInModule(internals.nativeUI, f => f.toString().includes("FocusRing was given a focusTarget")),
-        openModal: utils.getKeyInModule(internals.nativeUI, f => f.toString().includes(",stackNextByDefault:")),
-        MenuSliderControl: utils.getKeyInModule(internals.nativeUI, f => f.toString().includes("moveGrabber")),
+        ...utils.getKeysInModule(internals.uploadCard, {
+          uploadCard: ".attachmentItemSmall]:",
+        }),
+        ...utils.getKeysInModule(internals.nativeUI, {
+          FocusRing: "FocusRing was given a focusTarget",
+          openModal: ",stackNextByDefault:",
+          MenuSliderControl: "moveGrabber",
+          closeModalInAllContexts: ".onCloseCallback)",
+          Popout: "Unsupported animation config:",
+        })
       }
     })
 
-    Logger.info(meta.slug, "Initialized");
+    BdApi.Logger.info(meta.slug, "Initialized");
   }
 
   function start() {
@@ -51,17 +57,330 @@ module.exports = function (meta) {
       ) {
         ret.props.actions.props.children.splice(0, 0, jsx(BdApi.Components.ErrorBoundary, {
           key: meta.slug,
-          children: jsx(Components.EditIcon, { args })
+          children: jsx(Components.UploadIcon, { args })
         }))
       }
     });
+
+    ctrl = new AbortController()
+    Webpack.waitForModule(Filters.bySource('children:["IMAGE"==='), ctrl).then(m => { // 73249
+      Patcher.after(meta.slug, m.Z, "type", (_, [args], res) => {
+        return cloneElement(res, {
+          children: className => {
+            const ret = res.props.children(className);
+
+            const url = args.item.original || args.item.url;
+            url && ret.props.children.unshift(jsx(Components.RemixIcon, { url }))
+
+            return ret;
+          }
+        })
+      })
+    })
 
     generateCSS();
   }
 
   function stop() {
     DOM.removeStyle(meta.slug);
+    ctrl?.abort();
     Patcher.unpatchAll(meta.slug);
+  }
+
+  class CanvasEditor {
+    #mainCanvas;
+    #viewportCanvas;
+    #viewportTransform;
+    #viewportTransform_inv;
+
+    #layers;
+    #activeLayerIndex;
+
+    #cached;
+
+    /** 
+     * @param {HTMLCanvasElement} canvas
+     * @param {ImageBitmap} bitmap 
+     */
+    constructor(canvas, bitmap) {
+      this.#mainCanvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      this.#viewportCanvas = canvas;
+
+      const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
+      this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
+      this.#viewportTransform_inv = new DOMMatrix()
+        .translateSelf(canvas.width / 2, canvas.height / 2)
+        .multiplySelf(this.#viewportTransform)
+        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+        .inverse();
+
+      this.#layers = [new Layer(bitmap.width, bitmap.height)];
+      this.#layers[0].img = bitmap;
+      this.#activeLayerIndex = 0;
+      this.render();
+
+      this.#cached = {
+        canvas: new OffscreenCanvas(this.#mainCanvas.width, this.#mainCanvas.height),
+        path2D: new Path2D(),
+        lastPoint: new DOMPoint(),
+        layerTransform_inv: new DOMMatrix(),
+        rect: new DOMRect(),
+        width: 0,
+        color: "#000",
+      };
+    }
+
+    get activeLayer() { return this.#layers[this.#activeLayerIndex] }
+    get viewportTransform() { return this.#viewportTransform }
+
+    translateViewportBy(dx = 0, dy = 0) {
+      this.#viewportTransform.preMultiplySelf(new DOMMatrix().translateSelf(dx, dy));
+      this.#viewportTransform_inv = new DOMMatrix()
+        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+        .multiplySelf(this.#viewportTransform)
+        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+        .inverse();
+      this.refreshViewport();
+    }
+
+    scaleViewportBy(ds = 1, x = 0.5, y = 0.5) {
+      const Tx = (x - 0.5) * this.#viewportCanvas.width;
+      const Ty = (y - 0.5) * this.#viewportCanvas.height;
+
+      this.#viewportTransform.preMultiplySelf(new DOMMatrix().scaleSelf(ds, ds, 1, Tx, Ty));
+      this.#viewportTransform_inv = new DOMMatrix()
+        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+        .multiplySelf(this.#viewportTransform)
+        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+        .inverse();
+      this.refreshViewport();
+    }
+
+    resetViewport() {
+      const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
+      this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
+      this.#viewportTransform_inv = new DOMMatrix()
+        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+        .multiplySelf(this.#viewportTransform)
+        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+        .inverse();
+      this.refreshViewport();
+    }
+
+    /** 
+     * @param {DOMPoint} startPoint
+     * @param {number} width
+     * @param {string} color
+     */
+    startDrawing(startPoint, width, color) {
+      const bottomCtx = this.#mainCanvas.getContext("2d");
+      const topCtx = this.#cached.canvas.getContext("2d");
+      bottomCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      topCtx.clearRect(0, 0, this.#cached.canvas.width, this.#cached.canvas.height);
+      this.#layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(bottomCtx));
+      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(topCtx));
+
+      this.#cached.width = width;
+      this.#cached.color = color;
+
+      this.#cached.layerTransform_inv = this.activeLayer.transform.inverse();
+      this.#cached.lastPoint = startPoint.matrixTransform(this.#viewportTransform_inv);
+      const rawPoint = this.#cached.lastPoint.matrixTransform(this.#cached.layerTransform_inv);
+      this.#cached.path2D.moveTo(rawPoint.x, rawPoint.y);
+      this.#cached.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
+    }
+
+    /** @param {DOMPoint} to */
+    drawLine(to) {
+      const bottomCtx = this.#mainCanvas.getContext("2d");
+      const to_inv = to.matrixTransform(this.#viewportTransform_inv);
+
+      bottomCtx.strokeStyle = this.#cached.color;
+      bottomCtx.lineWidth = this.#cached.width;
+      bottomCtx.lineCap = "round";
+      bottomCtx.lineJoin = "round";
+
+      bottomCtx.beginPath();
+      bottomCtx.moveTo(this.#cached.lastPoint.x, this.#cached.lastPoint.y);
+      bottomCtx.lineTo(to_inv.x, to_inv.y);
+      bottomCtx.stroke();
+
+      bottomCtx.drawImage(this.#cached.canvas, 0, 0);
+      this.refreshViewport();
+
+      this.#cached.lastPoint = to_inv;
+      const rawPoint = to_inv.matrixTransform(this.#cached.layerTransform_inv);
+      this.#cached.path2D.lineTo(rawPoint.x, rawPoint.y);
+      this.#cached.rect.x = Math.min(rawPoint.x, this.#cached.rect.x);
+      this.#cached.rect.y = Math.min(rawPoint.y, this.#cached.rect.y);
+      this.#cached.rect.width = Math.max(rawPoint.x, this.#cached.rect.x + this.#cached.rect.width) - this.#cached.rect.x;
+      this.#cached.rect.height = Math.max(rawPoint.y, this.#cached.rect.y + this.#cached.rect.height) - this.#cached.rect.y;
+    }
+
+    finishDrawing() {
+      this.activeLayer.addStroke({
+        color: this.#cached.color,
+        width: this.#cached.width,
+        path2D: this.#cached.path2D
+      });
+
+      const cachedCtx = this.#cached.canvas.getContext("2d");
+      cachedCtx.clearRect(0, 0, this.#cached.canvas.width, this.#cached.canvas.height);
+      this.#cached.path2D = new Path2D();
+    }
+
+    toBlob(options) { return this.#mainCanvas.convertToBlob(options) }
+
+    refreshViewport() {
+      const ctx = this.#viewportCanvas.getContext("2d");
+      ctx.save();
+
+      ctx.fillStyle = "#424242";
+      ctx.fillRect(0, 0, this.#viewportCanvas.width, this.#viewportCanvas.height);
+
+      ctx.setTransform(new DOMMatrix().translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2).multiplySelf(this.#viewportTransform));
+
+      ctx.clearRect(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2, this.#mainCanvas.width, this.#mainCanvas.height);
+      ctx.drawImage(this.#mainCanvas, -this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2);
+
+      ctx.restore();
+    }
+
+    render() {
+      const ctx = this.#mainCanvas.getContext("2d");
+      ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      this.#layers.forEach(layer => layer.drawOn(ctx));
+      this.refreshViewport();
+    }
+  }
+
+  class Layer {
+    /** @type {ImageBitmap | null} */
+    #img;
+    #canvas;
+    #state;
+    #previewTransform;
+    #isVisible;
+
+    /** 
+     * @param {number} width
+     * @param {number} height
+     */
+    constructor(width, height) {
+      this.#canvas = new OffscreenCanvas(width, height);
+      this.#state = new utils.StateHistory({
+        transform: new DOMMatrix(),
+        /** @type {{color: string, width: number, path2D: Path2D}[]} */
+        strokes: []
+      });
+      this.#previewTransform = new DOMMatrix();
+      this.#isVisible = true;
+    }
+
+    get canvas() { return this.#isVisible ? this.#canvas : null }
+    get transform() { return this.#state.state.transform }
+    get previewTransform() { return this.#previewTransform.multiply(this.transform) }
+    get strokes() { return this.#state.state.strokes }
+    get canUndo() { return this.#state.canUndo }
+    get canRedo() { return this.#state.canRedo }
+
+    /** @param {ImageBitmap | null} bitmap */
+    set img(bitmap) {
+      this.#img = bitmap instanceof ImageBitmap ? bitmap : null;
+      this.#drawImage();
+    }
+
+    previewTransformBy(dM) { this.#previewTransform.preMultiplySelf(dM) }
+
+    finalizePreview() {
+      this.#state.state = { ...this.#state.state, transform: this.#previewTransform.multiplySelf(this.transform) };
+      this.#previewTransform = new DOMMatrix();
+    }
+
+    toggleVisibility() { this.#isVisible = !this.#isVisible }
+
+    // resize(width, height) {
+    //   if (width === this.#canvas.width && height === this.#canvas.height) return;
+
+    //   this.#canvas.width = width;
+    //   this.#canvas.height = height;
+    //   this.#drawImage();
+    //   this.#drawStrokes();
+    // }
+
+    /** @param {{color: string, width: number, path2D: Path2D}} stroke  */
+    addStroke(stroke) {
+      this.#state.state = { ...this.#state.state, strokes: [...this.strokes, stroke] };
+      this.#drawStroke(stroke);
+    }
+
+    #drawStroke(stroke) {
+      const ctx = this.#canvas.getContext("2d");
+      ctx.save();
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.lineWidth = stroke.width;
+      ctx.strokeStyle = stroke.color;
+      ctx.stroke(stroke.path2D);
+      ctx.restore();
+    }
+
+    #drawStrokes() {
+      const ctx = this.#canvas.getContext("2d");
+      ctx.save();
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      for (const stroke of this.strokes) {
+        ctx.lineWidth = stroke.width;
+        ctx.strokeStyle = stroke.color;
+        ctx.stroke(stroke.path2D);
+      }
+      ctx.restore();
+    }
+
+    #drawImage() {
+      if (!this.#img) return;
+      const ctx = this.#canvas.getContext("2d");
+      ctx.save();
+      ctx.clearRect(0, 0, this.#canvas.width, this.#canvas.height);
+      ctx.drawImage(this.#img, 0, 0);
+      ctx.restore();
+    }
+
+    /** @param {CanvasRenderingContext2D} context */
+    drawOn(ctx) {
+      if (!this.canvas) return;
+
+      ctx.save();
+      ctx.setTransform(new DOMMatrix()
+        .translateSelf(this.#canvas.width / 2, this.#canvas.height / 2)
+        .multiplySelf(this.#previewTransform)
+        .multiplySelf(this.transform)
+      );
+      ctx.drawImage(this.canvas, -this.canvas.width / 2, -this.canvas.height / 2);
+      ctx.restore();
+    }
+
+    undo() {
+      const currentStrokes = this.strokes.length;
+      const undid = this.#state.undo();
+      const undoneStrokes = this.strokes.length;
+      if (undoneStrokes !== currentStrokes) {
+        this.#drawImage();
+        this.#drawStrokes();
+      }
+      return undid;
+    }
+
+    redo() {
+      const currentStrokes = this.strokes.length;
+      const redid = this.#state.redo();
+      const redoneStrokes = this.strokes.length;
+      if (redoneStrokes !== currentStrokes) {
+        this.#drawStroke(this.strokes[this.strokes.length - 1]);
+      }
+      return redid;
+    }
   }
 
   var utils = {
@@ -76,111 +395,84 @@ module.exports = function (meta) {
       );
     },
 
-    getKeyInModule(mod, fun) {
-      for (const key in mod) {
-        if (fun(mod[key])) return key;
+    getKeysInModule(mod, strs) {
+      const entries = new Map(Object.entries(strs));
+      const found = {};
+
+      outer: for (const key in mod) {
+        const src = mod[key]?.toString?.();
+        if (!src) continue;
+
+        for (const [name, search] of entries) {
+          if (!src.includes(search)) continue;
+
+          found[name] = key;
+          entries.delete(name)
+          if (entries.size === 0) break outer; else break;
+        }
       }
+      return found;
     },
+
+    StateHistory:
+    /** @template T */ class {
+        #state;
+        #history;
+        #pointer;
+
+        /** @param {T} initialState  */
+        constructor(initialState) {
+          this.#state = initialState;
+          this.#history = [initialState];
+          this.#pointer = 0;
+        }
+
+        get state() { return this.#state }
+        set state(value) {
+          if (this.#pointer < this.#history.length - 1) {
+            this.#history = this.#history.slice(0, this.#pointer + 1);
+          }
+          this.#history.push(value);
+          this.#pointer++;
+          this.#state = value;
+        }
+
+        undo() {
+          if (this.#pointer <= 0) return false;
+
+          this.#pointer--;
+          this.#state = this.#history[this.#pointer];
+          return true;
+        }
+
+        redo() {
+          if (this.#pointer + 1 >= this.#history.length) return false;
+
+          this.#pointer++;
+          this.#state = this.#history[this.#pointer];
+          return true;
+        }
+        get canUndo() { return this.#pointer > 0; }
+        get canRedo() { return this.#pointer < this.#history.length - 1; }
+      },
 
     /**
      * @param {number} x
      * @param {number} y
      */
     atan2(x, y) {
-      let angle = Math.round(Math.atan2(y, x) * 180 / Math.PI * 10) / 10;
+      const angle = Math.round(Math.atan2(y, x) * 180 / Math.PI * 10) / 10;
       return (angle + 360) % 360;
     },
 
     /** @param {DOMMatrix} M */
-    getAngle(M) {
-      return utils.atan2(M.a, M.b);
-    },
+    getAngle(M) { return utils.atan2(M.a, M.b) },
 
     /** @param {DOMMatrix} M */
-    getScales(M) {
-      return [Math.hypot(M.a, M.b), Math.hypot(M.c, M.d)];
-    },
+    getScale(M) { return Math.max(Math.hypot(M.a, M.b), Math.hypot(M.c, M.d)) },
 
-    /**
-     * @param {HTMLCanvasElement} canvas
-     * @param {{x1: number, x2: number, y1: number, y2: number}} rect
-     * @param {number} strokeWidth
-     * */
-    resizeCanvas(canvas, rect, strokeWidth) {
-      const canvasRect = {
-        x1: -canvas.width / 2,
-        x2: canvas.width / 2,
-        y1: -canvas.height / 2,
-        y2: canvas.height / 2
-      }
-
-      const dx = Math.max(0, canvasRect.x1 - (rect.x1 - strokeWidth / 2), (rect.x2 + strokeWidth / 2) - canvasRect.x2);
-      const dy = Math.max(0, canvasRect.y1 - (rect.y1 - strokeWidth / 2), (rect.y2 + strokeWidth / 2) - canvasRect.y2);
-
-      if (dx > 0 || dy > 0) {
-        canvas.width += ~~(dx * 2);
-        canvas.height += ~~(dy * 2);
-      }
-    },
-
-    /**
-     * @param {(ImageBitmap | HTMLCanvasElement)[]} images Source Images
-     * @param {HTMLCanvasElement} canvas Target Canvas
-     * @param {{M: DOMMatrix, width: number, height: number, strokes: {width: number, color: string, path2D: Path2D}}} transform
-     */
-    draw(images, canvas, transform) {
-      canvas.height = transform.height;
-      canvas.width = transform.width;
-
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, canvas.width, canvas.height)
-      ctx.setTransform(new DOMMatrix().translateSelf(canvas.width / 2, canvas.height / 2).multiplySelf(transform.M));
-
-      for (const img of images) {
-        ctx.drawImage(img,
-          -img.width / 2,
-          -img.height / 2,
-        );
-      }
-    },
-
-    /**
-     * @param {HTMLCanvasElement} canvas 
-     * @param {{width: number, color: string, path2D: Path2D}[]} strokes
-     */
-    drawPaths(canvas, strokes) {
-      const ctx = canvas.getContext("2d");
-      ctx.save();
-      ctx.setTransform(new DOMMatrix().translateSelf(canvas.width / 2, canvas.height / 2));
-      ctx.clearRect(-canvas.width / 2, -canvas.height / 2, canvas.width, canvas.height);
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-      for (const stroke of strokes) {
-        ctx.lineWidth = stroke.width;
-        ctx.strokeStyle = stroke.color;
-        ctx.stroke(stroke.path2D);
-      }
-      ctx.restore();
-    },
-
-    /**
-     * @param {HTMLCanvasElement} canvas 
-     * @param {{width: number, color: string, line: number[]}} stroke 
-     */
-    drawSingleLine(canvas, stroke) {
-      if (!stroke?.line) return;
-      const ctx = canvas.getContext("2d");
-
-      ctx.strokeStyle = stroke.color;
-      ctx.lineWidth = stroke.width;
-      ctx.lineJoin = "round";
-      ctx.lineCap = "round";
-
-      ctx.beginPath();
-      ctx.moveTo(stroke.line[0], stroke.line[1]);
-      ctx.lineTo(stroke.line[2], stroke.line[3]);
-      ctx.stroke();
-    },
+    /** @param {DOMMatrix} M */
+    getTranslate(M) { return { x: M.e, y: M.f } },
 
     /** @param {...number} values */
     minAbs: function (...values) {
@@ -328,40 +620,44 @@ module.exports = function (meta) {
       return [state, setState, { undo, redo, canUndo: pointer.current > 0, canRedo: pointer.current < history.current.length - 1 }];
     },
 
-    /** Wrapper for interaction events
+    /**
+     * Wrapper for interaction events
      * @param {{
-     *  onStart?: (e: PointerEvent) => void,
-     *  onChange?:(e: PointerEvent) => void,
-     *  onSubmit?: (e: PointerEvent) => void
+     *  buttons?: number,
+     *  onStart?: (e: PointerEvent, store: Record<string, any>) => void,
+     *  onChange?:(e: PointerEvent, store: Record<string, any>) => void,
+     *  onSubmit?: (e: PointerEvent, store: Record<string, any>) => void
      * }} props
     */
-    usePointerCapture({ onStart, onChange, onSubmit, button = 1 }) {
+    usePointerCapture({ onStart, onChange, onSubmit }) {
       /** @type {React.RefObject<null | number>} */
       const pointerId = useRef(null);
+      const smolStore = useRef({});
 
       /** @type {(e: PointerEvent) => void} */
       const onPointerDown = useCallback(e => {
-        if (!(e.buttons & button)) return;
+        if (!(e.buttons & 5) || pointerId.current != null) return;
 
         e.currentTarget.setPointerCapture(e.pointerId);
         pointerId.current = e.pointerId;
-        onStart?.(e);
+        onStart?.(e, smolStore.current);
       }, [onStart]);
 
       /** @type {(e: PointerEvent) => void} */
       const onPointerMove = useCallback(e => {
-        if (!(e.buttons & button) || pointerId.current !== e.pointerId) return;
+        if (!(e.buttons & 5) || pointerId.current !== e.pointerId) return;
 
-        onChange?.(e);
+        onChange?.(e, smolStore.current);
       }, [onChange]);
 
       /** @type {(e: PointerEvent) => void} */
       const onPointerUp = useCallback(e => {
-        if (!!(e.buttons & button) || pointerId.current !== e.pointerId) return;
+        if (pointerId.current !== e.pointerId) return;
 
         e.currentTarget.releasePointerCapture(e.pointerId);
         pointerId.current = null;
-        onSubmit?.(e);
+        onSubmit?.(e, smolStore.current);
+        smolStore.current = {};
       }, [onSubmit]);
 
       return {
@@ -374,321 +670,37 @@ module.exports = function (meta) {
 
     /**
      * @param {{
-     *  onRotate?: (M: DOMMatrix) => void,
-     *  onRotateEnd?: (M: DOMMatrix) => void,
-     * }} params
-    */
-    useRotate({ onRotate, onRotateEnd }) {
-      const rotateRef = useRef(null);
-
-      /** @type {(e: PointerEvent) => void} */
-      const onStart = useCallback(e => {
-        const rect = e.currentTarget.getBoundingClientRect();
-
-        rotateRef.current = {
-          startAngle: utils.atan2(
-            e.clientX - (rect.x + rect.width / 2),
-            e.clientY - (rect.y + rect.height / 2)
-          ),
-          rect,
-        }
-      }, []);
-
-      /** @type {(e: PointerEvent) => void} */
-      const onChange = useCallback(e => {
-        if (rotateRef.current == null) return;
-
-        const { startAngle, rect } = rotateRef.current;
-        let theta = -startAngle + utils.atan2(
-          e.clientX - (rect.x + rect.width / 2),
-          e.clientY - (rect.y + rect.height / 2)
-        );
-        theta = Math.round((theta + 360) % 360 * 10) / 10;
-
-        onRotate?.(new DOMMatrix().rotateSelf(theta));
-      }, [onRotate]);
-
-      /** @type {(e: PointerEvent) => void} */
-      const onSubmit = useCallback(e => {
-        const { startAngle, rect } = rotateRef.current;
-
-        let theta = -startAngle + utils.atan2(
-          e.clientX - (rect.x + rect.width / 2),
-          e.clientY - (rect.y + rect.height / 2)
-        );
-        theta = Math.round((theta + 360) % 360 * 10) / 10;
-
-        onRotateEnd?.(new DOMMatrix().rotateSelf(theta));
-        rotateRef.current = null;
-      }, [onRotateEnd]);
-
-      return hooks.usePointerCapture({ onStart, onChange, onSubmit });
-    },
-
-    /**
-     * @param {{
-     *  onPan?: (M: DOMMatrix) => void,
-     *  onPanEnd?:(M: DOMMatrix) => void ,
-     * }} params
-     */
-    usePan({ onPan, onPanEnd, button = 1 }) {
-      const panRef = useRef(null);
-
-      const onStart = useCallback(e => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        panRef.current = {
-          x: (e.clientX - rect.x) / rect.width,
-          y: (e.clientY - rect.y) / rect.height,
-          rect,
-        };
-      }, []);
-
-      /** @type {(e: PointerEvent) => void} */
-      const onChange = useCallback(e => {
-        if (panRef.current == null) return;
-
-        const { x, y, rect } = panRef.current;
-        onPan?.(new DOMMatrix().translateSelf(
-          ((e.clientX - rect.x) / rect.width - x) * e.currentTarget.width,
-          ((e.clientY - rect.y) / rect.height - y) * e.currentTarget.height
-        ));
-
-      }, [onPan]);
-
-      /** @type {(e: PointerEvent) => void} */
-      const onSubmit = useCallback(e => {
-        const { x, y, rect } = panRef.current;
-        onPanEnd?.(new DOMMatrix().translateSelf(
-          ((e.clientX - rect.x) / rect.width - x) * e.currentTarget.width,
-          ((e.clientY - rect.y) / rect.height - y) * e.currentTarget.height
-        ));
-
-        panRef.current = null;
-      }, [onPanEnd]);
-
-      return hooks.usePointerCapture({ onStart, onChange, onSubmit, button });
-    },
-
-    /**
-     * @param {{
-     *  onCropStart?: (e: DOMRect) => void ,
-     *  onCrop?: (e: {x: number, y: number, dx: number, dy: number}) => void,
-     *  onCropEnd?: (e: {width: number, height: number, M: DOMMatrix}) => void,
-     *  fixedAspect?: boolean,
-     * }} params
-     */
-    useCrop({ onCrop, onCropEnd, fixedAspect }) {
-      /** @type {React.RefObject<null | {x: number, y: number, rect: DOMRect}>} */
-      const cropRef = useRef(null);
-
-      /** @type {(e: PointerEvent) => void} */
-      const onStart = useCallback(e => {
-        e.currentTarget.classList.add("pointerdown");
-        const rect = e.currentTarget.getBoundingClientRect();
-        cropRef.current = {
-          x: (e.clientX - rect.x) / rect.width,
-          y: (e.clientY - rect.y) / rect.height,
-          rect
-        };
-        onCrop?.({
-          x: cropRef.current.x * 100,
-          y: cropRef.current.y * 100,
-          dx: 0,
-          dy: 0,
-        });
-      }, [onCrop]);
-
-      /** @type {(e: PointerEvent) => void} */
-      const onChange = useCallback(e => {
-        const { x, y, rect } = cropRef.current;
-
-        const minWidth = -x;
-        const maxWidth = minWidth + 1;
-        const minHeight = -y;
-        const maxHeight = minHeight + 1;
-
-        let dw = utils.clamp(minWidth, (e.clientX - rect.x) / rect.width - x, maxWidth);
-        let dh = utils.clamp(minHeight, (e.clientY - rect.y) / rect.height - y, maxHeight);
-
-        if (fixedAspect) {
-          dw = utils.maxAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh));
-          dh = utils.maxAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw));
-
-          dw = utils.clamp(minWidth, dw, maxWidth);
-          dh = utils.clamp(minHeight, dh, maxHeight);
-
-          dw = utils.minAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh));
-          dh = utils.minAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw));
-        }
-
-        onCrop?.({
-          x: x * 100,
-          y: y * 100,
-          dx: dw * 100,
-          dy: dh * 100,
-        });
-      }, [onCrop, fixedAspect]);
-
-      /** @type {(e: PointerEvent) => void} */
-      const onSubmit = useCallback(e => {
-        e.currentTarget.classList.remove("pointerdown");
-        const { x, y, rect } = cropRef.current;
-
-        const minWidth = -x;
-        const maxWidth = minWidth + 1;
-        const minHeight = -y;
-        const maxHeight = minHeight + 1;
-
-        let dw = utils.clamp(minWidth, (e.clientX - rect.x) / rect.width - x, maxWidth);
-        let dh = utils.clamp(minHeight, (e.clientY - rect.y) / rect.height - y, maxHeight);
-
-        if (fixedAspect) {
-          dw = utils.maxAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh));
-          dh = utils.maxAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw));
-
-          dw = utils.clamp(minWidth, dw, maxWidth);
-          dh = utils.clamp(minHeight, dh, maxHeight);
-
-          dw = utils.minAbs(dw, (Math.sign(dw) || 1) * Math.abs(dh));
-          dh = utils.minAbs(dh, (Math.sign(dh) || 1) * Math.abs(dw));
-        }
-
-        // canvas center
-        const cx = 0.5;
-        const cy = 0.5;
-        // crop center
-        const ccx = cropRef.current.x + dw / 2;
-        const ccy = cropRef.current.y + dh / 2;
-
-        onCropEnd?.({
-          width: Math.abs(dw) * e.currentTarget.width,
-          height: Math.abs(dh) * e.currentTarget.height,
-          M: new DOMMatrix().translateSelf(
-            (cx - ccx) * e.currentTarget.width,
-            (cy - ccy) * e.currentTarget.height
-          )
-        });
-
-        cropRef.current = null;
-      }, [onCropEnd, fixedAspect]);
-
-      return hooks.usePointerCapture({ onStart, onChange, onSubmit });
-    },
-
-    /**
-     * @param {{
-     *  initial: DOMMatrix,
-     *  onScale?: (e: {s: number, M: DOMMatrix}) => void,
-     *  onScaleEnd?: (e: DOMMatrix) => void,
+     *  onStart?: (e: React.WheelEvent, store: Record<string, any>) => void,
+     *  onChange?: (e: React.WheelEvent, store: Record<string, any>) => void,
+     *  onSubmit?: (e: React.WheelEvent, store: Record<string, any>) => void,
      *  wait?: number,
      * }} params
      */
-    useScale({ initial, onScale, onScaleEnd, wait = 350 }) {
+    useDebouncedWheel({ onStart, onChange, onSubmit, wait = 350 }) {
       /** @type {React.RefObject<null | number>} */
       const timer = useRef(null);
-      const M = useMemo(() => new DOMMatrix(), [initial]);
-      const untransformedScale = useMemo(() => Math.max(...utils.getScales(initial)), [initial]);
+      const smolStore = useRef({});
 
       /** @type {(e: WheelEvent & {currentTarget: HTMLCanvasElement}) => void} */
       const onWheel = useCallback(e => {
         if (!e.deltaY) return;
 
-        const currentScale = Math.max(...utils.getScales(M.multiply(initial)));
-        const updatedScale = Number(Math.max(0.1, currentScale - 0.05 * Math.sign(e.deltaY)).toFixed(2));
+        if (timer.current == null) {
+          onStart?.(e, smolStore);
+        }
 
-        const rect = e.currentTarget.getBoundingClientRect();
-        const Tx = ((e.clientX - rect.x) / rect.width - 0.5) * e.currentTarget.width;
-        const Ty = ((e.clientY - rect.y) / rect.height - 0.5) * e.currentTarget.height;
-
-        const T = new DOMMatrix().translateSelf(Tx, Ty);
-        const T_inv = new DOMMatrix().translateSelf(-Tx, -Ty);
-        const S = new DOMMatrix().scaleSelf(updatedScale, updatedScale);
-        const S_inv = new DOMMatrix().scaleSelf(1 / currentScale, 1 / currentScale);
-
-        M.preMultiplySelf(T.multiplySelf(S).multiplySelf(S_inv).multiplySelf(T_inv));
-
-        onScale?.({ s: updatedScale, M: new DOMMatrix().multiply(M) });
+        onChange?.(e, smolStore);
 
         timer.current && clearTimeout(timer.current);
         timer.current = setTimeout(() => {
-          untransformedScale !== updatedScale && onScaleEnd?.(new DOMMatrix().multiply(M));
+          onSubmit?.(e, smolStore);
+          timer.current = null;
         }, wait);
-      }, [onScale, onScaleEnd]);
 
-      return { onWheel }
-    },
+      }, [onStart, onChange, onSubmit, wait]);
 
-    /**
-     * @param {{
-     *  initial: DOMMatrix,
-     *  onDraw?: (e: number[], strokeWidthScale: number) => void,
-     *  onDrawEnd?: (path2d: Path2D, rect: {x1: number, x2: number, y1: number, y2: number}, strokeWidthScale: number) => void,
-     * }} params
-     */
-    useHandDraw({ initial, onDraw, onDrawEnd }) {
-      /**
-       * @type {React.RefObject<null | {
-       *  transformPoint: (x: number, y: number) => number[],
-       *  path2D: Path2D,
-       *  prev: number[],
-       *  PathRect: {x1: number, x2: number, y1: number, y2: number},
-       *  strokeWidthScale: number
-       * }>}
-       */
-      const drawRef = useRef(null);
-
-      /** @type {(e: PointerEvent & {currentTarget: HTMLCanvasElement}) => void} */
-      const onStart = useCallback(e => {
-        const rect = e.currentTarget.getBoundingClientRect();
-        const width = e.currentTarget.width;
-        const height = e.currentTarget.height;
-        const inv = new DOMMatrix().translateSelf(width / 2, height / 2).multiplySelf(initial).invertSelf();
-
-        const strokeWidthScale = width / rect.width / Math.max(...utils.getScales(initial));
-
-        drawRef.current = {
-          transformPoint(x, y) {
-            const X = utils.clamp(0, x - rect.x, rect.width) / rect.width * width;
-            const Y = utils.clamp(0, y - rect.y, rect.height) / rect.height * height;
-            const point = new DOMPoint(X, Y).matrixTransform(inv);
-            return [Math.round(point.x), Math.round(point.y)]
-          },
-          path2D: new Path2D(),
-          strokeWidthScale
-        }
-
-        drawRef.current.prev = drawRef.current.transformPoint(e.clientX, e.clientY);
-        drawRef.current.PathRect = {
-          x1: drawRef.current.prev[0],
-          x2: drawRef.current.prev[0],
-          y1: drawRef.current.prev[1],
-          y2: drawRef.current.prev[1],
-        };
-        drawRef.current.path2D.moveTo(...drawRef.current.prev);
-      }, [initial]);
-
-      /** @type {(e: PointerEvent) => void} */
-      const onChange = useCallback(e => {
-        if (!drawRef.current) return;
-        const p = drawRef.current.transformPoint(e.clientX, e.clientY);
-
-        drawRef.current.PathRect.x1 = Math.min(drawRef.current.PathRect.x1, p[0]);
-        drawRef.current.PathRect.x2 = Math.max(drawRef.current.PathRect.x2, p[0]);
-        drawRef.current.PathRect.y1 = Math.min(drawRef.current.PathRect.y1, p[1]);
-        drawRef.current.PathRect.y2 = Math.max(drawRef.current.PathRect.y2, p[1]);
-
-        onDraw?.(drawRef.current.prev.concat(p), drawRef.current.strokeWidthScale);
-        drawRef.current.path2D.lineTo(...p);
-        drawRef.current.prev = p;
-      }, [onDraw]);
-
-      const onSubmit = useCallback(() => {
-        onDrawEnd?.(drawRef.current.path2D, drawRef.current.PathRect, drawRef.current.strokeWidthScale);
-        drawRef.current = null;
-      }, [onDrawEnd]);
-
-      return hooks.usePointerCapture({ onStart, onChange, onSubmit })
-    },
+      return onWheel;
+    }
   }
 
   var Components = {
@@ -700,11 +712,12 @@ module.exports = function (meta) {
      * disabled?: boolean,
      * active?: boolean}} props
      * */
-    IconButton({ onClick, tooltip, d, disabled, active }) {
+    IconButton({ onClick, tooltip, d, disabled, active, position = 'top' }) {
       return jsx(BdApi.Components.ErrorBoundary, {
         children: jsx(BdApi.Components.Tooltip, {
           text: tooltip || '',
           hideOnClick: true,
+          position,
           children: e => {
             let { onMouseEnter, onMouseLeave, onClick: onClick2 } = e;
             const handleClick = e => { if (!disabled) { onClick?.(e); onClick2?.(e) } };
@@ -740,7 +753,44 @@ module.exports = function (meta) {
       })
     },
 
-    EditIcon({ args }) {
+    RemixIcon({ url }) {
+      const userActions = useRef(null);
+
+      return jsx(Components.IconButton, {
+        onClick: async () => {
+          try {
+            const response = await fetch(url); // BdApi.Net.fetch will reject blobs
+            const blob = await response.blob();
+            const bitmap = await createImageBitmap(blob);
+
+            internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
+            internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, null,
+              jsx(internals.nativeUI.ConfirmModal, {
+                ...e,
+                className: `${meta.slug}Root`,
+                confirmText: "Save",
+                cancelText: "Cancel",
+                confirmButtonColor: internals.Button.Colors.BRAND,
+                onConfirm: () => {
+                  userActions.current?.upload({})
+                },
+                children: jsx(Components.ImageEditor, {
+                  bitmap,
+                  ref: userActions
+                }),
+              }))
+            )
+          } catch (e) {
+            UI.showToast("Could not fetch image.", { type: "error" });
+          }
+        },
+        position: 'bottom',
+        tooltip: "Edit Image",
+        d: utils.paths.Main
+      })
+    },
+
+    UploadIcon({ args }) {
       // forwardRef for replace()
       const userActions = useRef(null);
 
@@ -762,12 +812,12 @@ module.exports = function (meta) {
                 },
                 children: jsx(Components.ImageEditor, {
                   bitmap,
-                  ref: userActions
+                  ref: userActions,
                 }),
               }))
             )
           }).catch(() => {
-            BdApi.UI.showToast("Could not load image", { type: "error" });
+            UI.showToast("Could not load image", { type: "error" });
           });
         },
         tooltip: "Edit Image",
@@ -777,93 +827,45 @@ module.exports = function (meta) {
 
     /** @param {{bitmap: ImageBitmap, ref: React.RefObject<any>}} props */
     ImageEditor({ bitmap, ref }) {
-      const [transform, setTransform, transformHistActions] = hooks.useHistoryState(() => ({
-        M: new DOMMatrix(),
-        width: bitmap.width,
-        height: bitmap.height,
-        /** @type {{color: string, width: number, path2D: Path2D}[]} */
-        strokes: []
-      }));
-      const [mode, setMode] = useState(null);
+      const [mode, _setMode] = useState(null);
+      const [canUndoRedo, setCanUndoRedo] = useState(0);
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 5, color: "#000000" }));
 
       /** @type { React.RefObject<HTMLCanvasElement | null> } */
-      const canvas = useRef(null);
-      const cachedStrokes = useRef(new OffscreenCanvas(1, 1));
+      const canvasRef = useRef(null);
+      /** @type { React.RefObject<CanvasEditor | null> } */
+      const editor = useRef(null);
       /** @type { React.RefObject<HTMLDivElement | null> } */
       const overlay = useRef(null);
       /** @type { React.RefObject<{setValue: (value: number) => void } | null> } */
       const auxRef = useRef(null);
 
-      const cropHandlers = hooks.useCrop({
-        fixedAspect,
-        onCrop: ({ x, y, dx, dy }) => {
-          overlay.current.style.setProperty("--x1", Math.min(x, x + dx) + "%");
-          overlay.current.style.setProperty("--x2", Math.max(x, x + dx) + "%");
-          overlay.current.style.setProperty("--y1", Math.min(y, y + dy) + "%");
-          overlay.current.style.setProperty("--y2", Math.max(y, y + dy) + "%");
-        },
-        onCropEnd: C => {
-          ["--x1", "--x2", "--y1", "--y2"].forEach(k => overlay.current.style.removeProperty(k));
-          overlay.current.removeAttribute("style");
-          setTransform(T => ({ ...T, ...C, M: C.M.multiplySelf(T.M) }));
-        }
-      });
+      const setMode = useCallback((newVal) => {
+        _setMode((oldMode) => {
+          const newMode = newVal instanceof Function ? newVal(oldMode) : newVal;
+          switch (newMode) {
+            case 1: {
+              const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
+              const cr = utils.getAngle(editor.current.activeLayer.transform);
+              overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
+              overlay.current.style.setProperty("--rotate", `${cr.toFixed(1)}deg`);
+              break;
+            }
+            case 4: {
 
-      const rotateHandlers = hooks.useRotate({
-        onRotate: R => {
-          const r = utils.getAngle(transform.M);
-          const dr = utils.getAngle(R);
-          auxRef.current.setValue(Number(((r + dr) % 360).toFixed(1)));
-
-          utils.draw([bitmap, cachedStrokes.current], canvas.current, { ...transform, M: R.multiplySelf(transform.M) });
-        },
-        onRotateEnd: R => setTransform(T => ({ ...T, M: R.multiplySelf(T.M) }))
-      });
-
-      const panHandlers = hooks.usePan({
-        onPan: P => utils.draw([bitmap, cachedStrokes.current], canvas.current, { ...transform, M: P.multiplySelf(transform.M) }),
-        onPanEnd: P => setTransform(T => ({ ...T, M: P.multiplySelf(T.M) }))
-      });
-
-      const scaleHandlers = hooks.useScale({
-        initial: transform.M,
-        onScale: ({ s, M }) => {
-          auxRef.current.setValue(Number(s.toFixed(2)));
-          utils.draw([bitmap, cachedStrokes.current], canvas.current, { ...transform, M: M.multiplySelf(transform.M) });
-        },
-        onScaleEnd: S => setTransform(T => ({ ...T, M: S.multiplySelf(T.M) }))
-      });
-
-      const drawHandlers = hooks.useHandDraw({
-        initial: transform.M,
-        onDraw: (line, scale) => {
-          utils.drawSingleLine(canvas.current, {
-            color: strokeStyle.color,
-            width: Math.round(strokeStyle.width * scale),
-            line
-          })
-        },
-        onDrawEnd: (path2D, pathRect, scale) => {
-          utils.resizeCanvas(cachedStrokes.current, pathRect, Math.round(strokeStyle.width * scale));
-          setTransform(T => ({
-            ...T, strokes: [...T.strokes, {
-              color: strokeStyle.color,
-              width: Math.round(strokeStyle.width * scale),
-              path2D
-            }]
-          }));
-        }
-      });
+            }
+            default: {
+              ["--translate", "--rotate"].forEach(prop => overlay.current.style.removeProperty(prop));
+            }
+          }
+          return newMode;
+        })
+      }, []);
 
       useImperativeHandle(ref, () => ({
-        replace: ({ draftType, upload }) => {
-          if (!canvas.current) {
-            BdApi.UI.showToast("Reference lost. Failed to save changes.", { type: "error" });
-            return;
-          }
-          canvas.current.toBlob(blob => {
+        replace({ draftType, upload }) {
+          editor.current?.toBlob({ type: "image/webp" }).then(blob => {
             internals.uploadDispatcher.setFile({
               channelId: upload.channelId,
               id: upload.id,
@@ -881,22 +883,57 @@ module.exports = function (meta) {
                 }
               }
             });
-            BdApi.UI.showToast("Saved changes", { type: "success" });
-          }, "image/webp");
+            UI.showToast("Saved changes", { type: "success" });
+          });
+        },
+        upload({ }) {
+          if (!mainCanvas.current) {
+            UI.showToast("Reference lost. Failed to save changes.", { type: "error" });
+            return;
+          }
+          editor.current?.toBlob({ type: "image/webp" }).then(blob => {
+            internals.uploadDispatcher.addFile({
+              file: {
+                file: new File([blob], "image.webp", { type: blob.type }),
+                isThumbnail: false,
+                origin: "clipboard",
+                platform: 1
+              },
+              channelId: "1227067387971375175",
+              showLargeMessageDialog: false,
+              draftType: 0,
+            })
+            UI.showToast("Saved changes", { type: "success" });
+          });
         }
       }), []);
 
-      useEffect(() => {
-        const ctrl = new AbortController();
+      const render = useCallback(() => {
+        editor.current.render();
+        const c = editor.current.activeLayer?.canUndo << 1 ^ editor.current.activeLayer?.canRedo;
+        setCanUndoRedo(c);
+      }, []);
 
+      useEffect(() => {
+        const rect = canvasRef.current.offsetParent.getBoundingClientRect();
+        canvasRef.current.width = ~~(rect.width / 0.7);
+        canvasRef.current.height = ~~(rect.height / 0.7);
+        editor.current = new CanvasEditor(canvasRef.current, bitmap);
+
+        const ctrl = new AbortController();
         addEventListener("keydown", e => {
           switch (e.key) {
             case e.ctrlKey && "z":
-              transformHistActions.undo();
+              if (editor.current.activeLayer?.undo()) render();
               return;
 
             case e.ctrlKey && "y":
-              transformHistActions.redo();
+              if (editor.current.activeLayer?.redo()) render();
+              return;
+
+            case !e.repeat && e.ctrlKey && "b":
+              editor.current.resetViewport();
+              overlay.current.style.removeProperty("--translate");
               return;
 
             case !e.repeat && !e.ctrlKey && "c":
@@ -925,15 +962,132 @@ module.exports = function (meta) {
         return () => ctrl.abort();
       }, []);
 
-      useEffect(() => {
-        // on stale cache, redraw paths 
-        utils.drawPaths(cachedStrokes.current, transform.strokes);
-      }, [transform.strokes])
+      const handleWheel = hooks.useDebouncedWheel(useMemo(() => ({
+        onChange: (e) => {
+          if (mode === 3) {
+            const delta = 1 - 0.05 * Math.sign(e.deltaY);
+            const rect = e.currentTarget.getBoundingClientRect();
+            const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
+            const cs = utils.getScale(editor.current.viewportTransform);
+            const boxScale = rect.width / e.currentTarget.width;
 
-      useEffect(() => {
-        if (!canvas.current) return;
-        utils.draw([bitmap, cachedStrokes.current], canvas.current, transform);
-      }, [transform]);
+            const Tx = (e.clientX - (rect.x + rect.width / 2 + ctx * boxScale)) / cs;
+            const Ty = (e.clientY - (rect.y + rect.height / 2 + cty * boxScale)) / cs;
+
+            editor.current.activeLayer.previewTransformBy(new DOMMatrix().scaleSelf(delta, delta, 1, Tx, Ty));
+            editor.current.render();
+          } else {
+            const delta = 1 - 0.05 * Math.sign(e.deltaY);
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = (e.clientX - rect.x) / rect.width;
+            const y = (e.clientY - rect.y) / rect.height;
+            editor.current.scaleViewportBy(delta, x, y);
+
+            if (mode == 1) {
+              const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
+              const cr = utils.getAngle(editor.current.activeLayer.previewTransform);
+              overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
+              overlay.current.style.setProperty("--rotate", `${cr.toFixed(1)}deg`);
+            }
+          }
+        },
+        onSubmit: () => {
+          if (mode === 3) {
+            editor.current.activeLayer?.finalizePreview();
+            render();
+          }
+        }
+      }), [mode]));
+
+      const pointerHandlers = hooks.usePointerCapture({
+        onStart: (e) => {
+          if (mode === 4) {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const boxScale = rect.width / e.currentTarget.width;
+            const startX = (e.clientX - rect.x) * boxScale;
+            const startY = (e.clientY - rect.y) * boxScale;
+            editor.current.startDrawing(new DOMPoint(startX, startY), strokeStyle.width, strokeStyle.color);
+          }
+        },
+        onChange: (e, store) => {
+          if (e.buttons & 4 || mode == null) {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const dx = e.movementX / rect.width * e.currentTarget.width;
+            const dy = e.movementY / rect.height * e.currentTarget.height;
+            editor.current.translateViewportBy(dx, dy);
+            if (mode == 1) {
+              const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
+              overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
+            }
+          } else {
+            store.changed = true;
+            switch (mode) {
+              case 0: {
+                break;
+              }
+              case 1: {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const currentTranslate = utils.getTranslate(editor.current.viewportTransform);
+                const boxScale = rect.width / e.currentTarget.width;
+
+                const currentX = e.clientX - (rect.x + rect.width / 2 + currentTranslate.x * boxScale);
+                const currentY = e.clientY - (rect.y + rect.height / 2 + currentTranslate.y * boxScale);
+
+                const previousX = currentX - e.movementX;
+                const previousY = currentY - e.movementY;
+
+                const theta = utils.atan2(
+                  previousX * currentX + previousY * currentY,
+                  previousX * currentY - previousY * currentX
+                );
+
+                editor.current.activeLayer?.previewTransformBy(new DOMMatrix().rotateSelf(theta));
+                editor.current.render();
+
+                const cr = utils.getAngle(editor.current.activeLayer.previewTransform);
+                overlay.current.style.setProperty("--rotate", `${cr.toFixed(1)}deg`);
+                break;
+              }
+              case 2: {
+                const dx = e.movementX / utils.getScale(editor.current.viewportTransform);
+                const dy = e.movementY / utils.getScale(editor.current.viewportTransform);
+                editor.current.activeLayer?.previewTransformBy(new DOMMatrix().translateSelf(dx, dy));
+                editor.current.render();
+                break;
+              }
+              case 4: {
+                const rect = e.currentTarget.getBoundingClientRect();
+                const boxScale = rect.width / e.currentTarget.width;
+                const startX = (e.clientX - rect.x) * boxScale;
+                const startY = (e.clientY - rect.y) * boxScale;
+                editor.current.drawLine(new DOMPoint(startX, startY));
+                break;
+              }
+            }
+          }
+        },
+        onSubmit: (e, store) => {
+          if (!store.changed) return;
+
+          switch (mode) {
+            case 0: {
+              break;
+            }
+            case 1:
+            // Intentional fall-through
+            case 2: {
+              editor.current.activeLayer?.finalizePreview();
+              render();
+              break;
+            }
+            case 4: {
+              editor.current.finishDrawing();
+              render();
+              break;
+            }
+          }
+        }
+      });
 
       return jsx("div", {
         className: "image-editor",
@@ -942,17 +1096,17 @@ module.exports = function (meta) {
             className: "canvas-dims",
             children: [
               jsx(Components.NumberSlider, {
-                value: Math.round(transform.width),
+                value: bitmap.width,
                 decimals: 0,
-                onChange: v => setTransform(T => ({ ...T, width: v })),
+                onChange: null,
                 withSlider: false,
                 minValue: 0,
               }),
               "x",
               jsx(Components.NumberSlider, {
-                value: Math.round(transform.height),
+                value: bitmap.height,
                 decimals: 0,
-                onChange: v => setTransform(T => ({ ...T, height: v })),
+                onChange: null,
                 withSlider: false,
                 minValue: 0,
               }),
@@ -963,8 +1117,9 @@ module.exports = function (meta) {
             children: [
               jsx("canvas", {
                 className: ["canvas", ["cropping", "rotating", "moving", "scaling", "drawing"][mode]].filter(Boolean).join(" "),
-                ref: canvas,
-                ...([cropHandlers, rotateHandlers, panHandlers, scaleHandlers, drawHandlers][mode] ?? {})
+                ref: canvasRef,
+                onWheel: handleWheel,
+                ...pointerHandlers,
               }),
               jsx("div", {
                 className: "canvas-overlay",
@@ -1009,63 +1164,63 @@ module.exports = function (meta) {
                 active: mode === 4,
                 onClick: () => setMode(m => m === 4 ? null : 4)
               }),
-              mode == 0 && jsx("label", {
-                className: "aux-input",
-                style: { gap: 8, cursor: "pointer" },
-                children: [
-                  jsx(Components.IconButton, {
-                    tooltip: fixedAspect ? "Preserve aspect ratio" : "Free region select",
-                    d: fixedAspect ? utils.paths.Lock : utils.paths.LockOpen,
-                    onClick: () => setFixedAspect(e => !e),
-                  }),
-                ]
-              }),
-              mode == 1 && jsx("div", {
-                className: "aux-input",
-                children: jsx(Components.NumberSlider, {
-                  ref: auxRef,
-                  suffix: "°",
-                  decimals: 0,
-                  withSlider: false,
-                  value: Number(utils.getAngle(transform.M).toFixed(1)),
-                  onChange: r => setTransform(T => {
-                    const current = Number(utils.getAngle(T.M).toFixed(1));
-                    return { ...T, M: new DOMMatrix().rotateSelf(r - current).multiplySelf(T.M) };
-                  })
-                })
-              }),
-              mode == 3 && jsx("div", {
-                className: "aux-input",
-                children: jsx(Components.NumberSlider, {
-                  ref: auxRef,
-                  suffix: "x",
-                  decimals: 2,
-                  minValue: 0.01,
-                  centerValue: 1,
-                  maxValue: 10,
-                  value: Number(Math.hypot(transform.M.a, transform.M.b).toFixed(2)),
-                  onSlide: value => {
-                    const [scaleX, scaleY] = utils.getScales(transform.M);
-                    const N = new DOMMatrix().scaleSelf(1 / scaleX, 1 / scaleY);
+              // mode == 0 && jsx("label", {
+              //   className: "aux-input",
+              //   style: { gap: 8, cursor: "pointer" },
+              //   children: [
+              //     jsx(Components.IconButton, {
+              //       tooltip: fixedAspect ? "Preserve aspect ratio" : "Free region select",
+              //       d: fixedAspect ? utils.paths.Lock : utils.paths.LockOpen,
+              //       onClick: () => setFixedAspect(e => !e),
+              //     }),
+              //   ]
+              // }),
+              // mode == 1 && jsx("div", {
+              //   className: "aux-input",
+              //   children: jsx(Components.NumberSlider, {
+              //     ref: auxRef,
+              //     suffix: "°",
+              //     decimals: 0,
+              //     withSlider: false,
+              //     value: Number(utils.getAngle(transform.M).toFixed(1)),
+              //     onChange: r => setTransform(T => {
+              //       const current = Number(utils.getAngle(T.M).toFixed(1));
+              //       return { ...T, M: new DOMMatrix().rotateSelf(r - current).multiplySelf(T.M) };
+              //     })
+              //   })
+              // }),
+              // mode == 3 && jsx("div", {
+              //   className: "aux-input",
+              //   children: jsx(Components.NumberSlider, {
+              //     ref: auxRef,
+              //     suffix: "x",
+              //     decimals: 2,
+              //     minValue: 0.01,
+              //     centerValue: 1,
+              //     maxValue: 10,
+              //     value: Number(Math.hypot(transform.M.a, transform.M.b).toFixed(2)),
+              //     onSlide: value => {
+              //       const [scaleX, scaleY] = utils.getScales(transform.M);
+              //       const N = new DOMMatrix().scaleSelf(1 / scaleX, 1 / scaleY);
 
-                    utils.draw([bitmap, cachedStrokes.current], canvas.current, {
-                      ...transform,
-                      M: new DOMMatrix().scaleSelf(value, value).multiplySelf(N).multiplySelf(transform.M)
-                    });
-                  },
-                  onChange: value => {
-                    setTransform(T => {
-                      const [scaleX, scaleY] = utils.getScales(T.M);
-                      const N = new DOMMatrix().scaleSelf(1 / scaleX, 1 / scaleY);
+              //       utils.draw([bitmap, strokeCanvas.current], mainCanvas.current, {
+              //         ...transform,
+              //         M: new DOMMatrix().scaleSelf(value, value).multiplySelf(N).multiplySelf(transform.M)
+              //       });
+              //     },
+              //     onChange: value => {
+              //       setTransform(T => {
+              //         const [scaleX, scaleY] = utils.getScales(T.M);
+              //         const N = new DOMMatrix().scaleSelf(1 / scaleX, 1 / scaleY);
 
-                      return {
-                        ...T,
-                        M: new DOMMatrix().scaleSelf(value, value).multiplySelf(N).multiplySelf(T.M)
-                      }
-                    })
-                  }
-                })
-              }),
+              //         return {
+              //           ...T,
+              //           M: new DOMMatrix().scaleSelf(value, value).multiplySelf(N).multiplySelf(T.M)
+              //         }
+              //       })
+              //     }
+              //   })
+              // }),
               mode == 4 && jsx("div", {
                 className: "aux-input",
                 children: [
@@ -1095,44 +1250,44 @@ module.exports = function (meta) {
               jsx(Components.IconButton, {
                 tooltip: "Flip Horizontal",
                 d: utils.paths.FlipH,
-                onClick: () => setTransform(T => ({ ...T, M: new DOMMatrix().scaleSelf(-1, 1).multiplySelf(T.M) })),
+                onClick: () => {
+                  if (!editor.current.activeLayer) return;
+                  editor.current.activeLayer.previewTransformBy(new DOMMatrix().scaleSelf(-1, 1));
+                  editor.current.activeLayer.finalizePreview();
+                  render();
+                },
               }),
               jsx(Components.IconButton, {
                 tooltip: "Flip Vertical",
                 d: utils.paths.FlipV,
-                onClick: () => setTransform(T => ({ ...T, M: new DOMMatrix().scaleSelf(1, -1).multiplySelf(T.M) })),
+                onClick: () => {
+                  if (!editor.current.activeLayer) return;
+                  editor.current.activeLayer.previewTransformBy(new DOMMatrix().scaleSelf(1, -1));
+                  editor.current.activeLayer.finalizePreview();
+                  render();
+                },
               }),
               jsx(Components.IconButton, {
                 tooltip: "Rotate Left",
                 d: utils.paths.RotL,
-                onClick: () => setTransform(T => ({
-                  ...T,
-                  width: T.height,
-                  height: T.width,
-                  M: new DOMMatrix().rotateSelf(-90).multiplySelf(T.M)
-                })),
+                onClick: () => { },
               }),
               jsx(Components.IconButton, {
                 tooltip: "Rotate Right",
                 d: utils.paths.RotR,
-                onClick: () => setTransform(T => ({
-                  ...T,
-                  width: T.height,
-                  height: T.width,
-                  M: new DOMMatrix().rotateSelf(90).multiplySelf(T.M)
-                })),
+                onClick: () => { },
               }),
               jsx(Components.IconButton, {
                 tooltip: "Undo (Ctrl + Z)",
                 d: utils.paths.Undo,
-                onClick: transformHistActions.undo,
-                disabled: !transformHistActions.canUndo
+                onClick: () => { if (editor.current.activeLayer?.undo()) render() },
+                disabled: !(canUndoRedo & 2)
               }),
               jsx(Components.IconButton, {
                 tooltip: "Redo (Ctrl + Y)",
                 d: utils.paths.Redo,
-                onClick: transformHistActions.redo,
-                disabled: !transformHistActions.canRedo
+                onClick: () => { if (editor.current.activeLayer?.redo()) render() },
+                disabled: !(canUndoRedo & 1)
               }),
             ]
           })
@@ -1327,13 +1482,12 @@ module.exports = function (meta) {
 .canvas {
   max-width: 100%;
   max-height: 100%;
-  box-sizing: border-box;
+  border-radius: 8px;
   display: block;
   anchor-name: --canvas;
   overflow: hidden;
   touch-action: none;
-  border: 1px solid var(--border-normal);
-  background: repeating-conic-gradient(#6666 0 25%, #9996 0 50%) 0 0 / 20px 20px fixed content-box;
+  background: repeating-conic-gradient(#666 0 25%, #999 0 50%) 0 0 / 20px 20px fixed content-box;
 }                   
 
 .canvas.cropping {
@@ -1364,21 +1518,23 @@ module.exports = function (meta) {
 }
 
 .canvas.rotating + .canvas-overlay::after {
-  content: "+";
+  content: "";
   position: absolute;
   inset: 0;
   margin: auto;
-  line-height: 0;
-  display: grid;
-  place-items: center;
-  color: #000;
-  background: #fff;
-  height: 0.5em;
+  translate: var(--translate, 0px);
+  rotate: var(--rotate, 0deg);
+  border-radius: 100vmax;
+  width: 15px;
   aspect-ratio: 1;
-  border-radius: 50%;
-  border: 1px solid currentColor;
-  outline: 1px solid #fff;
-  animation: pulsing 2s infinite alternate ease-out;
+  --c: linear-gradient(#000 0 0) 50%;
+  background:
+    var(--c) / 58% 5% space no-repeat,
+    var(--c) / 5% 58% no-repeat space,
+    white;
+  outline: 1px solid black;
+  outline-offset: -2px;
+  animation: pulsing 1s infinite alternate ease-out;
 }
 
 .canvas-overlay {
