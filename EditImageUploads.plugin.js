@@ -91,6 +91,7 @@ module.exports = function (meta) {
     #mainCanvas;
     #viewportCanvas;
     #viewportTransform;
+    #viewportTransform_inv;
 
     #layers;
     #activeLayerIndex;
@@ -107,6 +108,11 @@ module.exports = function (meta) {
 
       const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
+      this.#viewportTransform_inv = new DOMMatrix()
+        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+        .multiplySelf(this.#viewportTransform)
+        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+        .invertSelf();
 
       this.#layers = [new Layer(bitmap.width, bitmap.height)];
       this.#layers[0].img = bitmap;
@@ -126,16 +132,16 @@ module.exports = function (meta) {
 
     get activeLayer() { return this.#layers[this.#activeLayerIndex] }
     get viewportTransform() { return this.#viewportTransform }
-    get #viewportTransform_inv() {return new DOMMatrix()
-      .translateSelf(canvas.width / 2, canvas.height / 2)
-      .multiplySelf(this.#viewportTransform)
-      .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
-      .inverse();
-    }
 
     translateViewportBy(dx = 0, dy = 0) {
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().translateSelf(dx, dy));
       this.refreshViewport();
+
+      this.#viewportTransform_inv = new DOMMatrix()
+        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+        .multiplySelf(this.#viewportTransform)
+        .translateSelf(-this.activeLayer.width / 2, -this.activeLayer.height / 2)
+        .invertSelf();
     }
 
     scaleViewportBy(ds = 1, x = 0.5, y = 0.5) {
@@ -144,12 +150,24 @@ module.exports = function (meta) {
 
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().scaleSelf(ds, ds, 1, Tx, Ty));
       this.refreshViewport();
+
+      this.#viewportTransform_inv = new DOMMatrix()
+        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+        .multiplySelf(this.#viewportTransform)
+        .translateSelf(-this.activeLayer.width / 2, -this.activeLayer.height / 2)
+        .invertSelf();
     }
 
     resetViewport() {
       const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       this.refreshViewport();
+
+      this.#viewportTransform_inv = new DOMMatrix()
+        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+        .multiplySelf(this.#viewportTransform)
+        .translateSelf(-this.activeLayer.width / 2, -this.activeLayer.height / 2)
+        .invertSelf();
     }
 
     /** 
@@ -162,13 +180,15 @@ module.exports = function (meta) {
       const topCtx = this.#cached.canvas.getContext("2d");
       bottomCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       topCtx.clearRect(0, 0, this.#cached.canvas.width, this.#cached.canvas.height);
-      this.#layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(bottomCtx));
-      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(topCtx));
+      this.#layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(this.#mainCanvas));
+      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(this.#cached.canvas));
 
       this.#cached.width = width;
       this.#cached.color = color;
 
-      this.#cached.layerTransform_inv = this.activeLayer.transform.inverse();
+      this.#cached.layerTransform_inv = new DOMMatrix()
+        .translateSelf(this.activeLayer.width / 2, this.activeLayer.height / 2)
+        .multiplySelf(this.activeLayer.transform).invertSelf();
       this.#cached.lastPoint = startPoint.matrixTransform(this.#viewportTransform_inv);
       const rawPoint = this.#cached.lastPoint.matrixTransform(this.#cached.layerTransform_inv);
       this.#cached.path2D.moveTo(rawPoint.x, rawPoint.y);
@@ -196,10 +216,10 @@ module.exports = function (meta) {
       this.#cached.lastPoint = to_inv;
       const rawPoint = to_inv.matrixTransform(this.#cached.layerTransform_inv);
       this.#cached.path2D.lineTo(rawPoint.x, rawPoint.y);
+      this.#cached.rect.width += Math.max(this.#cached.rect.x - rawPoint.x, rawPoint.x - this.#cached.rect.right, 0);
+      this.#cached.rect.height += Math.max(this.#cached.rect.y - rawPoint.y, rawPoint.y - this.#cached.rect.bottom, 0);
       this.#cached.rect.x = Math.min(rawPoint.x, this.#cached.rect.x);
       this.#cached.rect.y = Math.min(rawPoint.y, this.#cached.rect.y);
-      this.#cached.rect.width = Math.max(rawPoint.x, this.#cached.rect.x + this.#cached.rect.width) - this.#cached.rect.x;
-      this.#cached.rect.height = Math.max(rawPoint.y, this.#cached.rect.y + this.#cached.rect.height) - this.#cached.rect.y;
     }
 
     finishDrawing() {
@@ -236,7 +256,7 @@ module.exports = function (meta) {
     render() {
       const ctx = this.#mainCanvas.getContext("2d");
       ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      this.#layers.forEach(layer => layer.drawOn(ctx));
+      this.#layers.forEach(layer => layer.drawOn(this.#mainCanvas));
       this.refreshViewport();
     }
   }
@@ -264,6 +284,8 @@ module.exports = function (meta) {
       this.#isVisible = true;
     }
 
+    get width() { return this.#canvas.width }
+    get height() { return this.#canvas.height }
     get canvas() { return this.#isVisible ? this.#canvas : null }
     get transform() { return this.#state.state.transform }
     get previewTransform() { return this.#previewTransform.multiply(this.transform) }
@@ -278,6 +300,7 @@ module.exports = function (meta) {
     }
 
     previewTransformBy(dM) { this.#previewTransform.preMultiplySelf(dM) }
+    previewTransformTo(M) { this.#previewTransform = M }
 
     finalizePreview() {
       this.#state.state = { ...this.#state.state, transform: this.#previewTransform.multiplySelf(this.transform) };
@@ -291,17 +314,12 @@ module.exports = function (meta) {
      * @param {number} strokeWidth 
      */
     resizeFitStroke(strokeRect, strokeWidth) {
-      const canvasRect = {
-        x1: -this.#canvas.width / 2,
-        x2: this.#canvas.width / 2,
-        y1: -this.#canvas.height / 2,
-        y2: this.#canvas.height / 2
-      }
+      const canvasRect = new DOMRect(-this.width / 2, -this.height / 2, this.width, this.height);
 
-      const dx = Math.max(0, canvasRect.x1 - (strokeRect.x1 - strokeWidth / 2), (strokeRect.x2 + strokeWidth / 2) - canvasRect.x2);
-      const dy = Math.max(0, canvasRect.y1 - (strokeRect.y1 - strokeWidth / 2), (strokeRect.y2 + strokeWidth / 2) - canvasRect.y2);
+      const dx = Math.max(0, canvasRect.left - (strokeRect.left - strokeWidth / 2), (strokeRect.right + strokeWidth / 2) - canvasRect.right);
+      const dy = Math.max(0, canvasRect.top - (strokeRect.top - strokeWidth / 2), (strokeRect.bottom + strokeWidth / 2) - canvasRect.bottom);
 
-      if(dx || dy) {
+      if (dx || dy) {
         this.#canvas.width += ~~(2 * dx);
         this.#canvas.height += ~~(2 * dy);
         this.#drawImage();
@@ -322,6 +340,7 @@ module.exports = function (meta) {
       ctx.lineCap = "round";
       ctx.lineWidth = stroke.width;
       ctx.strokeStyle = stroke.color;
+      ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
       ctx.stroke(stroke.path2D);
       ctx.restore();
     }
@@ -331,6 +350,7 @@ module.exports = function (meta) {
       ctx.save();
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
+      ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
       for (const stroke of this.strokes) {
         ctx.lineWidth = stroke.width;
         ctx.strokeStyle = stroke.color;
@@ -343,22 +363,24 @@ module.exports = function (meta) {
       if (!this.#img) return;
       const ctx = this.#canvas.getContext("2d");
       ctx.save();
-      ctx.clearRect(0, 0, this.#canvas.width, this.#canvas.height);
-      ctx.drawImage(this.#img, 0, 0);
+      ctx.clearRect(0, 0, this.width, this.height);
+      ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
+      ctx.drawImage(this.#img, -this.#img.width / 2, -this.#img.height / 2);
       ctx.restore();
     }
 
-    /** @param {CanvasRenderingContext2D} context */
-    drawOn(ctx) {
+    /** @param {OffscreenCanvas} context */
+    drawOn(canvas) {
       if (!this.canvas) return;
 
+      const ctx = canvas.getContext("2d");
       ctx.save();
       ctx.setTransform(new DOMMatrix()
-        .translateSelf(this.#canvas.width / 2, this.#canvas.height / 2)
+        .translateSelf(canvas.width / 2, canvas.height / 2)
         .multiplySelf(this.#previewTransform)
         .multiplySelf(this.transform)
       );
-      ctx.drawImage(this.canvas, -this.canvas.width / 2, -this.canvas.height / 2);
+      ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2);
       ctx.restore();
     }
 
@@ -787,7 +809,7 @@ module.exports = function (meta) {
     /** @param {{bitmap: ImageBitmap, ref: React.RefObject<any>}} props */
     ImageEditor({ bitmap, ref }) {
       const [mode, _setMode] = useState(null);
-      const [canUndoRedo, setCanUndoRedo] = useState(0); 
+      const [canUndoRedo, setCanUndoRedo] = useState(0);
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 5, color: "#000000" }));
 
@@ -797,7 +819,12 @@ module.exports = function (meta) {
       const editor = useRef(null);
       /** @type { React.RefObject<HTMLDivElement | null> } */
       const overlay = useRef(null);
-      /** @type { React.RefObject<{setValue: (value: number) => void } | null> } */
+      /** 
+       * @type { React.RefObject<{
+       * setValue: (value: number) => void,
+       * previewValue: (value: number) => void
+       * } | null> } 
+       */
       const auxRef = useRef(null);
 
       const setMode = useCallback((newVal) => {
@@ -926,14 +953,17 @@ module.exports = function (meta) {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
             const rect = e.currentTarget.getBoundingClientRect();
             const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
-            const cs = utils.getScale(editor.current.viewportTransform);
+            const viewportScale = utils.getScale(editor.current.viewportTransform);
             const boxScale = rect.width / e.currentTarget.width;
 
-            const Tx = (e.clientX - (rect.x + rect.width / 2 + ctx * boxScale)) / cs;
-            const Ty = (e.clientY - (rect.y + rect.height / 2 + cty * boxScale)) / cs;
+            const Tx = (e.clientX - (rect.x + rect.width / 2 + ctx * boxScale)) / viewportScale;
+            const Ty = (e.clientY - (rect.y + rect.height / 2 + cty * boxScale)) / viewportScale;
 
             editor.current.activeLayer.previewTransformBy(new DOMMatrix().scaleSelf(delta, delta, 1, Tx, Ty));
             editor.current.render();
+
+            const cs = utils.getScale(editor.current.activeLayer.previewTransform).toFixed(2);
+            auxRef.current?.previewValue(cs);
           } else {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
             const rect = e.currentTarget.getBoundingClientRect();
@@ -953,6 +983,9 @@ module.exports = function (meta) {
           if (mode === 3) {
             editor.current.activeLayer.finalizePreview();
             render();
+
+            const cs = utils.getScale(editor.current.activeLayer.previewTransform).toFixed(2);
+            auxRef.current?.setValue(cs);
           }
         }
       }), [mode]));
@@ -994,16 +1027,17 @@ module.exports = function (meta) {
                 const previousX = currentX - e.movementX;
                 const previousY = currentY - e.movementY;
 
-                const theta = utils.atan2(
+                const dTheta = utils.atan2(
                   previousX * currentX + previousY * currentY,
                   previousX * currentY - previousY * currentX
                 );
 
-                editor.current.activeLayer.previewTransformBy(new DOMMatrix().rotateSelf(theta));
+                editor.current.activeLayer.previewTransformBy(new DOMMatrix().rotateSelf(dTheta));
                 editor.current.render();
 
-                const cr = utils.getAngle(editor.current.activeLayer.previewTransform);
-                overlay.current.style.setProperty("--rotate", `${cr.toFixed(1)}deg`);
+                const cr = utils.getAngle(editor.current.activeLayer.previewTransform).toFixed(1);
+                overlay.current.style.setProperty("--rotate", `${cr}deg`);
+                auxRef.current?.previewValue(cr);
                 break;
               }
               case 2: {
@@ -1032,6 +1066,8 @@ module.exports = function (meta) {
               break;
             }
             case 1:
+              const cr = utils.getAngle(editor.current.activeLayer.previewTransform).toFixed(1);
+              auxRef.current?.setValue(cr);
             // Intentional fall-through
             case 2: {
               editor.current.activeLayer.finalizePreview();
@@ -1141,10 +1177,11 @@ module.exports = function (meta) {
                   decimals: 0,
                   withSlider: false,
                   value: Number(utils.getAngle(editor.current.activeLayer.transform).toFixed(1)),
-                  onChange: r => {
-                    const rot = new DOMMatrix().rotateSelf(r);
-                    editor.current.activeLayer.previewTransformBy(rot);
-                    editor.current.finalizePreview();
+                  onChange: value => {
+                    const cr = utils.getAngle(editor.current.activeLayer.transform);
+                    const r = new DOMMatrix().rotateSelf(value - cr);
+                    editor.current.activeLayer.previewTransformBy(r);
+                    editor.current.activeLayer.finalizePreview();
                     render();
                   }
                 })
@@ -1160,13 +1197,15 @@ module.exports = function (meta) {
                   maxValue: 10,
                   value: Number(utils.getScale(editor.current.activeLayer.transform).toFixed(2)),
                   onSlide: s => {
-                    const S = new DOMMatrix().scaleSelf(s, s);
-                    editor.current.activeLayer.previewTransformBy(S);
+                    const cs = utils.getScale(editor.current.activeLayer.transform);
+                    const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
+                    editor.current.activeLayer.previewTransformTo(S);
                     editor.current.render();
                   },
                   onChange: s => {
-                    const S = new DOMMatrix().scaleSelf(s, s);
-                    editor.current.activeLayer.previewTransformBy(S);
+                    const cs = utils.getScale(editor.current.activeLayer.transform);
+                    const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
+                    editor.current.activeLayer.previewTransformTo(S);
                     editor.current.activeLayer.finalizePreview();
                     render();
                   }
@@ -1266,6 +1305,7 @@ module.exports = function (meta) {
         return utils.logScaling(value, { minValue, centerValue, maxValue });
       });
       const oldValue = useRef(value);
+      const inputRef = useRef(null);
       const sliderRef = useRef(null);
 
       useImperativeHandle(ref, () => ({
@@ -1273,8 +1313,15 @@ module.exports = function (meta) {
           setTextValue(v + '');
           oldValue.current = v;
 
+          if (!withSlider) return;
           const val = utils.logScaling(v, { minValue, centerValue, maxValue });
           setSliderValue(val);
+          sliderRef.current?._reactInternals.stateNode.setState({ value: val });
+        },
+        previewValue: v => {
+          inputRef.current.value = v + '';
+          if (!withSlider) return;
+          const val = utils.logScaling(v, { minValue, centerValue, maxValue });
           sliderRef.current?._reactInternals.stateNode.setState({ value: val });
         }
       }), [minValue, centerValue, maxValue]);
@@ -1283,6 +1330,7 @@ module.exports = function (meta) {
         setTextValue(value + '');
         oldValue.current = value;
 
+        if (!withSlider) return;
         const val = utils.logScaling(value, { minValue, centerValue, maxValue });
         setSliderValue(val);
         sliderRef.current?._reactInternals.stateNode.setState({ value: val });
@@ -1300,6 +1348,7 @@ module.exports = function (meta) {
         setTextValue(oldValue.current + "");
         onChange?.(oldValue.current);
 
+        if (!withSlider) return;
         const val = utils.logScaling(oldValue.current, { minValue, centerValue, maxValue })
         setSliderValue(val);
         sliderRef.current?._reactInternals.stateNode.setState({ value: val });
@@ -1339,7 +1388,7 @@ module.exports = function (meta) {
       }, []);
 
       const handleWheel = useCallback(e => {
-        if (document.activeElement !== e.currentTarget || !e.deltaY) return;
+        if (document.activeElement !== e.currentTarget || !e.deltaY || e.buttons) return;
         const delta = -Math.sign(e.deltaY) * (decimals ? Math.pow(10, -1 * decimals) : 1);
         setTextValue(val => {
           val = (Number(val) + delta).toFixed(decimals ?? 0);
@@ -1376,6 +1425,7 @@ module.exports = function (meta) {
           jsx("input", {
             className: "number-input",
             value: textValue,
+            ref: inputRef,
             onBlur: handleTextCommit,
             onKeyDown: handleKeyDown,
             onChange: handleChange,
