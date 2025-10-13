@@ -91,7 +91,6 @@ module.exports = function (meta) {
     #mainCanvas;
     #viewportCanvas;
     #viewportTransform;
-    #viewportTransform_inv;
 
     #layers;
     #activeLayerIndex;
@@ -108,11 +107,6 @@ module.exports = function (meta) {
 
       const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
-      this.#viewportTransform_inv = new DOMMatrix()
-        .translateSelf(canvas.width / 2, canvas.height / 2)
-        .multiplySelf(this.#viewportTransform)
-        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
-        .inverse();
 
       this.#layers = [new Layer(bitmap.width, bitmap.height)];
       this.#layers[0].img = bitmap;
@@ -132,14 +126,15 @@ module.exports = function (meta) {
 
     get activeLayer() { return this.#layers[this.#activeLayerIndex] }
     get viewportTransform() { return this.#viewportTransform }
+    get #viewportTransform_inv() {return new DOMMatrix()
+      .translateSelf(canvas.width / 2, canvas.height / 2)
+      .multiplySelf(this.#viewportTransform)
+      .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+      .inverse();
+    }
 
     translateViewportBy(dx = 0, dy = 0) {
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().translateSelf(dx, dy));
-      this.#viewportTransform_inv = new DOMMatrix()
-        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-        .multiplySelf(this.#viewportTransform)
-        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
-        .inverse();
       this.refreshViewport();
     }
 
@@ -148,22 +143,12 @@ module.exports = function (meta) {
       const Ty = (y - 0.5) * this.#viewportCanvas.height;
 
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().scaleSelf(ds, ds, 1, Tx, Ty));
-      this.#viewportTransform_inv = new DOMMatrix()
-        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-        .multiplySelf(this.#viewportTransform)
-        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
-        .inverse();
       this.refreshViewport();
     }
 
     resetViewport() {
       const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
-      this.#viewportTransform_inv = new DOMMatrix()
-        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-        .multiplySelf(this.#viewportTransform)
-        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
-        .inverse();
       this.refreshViewport();
     }
 
@@ -218,6 +203,7 @@ module.exports = function (meta) {
     }
 
     finishDrawing() {
+      this.activeLayer.resizeFitStroke(this.#cached.rect, this.#cached.width);
       this.activeLayer.addStroke({
         color: this.#cached.color,
         width: this.#cached.width,
@@ -229,6 +215,7 @@ module.exports = function (meta) {
       this.#cached.path2D = new Path2D();
     }
 
+    /** @param {ImageEncodeOptions?} options */
     toBlob(options) { return this.#mainCanvas.convertToBlob(options) }
 
     refreshViewport() {
@@ -299,14 +286,28 @@ module.exports = function (meta) {
 
     toggleVisibility() { this.#isVisible = !this.#isVisible }
 
-    // resize(width, height) {
-    //   if (width === this.#canvas.width && height === this.#canvas.height) return;
+    /**
+     * @param {DOMRect} strokeRect
+     * @param {number} strokeWidth 
+     */
+    resizeFitStroke(strokeRect, strokeWidth) {
+      const canvasRect = {
+        x1: -this.#canvas.width / 2,
+        x2: this.#canvas.width / 2,
+        y1: -this.#canvas.height / 2,
+        y2: this.#canvas.height / 2
+      }
 
-    //   this.#canvas.width = width;
-    //   this.#canvas.height = height;
-    //   this.#drawImage();
-    //   this.#drawStrokes();
-    // }
+      const dx = Math.max(0, canvasRect.x1 - (strokeRect.x1 - strokeWidth / 2), (strokeRect.x2 + strokeWidth / 2) - canvasRect.x2);
+      const dy = Math.max(0, canvasRect.y1 - (strokeRect.y1 - strokeWidth / 2), (strokeRect.y2 + strokeWidth / 2) - canvasRect.y2);
+
+      if(dx || dy) {
+        this.#canvas.width += ~~(2 * dx);
+        this.#canvas.height += ~~(2 * dy);
+        this.#drawImage();
+        this.#drawStrokes();
+      }
+    }
 
     /** @param {{color: string, width: number, path2D: Path2D}} stroke  */
     addStroke(stroke) {
@@ -501,9 +502,7 @@ module.exports = function (meta) {
      * @param {number} x
      * @param {number} max
      */
-    clamp(min, x, max) {
-      return Math.max(min, Math.min(x, max));
-    },
+    clamp(min, x, max) { return Math.max(min, Math.min(x, max)) },
 
     /**
      * @param {number} x 
@@ -577,47 +576,6 @@ module.exports = function (meta) {
       }, [val, key]);
 
       return [val, setval]
-    },
-
-    /**
-     * Do **NOT** mutate the argument when setting state using a function.
-     * It will change the previous state, if the state is not primitive.
-     * @template T
-     * @param {T | () => T} initialState
-     * @returns {[T, typeof setState, { undo: () => void, redo: () => void, canUndo: boolean, canRedo: boolean }]}
-    */
-    useHistoryState(initialState) {
-      const [state, _setState] = useState(initialState);
-      const history = useRef([initialState instanceof Function ? initialState() : initialState]);
-      const pointer = useRef(0);
-
-      /** @type {(value: T | ((oldState: T) => T)) => void} */
-      const setState = useCallback(value => {
-        _setState(p => {
-          const toAdd = value instanceof Function ? value(p) : value;
-
-          history.current = history.current.slice(0, pointer.current + 1);
-          history.current.push(toAdd);
-          pointer.current++;
-          return toAdd;
-        });
-      }, [_setState]);
-
-      const undo = useCallback(() => {
-        if (pointer.current <= 0) return;
-
-        pointer.current--;
-        _setState(history.current[pointer.current]);
-      }, [_setState]);
-
-      const redo = useCallback(() => {
-        if (pointer.current + 1 >= history.current.length) return;
-
-        pointer.current++;
-        _setState(history.current[pointer.current]);
-      }, [_setState]);
-
-      return [state, setState, { undo, redo, canUndo: pointer.current > 0, canRedo: pointer.current < history.current.length - 1 }];
     },
 
     /**
@@ -710,7 +668,8 @@ module.exports = function (meta) {
      * tooltip?: string,
      * d?: string,
      * disabled?: boolean,
-     * active?: boolean}} props
+     * active?: boolean,
+     * position?: string}} props
      * */
     IconButton({ onClick, tooltip, d, disabled, active, position = 'top' }) {
       return jsx(BdApi.Components.ErrorBoundary, {
@@ -828,7 +787,7 @@ module.exports = function (meta) {
     /** @param {{bitmap: ImageBitmap, ref: React.RefObject<any>}} props */
     ImageEditor({ bitmap, ref }) {
       const [mode, _setMode] = useState(null);
-      const [canUndoRedo, setCanUndoRedo] = useState(0);
+      const [canUndoRedo, setCanUndoRedo] = useState(0); 
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 5, color: "#000000" }));
 
@@ -910,8 +869,7 @@ module.exports = function (meta) {
 
       const render = useCallback(() => {
         editor.current.render();
-        const c = editor.current.activeLayer?.canUndo << 1 ^ editor.current.activeLayer?.canRedo;
-        setCanUndoRedo(c);
+        setCanUndoRedo(editor.current.activeLayer.canUndo << 1 ^ editor.current.activeLayer.canRedo);
       }, []);
 
       useEffect(() => {
@@ -924,11 +882,11 @@ module.exports = function (meta) {
         addEventListener("keydown", e => {
           switch (e.key) {
             case e.ctrlKey && "z":
-              if (editor.current.activeLayer?.undo()) render();
+              if (editor.current.activeLayer.undo()) render();
               return;
 
             case e.ctrlKey && "y":
-              if (editor.current.activeLayer?.redo()) render();
+              if (editor.current.activeLayer.redo()) render();
               return;
 
             case !e.repeat && e.ctrlKey && "b":
@@ -993,7 +951,7 @@ module.exports = function (meta) {
         },
         onSubmit: () => {
           if (mode === 3) {
-            editor.current.activeLayer?.finalizePreview();
+            editor.current.activeLayer.finalizePreview();
             render();
           }
         }
@@ -1041,7 +999,7 @@ module.exports = function (meta) {
                   previousX * currentY - previousY * currentX
                 );
 
-                editor.current.activeLayer?.previewTransformBy(new DOMMatrix().rotateSelf(theta));
+                editor.current.activeLayer.previewTransformBy(new DOMMatrix().rotateSelf(theta));
                 editor.current.render();
 
                 const cr = utils.getAngle(editor.current.activeLayer.previewTransform);
@@ -1051,7 +1009,7 @@ module.exports = function (meta) {
               case 2: {
                 const dx = e.movementX / utils.getScale(editor.current.viewportTransform);
                 const dy = e.movementY / utils.getScale(editor.current.viewportTransform);
-                editor.current.activeLayer?.previewTransformBy(new DOMMatrix().translateSelf(dx, dy));
+                editor.current.activeLayer.previewTransformBy(new DOMMatrix().translateSelf(dx, dy));
                 editor.current.render();
                 break;
               }
@@ -1076,7 +1034,7 @@ module.exports = function (meta) {
             case 1:
             // Intentional fall-through
             case 2: {
-              editor.current.activeLayer?.finalizePreview();
+              editor.current.activeLayer.finalizePreview();
               render();
               break;
             }
@@ -1175,52 +1133,45 @@ module.exports = function (meta) {
               //     }),
               //   ]
               // }),
-              // mode == 1 && jsx("div", {
-              //   className: "aux-input",
-              //   children: jsx(Components.NumberSlider, {
-              //     ref: auxRef,
-              //     suffix: "°",
-              //     decimals: 0,
-              //     withSlider: false,
-              //     value: Number(utils.getAngle(transform.M).toFixed(1)),
-              //     onChange: r => setTransform(T => {
-              //       const current = Number(utils.getAngle(T.M).toFixed(1));
-              //       return { ...T, M: new DOMMatrix().rotateSelf(r - current).multiplySelf(T.M) };
-              //     })
-              //   })
-              // }),
-              // mode == 3 && jsx("div", {
-              //   className: "aux-input",
-              //   children: jsx(Components.NumberSlider, {
-              //     ref: auxRef,
-              //     suffix: "x",
-              //     decimals: 2,
-              //     minValue: 0.01,
-              //     centerValue: 1,
-              //     maxValue: 10,
-              //     value: Number(Math.hypot(transform.M.a, transform.M.b).toFixed(2)),
-              //     onSlide: value => {
-              //       const [scaleX, scaleY] = utils.getScales(transform.M);
-              //       const N = new DOMMatrix().scaleSelf(1 / scaleX, 1 / scaleY);
-
-              //       utils.draw([bitmap, strokeCanvas.current], mainCanvas.current, {
-              //         ...transform,
-              //         M: new DOMMatrix().scaleSelf(value, value).multiplySelf(N).multiplySelf(transform.M)
-              //       });
-              //     },
-              //     onChange: value => {
-              //       setTransform(T => {
-              //         const [scaleX, scaleY] = utils.getScales(T.M);
-              //         const N = new DOMMatrix().scaleSelf(1 / scaleX, 1 / scaleY);
-
-              //         return {
-              //           ...T,
-              //           M: new DOMMatrix().scaleSelf(value, value).multiplySelf(N).multiplySelf(T.M)
-              //         }
-              //       })
-              //     }
-              //   })
-              // }),
+              mode == 1 && jsx("div", {
+                className: "aux-input",
+                children: jsx(Components.NumberSlider, {
+                  ref: auxRef,
+                  suffix: "°",
+                  decimals: 0,
+                  withSlider: false,
+                  value: Number(utils.getAngle(editor.current.activeLayer.transform).toFixed(1)),
+                  onChange: r => {
+                    const rot = new DOMMatrix().rotateSelf(r);
+                    editor.current.activeLayer.previewTransformBy(rot);
+                    editor.current.finalizePreview();
+                    render();
+                  }
+                })
+              }),
+              mode == 3 && jsx("div", {
+                className: "aux-input",
+                children: jsx(Components.NumberSlider, {
+                  ref: auxRef,
+                  suffix: "x",
+                  decimals: 2,
+                  minValue: 0.01,
+                  centerValue: 1,
+                  maxValue: 10,
+                  value: Number(utils.getScale(editor.current.activeLayer.transform).toFixed(2)),
+                  onSlide: s => {
+                    const S = new DOMMatrix().scaleSelf(s, s);
+                    editor.current.activeLayer.previewTransformBy(S);
+                    editor.current.render();
+                  },
+                  onChange: s => {
+                    const S = new DOMMatrix().scaleSelf(s, s);
+                    editor.current.activeLayer.previewTransformBy(S);
+                    editor.current.activeLayer.finalizePreview();
+                    render();
+                  }
+                })
+              }),
               mode == 4 && jsx("div", {
                 className: "aux-input",
                 children: [
@@ -1280,13 +1231,13 @@ module.exports = function (meta) {
               jsx(Components.IconButton, {
                 tooltip: "Undo (Ctrl + Z)",
                 d: utils.paths.Undo,
-                onClick: () => { if (editor.current.activeLayer?.undo()) render() },
+                onClick: () => { if (editor.current.activeLayer.undo()) render() },
                 disabled: !(canUndoRedo & 2)
               }),
               jsx(Components.IconButton, {
                 tooltip: "Redo (Ctrl + Y)",
                 d: utils.paths.Redo,
-                onClick: () => { if (editor.current.activeLayer?.redo()) render() },
+                onClick: () => { if (editor.current.activeLayer.redo()) render() },
                 disabled: !(canUndoRedo & 1)
               }),
             ]
