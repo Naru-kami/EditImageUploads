@@ -91,12 +91,11 @@ module.exports = function (meta) {
     #mainCanvas;
     #viewportCanvas;
     #viewportTransform;
-    #viewportTransform_inv;
 
     #layers;
     #activeLayerIndex;
 
-    #cached;
+    #drawingCache;
 
     /** 
      * @param {HTMLCanvasElement} canvas
@@ -108,25 +107,26 @@ module.exports = function (meta) {
 
       const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
-      this.#viewportTransform_inv = new DOMMatrix()
-        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-        .multiplySelf(this.#viewportTransform)
-        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
-        .invertSelf();
 
       this.#layers = [new Layer(bitmap.width, bitmap.height)];
       this.#layers[0].img = bitmap;
       this.#activeLayerIndex = 0;
       this.render();
 
-      this.#cached = {
+      this.#drawingCache = {
         canvas: new OffscreenCanvas(this.#mainCanvas.width, this.#mainCanvas.height),
         path2D: new Path2D(),
         lastPoint: new DOMPoint(),
         layerTransform_inv: new DOMMatrix(),
+        viewportTransform_inv: new DOMMatrix()
+          .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+          .multiplySelf(this.#viewportTransform)
+          .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+          .invertSelf(),
         rect: new DOMRect(),
         width: 0,
         color: "#000",
+        stale: false,
       };
     }
 
@@ -136,12 +136,7 @@ module.exports = function (meta) {
     translateViewportBy(dx = 0, dy = 0) {
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().translateSelf(dx, dy));
       this.refreshViewport();
-
-      this.#viewportTransform_inv = new DOMMatrix()
-        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-        .multiplySelf(this.#viewportTransform)
-        .translateSelf(-this.activeLayer.width / 2, -this.activeLayer.height / 2)
-        .invertSelf();
+      this.#drawingCache.stale = true;
     }
 
     scaleViewportBy(ds = 1, x = 0.5, y = 0.5) {
@@ -150,24 +145,14 @@ module.exports = function (meta) {
 
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().scaleSelf(ds, ds, 1, Tx, Ty));
       this.refreshViewport();
-
-      this.#viewportTransform_inv = new DOMMatrix()
-        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-        .multiplySelf(this.#viewportTransform)
-        .translateSelf(-this.activeLayer.width / 2, -this.activeLayer.height / 2)
-        .invertSelf();
+      this.#drawingCache.stale = true;
     }
 
     resetViewport() {
       const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       this.refreshViewport();
-
-      this.#viewportTransform_inv = new DOMMatrix()
-        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-        .multiplySelf(this.#viewportTransform)
-        .translateSelf(-this.activeLayer.width / 2, -this.activeLayer.height / 2)
-        .invertSelf();
+      this.#drawingCache.stale = true;
     }
 
     /** 
@@ -177,62 +162,111 @@ module.exports = function (meta) {
      */
     startDrawing(startPoint, width, color) {
       const bottomCtx = this.#mainCanvas.getContext("2d");
-      const topCtx = this.#cached.canvas.getContext("2d");
+      const topCtx = this.#drawingCache.canvas.getContext("2d");
+      bottomCtx.save();
       bottomCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      topCtx.clearRect(0, 0, this.#cached.canvas.width, this.#cached.canvas.height);
+      topCtx.clearRect(0, 0, this.#drawingCache.canvas.width, this.#drawingCache.canvas.height);
       this.#layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(this.#mainCanvas));
-      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(this.#cached.canvas));
+      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(this.#drawingCache.canvas));
 
-      this.#cached.width = width;
-      this.#cached.color = color;
+      if (this.#drawingCache.stale) {
+        this.#drawingCache.viewportTransform_inv = new DOMMatrix()
+          .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+          .multiplySelf(this.#viewportTransform)
+          .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+          .invertSelf();
+        this.#drawingCache.stale = false;
+      }
 
-      this.#cached.layerTransform_inv = new DOMMatrix()
-        .translateSelf(this.activeLayer.width / 2, this.activeLayer.height / 2)
+      this.#drawingCache.width = width;
+      this.#drawingCache.color = color;
+      this.#drawingCache.layerTransform_inv = new DOMMatrix()
+        .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
         .multiplySelf(this.activeLayer.transform).invertSelf();
-      this.#cached.lastPoint = startPoint.matrixTransform(this.#viewportTransform_inv);
-      const rawPoint = this.#cached.lastPoint.matrixTransform(this.#cached.layerTransform_inv);
-      this.#cached.path2D.moveTo(rawPoint.x, rawPoint.y);
-      this.#cached.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
+
+      this.#drawingCache.lastPoint = startPoint.matrixTransform(this.#drawingCache.viewportTransform_inv);
+      bottomCtx.beginPath();
+      bottomCtx.moveTo(this.#drawingCache.lastPoint.x, this.#drawingCache.lastPoint.y);
+
+      const rawPoint = this.#drawingCache.lastPoint.matrixTransform(this.#drawingCache.layerTransform_inv);
+      this.#drawingCache.path2D.moveTo(rawPoint.x, rawPoint.y);
+      this.#drawingCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
     }
 
     /** @param {DOMPoint} to */
     drawLine(to) {
+      if (this.#drawingCache.stale) {
+        this.#drawingCache.viewportTransform_inv = new DOMMatrix()
+          .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+          .multiplySelf(this.#viewportTransform)
+          .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+          .invertSelf();
+        this.#drawingCache.stale = false;
+      }
       const bottomCtx = this.#mainCanvas.getContext("2d");
-      const to_inv = to.matrixTransform(this.#viewportTransform_inv);
+      const to_inv = to.matrixTransform(this.#drawingCache.viewportTransform_inv);
 
-      bottomCtx.strokeStyle = this.#cached.color;
-      bottomCtx.lineWidth = this.#cached.width;
+      // out of bounds
+      const isOOB =
+        to_inv.x < -this.#drawingCache.width / 2 ||
+        to_inv.x > this.#mainCanvas.width + this.#drawingCache.width / 2 ||
+        to_inv.y < -this.#drawingCache.height / 2 ||
+        to_inv.y > this.#mainCanvas.height + this.#drawingCache.height / 2;
+      const prevIsOOB =
+        this.#drawingCache.lastPoint.x < -this.#drawingCache.width / 2 ||
+        this.#drawingCache.lastPoint.x > this.#mainCanvas.width + this.#drawingCache.width / 2 ||
+        this.#drawingCache.lastPoint.y < -this.#drawingCache.height / 2 ||
+        this.#drawingCache.lastPoint.y > this.#mainCanvas.height + this.#drawingCache.height / 2;
+
+      if (prevIsOOB && isOOB) {
+        this.#drawingCache.lastPoint = to_inv;
+        return;
+      }
+
+      bottomCtx.strokeStyle = this.#drawingCache.color;
+      bottomCtx.lineWidth = this.#drawingCache.width;
       bottomCtx.lineCap = "round";
       bottomCtx.lineJoin = "round";
 
-      bottomCtx.beginPath();
-      bottomCtx.moveTo(this.#cached.lastPoint.x, this.#cached.lastPoint.y);
+      if (!isOOB && prevIsOOB) {
+        const rawLast = this.#drawingCache.lastPoint.matrixTransform(this.#drawingCache.layerTransform_inv);
+        this.#drawingCache.path2D.moveTo(rawLast.x, rawLast.y);
+        bottomCtx.moveTo(this.#drawingCache.lastPoint.x, this.#drawingCache.lastPoint.y);
+      }
+
       bottomCtx.lineTo(to_inv.x, to_inv.y);
       bottomCtx.stroke();
 
-      bottomCtx.drawImage(this.#cached.canvas, 0, 0);
+      bottomCtx.drawImage(this.#drawingCache.canvas, 0, 0);
       this.refreshViewport();
 
-      this.#cached.lastPoint = to_inv;
-      const rawPoint = to_inv.matrixTransform(this.#cached.layerTransform_inv);
-      this.#cached.path2D.lineTo(rawPoint.x, rawPoint.y);
-      this.#cached.rect.width += Math.max(this.#cached.rect.x - rawPoint.x, rawPoint.x - this.#cached.rect.right, 0);
-      this.#cached.rect.height += Math.max(this.#cached.rect.y - rawPoint.y, rawPoint.y - this.#cached.rect.bottom, 0);
-      this.#cached.rect.x = Math.min(rawPoint.x, this.#cached.rect.x);
-      this.#cached.rect.y = Math.min(rawPoint.y, this.#cached.rect.y);
+      this.#drawingCache.lastPoint = to_inv;
+      const rawPoint = to_inv.matrixTransform(this.#drawingCache.layerTransform_inv);
+      this.#drawingCache.path2D.lineTo(rawPoint.x, rawPoint.y);
+
+      this.#drawingCache.rect.width += Math.max(this.#drawingCache.rect.x - rawPoint.x, rawPoint.x - this.#drawingCache.rect.right, 0);
+      this.#drawingCache.rect.height += Math.max(this.#drawingCache.rect.y - rawPoint.y, rawPoint.y - this.#drawingCache.rect.bottom, 0);
+      this.#drawingCache.rect.x = Math.min(rawPoint.x, this.#drawingCache.rect.x);
+      this.#drawingCache.rect.y = Math.min(rawPoint.y, this.#drawingCache.rect.y);
     }
 
     finishDrawing() {
-      this.activeLayer.resizeFitStroke(this.#cached.rect, this.#cached.width);
+      const rawClipPath = new Path2D();
+      rawClipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      const clipPath = new Path2D();
+      clipPath.addPath(rawClipPath, this.#drawingCache.layerTransform_inv);
+
+      this.activeLayer.resizeFitStroke(this.#drawingCache.rect, this.#drawingCache.width);
       this.activeLayer.addStroke({
-        color: this.#cached.color,
-        width: this.#cached.width,
-        path2D: this.#cached.path2D
+        color: this.#drawingCache.color,
+        width: this.#drawingCache.width,
+        path2D: this.#drawingCache.path2D,
+        clipPath
       });
 
-      const cachedCtx = this.#cached.canvas.getContext("2d");
-      cachedCtx.clearRect(0, 0, this.#cached.canvas.width, this.#cached.canvas.height);
-      this.#cached.path2D = new Path2D();
+      this.#mainCanvas.getContext("2d").restore();
+      this.#drawingCache.canvas.getContext("2d").clearRect(0, 0, this.#drawingCache.canvas.width, this.#drawingCache.canvas.height);
+      this.#drawingCache.path2D = new Path2D();
     }
 
     /** @param {ImageEncodeOptions?} options */
@@ -277,7 +311,7 @@ module.exports = function (meta) {
       this.#canvas = new OffscreenCanvas(width, height);
       this.#state = new utils.StateHistory({
         transform: new DOMMatrix(),
-        /** @type {{color: string, width: number, path2D: Path2D}[]} */
+        /** @type {{color: string, width: number, path2D: Path2D, clipPath: Path2D}[]} */
         strokes: []
       });
       this.#previewTransform = new DOMMatrix();
@@ -327,12 +361,13 @@ module.exports = function (meta) {
       }
     }
 
-    /** @param {{color: string, width: number, path2D: Path2D}} stroke  */
+    /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D}} stroke  */
     addStroke(stroke) {
       this.#state.state = { ...this.#state.state, strokes: [...this.strokes, stroke] };
       this.#drawStroke(stroke);
     }
 
+    /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D}} stroke  */
     #drawStroke(stroke) {
       const ctx = this.#canvas.getContext("2d");
       ctx.save();
@@ -341,6 +376,7 @@ module.exports = function (meta) {
       ctx.lineWidth = stroke.width;
       ctx.strokeStyle = stroke.color;
       ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
+      ctx.clip(stroke.clipPath);
       ctx.stroke(stroke.path2D);
       ctx.restore();
     }
@@ -352,9 +388,12 @@ module.exports = function (meta) {
       ctx.lineCap = "round";
       ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
       for (const stroke of this.strokes) {
+        ctx.save();
         ctx.lineWidth = stroke.width;
         ctx.strokeStyle = stroke.color;
+        ctx.clip(stroke.clipPath);
         ctx.stroke(stroke.path2D);
+        ctx.restore();
       }
       ctx.restore();
     }
