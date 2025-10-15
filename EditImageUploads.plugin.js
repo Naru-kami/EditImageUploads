@@ -1030,9 +1030,16 @@ module.exports = function (meta) {
       }), [mode]));
 
       const pointerHandlers = hooks.usePointerCapture({
-        onStart: (e) => {
+        onStart: (e, store) => {
+          Object.assign(store, {
+            changed: false,
+            startX: e.clientX,
+            startY: e.clientY,
+            rect: e.currentTarget.getBoundingClientRect()
+          });
+
           if (mode === 4) {
-            const rect = e.currentTarget.getBoundingClientRect();
+            const { rect } = store;
             const boxScale = rect.width / e.currentTarget.width;
             const startX = (e.clientX - rect.x) * boxScale;
             const startY = (e.clientY - rect.y) * boxScale;
@@ -1040,10 +1047,10 @@ module.exports = function (meta) {
           }
         },
         onChange: (e, store) => {
-          if (e.buttons & 4 || mode == null) {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const dx = e.movementX / rect.width * e.currentTarget.width;
-            const dy = e.movementY / rect.height * e.currentTarget.height;
+          if (e.buttons & 4 || mode == null || mode == 3) {
+            const { rect } = store;
+            const dx = (e.clientX - store.startX) / rect.width * e.currentTarget.width;
+            const dy = (e.clientY - store.startY) / rect.height * e.currentTarget.height;
             editor.current.translateViewportBy(dx, dy);
             if (mode == 1) {
               const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
@@ -1056,15 +1063,15 @@ module.exports = function (meta) {
                 break;
               }
               case 1: {
-                const rect = e.currentTarget.getBoundingClientRect();
+                const { rect } = store;
                 const currentTranslate = utils.getTranslate(editor.current.viewportTransform);
                 const boxScale = rect.width / e.currentTarget.width;
 
                 const currentX = e.clientX - (rect.x + rect.width / 2 + currentTranslate.x * boxScale);
                 const currentY = e.clientY - (rect.y + rect.height / 2 + currentTranslate.y * boxScale);
 
-                const previousX = currentX - e.movementX;
-                const previousY = currentY - e.movementY;
+                const previousX = currentX - (e.clientX - store.startX);
+                const previousY = currentY - (e.clientY - store.startY);
 
                 const dTheta = utils.atan2(
                   previousX * currentX + previousY * currentY,
@@ -1080,14 +1087,14 @@ module.exports = function (meta) {
                 break;
               }
               case 2: {
-                const dx = e.movementX / utils.getScale(editor.current.viewportTransform);
-                const dy = e.movementY / utils.getScale(editor.current.viewportTransform);
+                const dx = (e.clientX - store.startX) / utils.getScale(editor.current.viewportTransform);
+                const dy = (e.clientY - store.startY) / utils.getScale(editor.current.viewportTransform);
                 editor.current.activeLayer.previewTransformBy(new DOMMatrix().translateSelf(dx, dy));
                 editor.current.render();
                 break;
               }
               case 4: {
-                const rect = e.currentTarget.getBoundingClientRect();
+                const { rect } = store;
                 const boxScale = rect.width / e.currentTarget.width;
                 const startX = (e.clientX - rect.x) * boxScale;
                 const startY = (e.clientY - rect.y) * boxScale;
@@ -1096,6 +1103,10 @@ module.exports = function (meta) {
               }
             }
           }
+          Object.assign(store, {
+            startX: e.clientX,
+            startY: e.clientY
+          });
         },
         onSubmit: (e, store) => {
           if (!store.changed) return;
@@ -1121,6 +1132,16 @@ module.exports = function (meta) {
           }
         }
       });
+
+      /** @type {(e: React.MouseEvent) => void} */
+      const handleMouseMove = useCallback(e => {
+        if (mode !== 4) return;
+
+        const tx = e.clientX - e.currentTarget.offsetLeft + e.currentTarget.offsetWidth / 2;
+        const ty = e.clientY - e.currentTarget.offsetTop + e.currentTarget.offsetHeight / 2;
+
+        overlay.current.style.setProperty("--mouse-pos", `${tx}px ${ty}px`);
+      }, [mode])
 
       return jsx("div", {
         className: "image-editor",
@@ -1152,6 +1173,7 @@ module.exports = function (meta) {
                 className: ["canvas", ["cropping", "rotating", "moving", "scaling", "drawing"][mode]].filter(Boolean).join(" "),
                 ref: canvasRef,
                 onWheel: handleWheel,
+                onMouseMove: handleMouseMove,
                 ...pointerHandlers,
               }),
               jsx("div", {
@@ -1268,9 +1290,9 @@ module.exports = function (meta) {
                     value: strokeStyle.width,
                     onSlide: value => {
                       overlay.current.style.setProperty("--brushsize", value);
+                      overlay.current.style.setProperty("--mouse-pos", "0px 0px");
                     },
                     onChange: v => {
-                      overlay.current.style.removeProperty("--brushsize");
                       setStrokeStyle(s => ({ ...s, width: v }))
                     }
                   })
@@ -1605,10 +1627,13 @@ module.exports = function (meta) {
   bottom: calc(100% - var(--y2, 0%));
 }
 
-.canvas.drawing + .canvas-overlay {
+.canvas.drawing + .canvas-overlay > .cropper-border {
+  position: absolute;
+  inset: 0;
   margin: auto;
-  opacity: calc(var(--brushsize, 0) / var(--brushsize, 1));
   width: calc(1px * var(--brushsize, 0) - 1px);
+  translate: -50% -50%;
+  transform: translate(var(--mouse-pos));
   aspect-ratio: 1 / 1;
   border: 1px solid black;
   outline: 1px dashed white;
