@@ -30,6 +30,7 @@ module.exports = function (meta) {
     });
 
     Object.assign(internals, {
+      SelectedChannelStore: Webpack.getStore("SelectedChannelStore"),
       keys: {
         ...utils.getKeysInModule(internals.uploadCard, {
           uploadCard: ".attachmentItemSmall]:",
@@ -774,11 +775,13 @@ module.exports = function (meta) {
     },
 
     RemixIcon({ url }) {
+      const [fetching, setFetching] = useState(false);
       const userActions = useRef(null);
 
       return jsx(Components.IconButton, {
-        onClick: async () => {
+        onClick: !fetching ? async () => {
           try {
+            setFetching(true);
             const response = await fetch(url); // BdApi.Net.fetch will reject blobs
             const blob = await response.blob();
             const bitmap = await createImageBitmap(blob);
@@ -800,11 +803,13 @@ module.exports = function (meta) {
                   ready: !!e.transitionState,
                 }),
               }))
-            )
+            );
+            setFetching(false);
           } catch (e) {
+            setFetching(false);
             UI.showToast("Could not fetch image.", { type: "error" });
           }
-        },
+        } : null,
         position: 'bottom',
         tooltip: "Edit Image",
         d: utils.paths.Main
@@ -912,7 +917,7 @@ module.exports = function (meta) {
                 origin: "clipboard",
                 platform: 1
               },
-              channelId: "1227067387971375175",
+              channelId: SelectedChannelStore.getCurrentlySelectedChannelId(),
               showLargeMessageDialog: false,
               draftType: 0,
             })
