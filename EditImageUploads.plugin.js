@@ -796,7 +796,8 @@ module.exports = function (meta) {
                 },
                 children: jsx(Components.ImageEditor, {
                   bitmap,
-                  ref: userActions
+                  ref: userActions,
+                  ready: !!e.transitionState,
                 }),
               }))
             )
@@ -833,6 +834,7 @@ module.exports = function (meta) {
                 children: jsx(Components.ImageEditor, {
                   bitmap,
                   ref: userActions,
+                  ready: !!e.transitionState,
                 }),
               }))
             )
@@ -846,7 +848,7 @@ module.exports = function (meta) {
     },
 
     /** @param {{bitmap: ImageBitmap, ref: React.RefObject<any>}} props */
-    ImageEditor({ bitmap, ref }) {
+    ImageEditor({ bitmap, ref, ready }) {
       const [mode, _setMode] = useState(null);
       const [canUndoRedo, setCanUndoRedo] = useState(0);
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
@@ -865,22 +867,13 @@ module.exports = function (meta) {
       const setMode = useCallback((newVal) => {
         _setMode((oldMode) => {
           const newMode = newVal instanceof Function ? newVal(oldMode) : newVal;
-          ["--translate", "--rotate", "--brushsize", "--brushscale", "--mouse-pos"]
+          ["--translate"]
             .forEach(prop => overlay.current.style.removeProperty(prop));
           switch (newMode) {
             case 1: {
               const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
-              const cr = utils.getAngle(editor.current.activeLayer.transform);
               overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
-              overlay.current.style.setProperty("--rotate", `${cr.toFixed(1)}deg`);
               break;
-            }
-            case 4: {
-              const rect = canvasRef.current.getBoundingClientRect();
-              const boxScale = rect.width / canvasRef.current.width;
-              const cs = utils.getScale(editor.current.viewportTransform);
-              overlay.current.style.setProperty("--brushscale", (cs * boxScale).toFixed(4));
-              overlay.current.style.setProperty("--brushsize", strokeStyle.width);
             }
           }
           return newMode;
@@ -934,26 +927,14 @@ module.exports = function (meta) {
       }, []);
 
       useEffect(() => {
-        let first = true;
         const obs = new ResizeObserver(([entry]) => {
-          if (first) {
-            first = false;
-            return;
-          }
           canvasRect.current = entry.target.getBoundingClientRect();
         });
         obs.observe(canvasRef.current);
 
         const rect = canvasRef.current.offsetParent.getBoundingClientRect();
-        canvasRect.current = new DOMRect(
-          (rect.x - (1 / 0.7 - 1) * rect.width / 2),
-          (rect.y - (1 / 0.7 - 1) * rect.height / 2) - 14,
-          (rect.width / 0.7),
-          (rect.height / 0.7),
-        );
-
-        canvasRef.current.width = ~~canvasRect.current.width;
-        canvasRef.current.height = ~~canvasRect.current.height;
+        canvasRef.current.width = ~~(rect.width / 0.7);
+        canvasRef.current.height = ~~(rect.height / 0.7);
         editor.current = new CanvasEditor(canvasRef.current, bitmap);
 
         const ctrl = new AbortController();
@@ -969,12 +950,6 @@ module.exports = function (meta) {
 
             case !e.repeat && e.ctrlKey && "b":
               editor.current.resetViewport();
-              if (canvasRef.current?.matches(".drawing")) {
-                const rect = canvasRef.current.getBoundingClientRect();
-                const boxScale = rect.width / canvasRef.current.width;
-                const cs = utils.getScale(editor.current.viewportTransform);
-                overlay.current.style.setProperty("--brushscale", (cs * boxScale).toFixed(4));
-              }
               if (canvasRef.current?.matches(".rotating")) {
                 overlay.current.style.removeProperty("--translate");
               }
@@ -1006,18 +981,22 @@ module.exports = function (meta) {
         return () => { ctrl.abort(); obs.disconnect(); }
       }, []);
 
+      useEffect(() => {
+        if (ready) {
+          canvasRect.current = canvasRef.current.getBoundingClientRect();
+        }
+      }, [ready]);
+
       const handleWheel = hooks.useDebouncedWheel({
         onChange: (e) => {
           if (mode === 3) {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
-            const rect = e.currentTarget.getBoundingClientRect();
-            console.log(rect, canvasRect.current)
             const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
             const viewportScale = utils.getScale(editor.current.viewportTransform);
-            const boxScale = rect.width / e.currentTarget.width;
+            const boxScale = canvasRect.current.width / e.currentTarget.width;
 
-            const Tx = (e.clientX - (rect.x + rect.width / 2 + ctx * boxScale)) / viewportScale;
-            const Ty = (e.clientY - (rect.y + rect.height / 2 + cty * boxScale)) / viewportScale;
+            const Tx = (e.clientX - (canvasRect.current.x + canvasRect.current.width / 2 + ctx * boxScale)) / viewportScale;
+            const Ty = (e.clientY - (canvasRect.current.y + canvasRect.current.height / 2 + cty * boxScale)) / viewportScale;
 
             editor.current.activeLayer.previewTransformBy(new DOMMatrix().scaleSelf(delta, delta, 1, Tx, Ty));
             editor.current.render();
@@ -1026,23 +1005,13 @@ module.exports = function (meta) {
             auxRef.current?.previewValue(cs);
           } else {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
-            const rect = e.currentTarget.getBoundingClientRect();
-            console.log(rect, canvasRect.current)
-            const x = (e.clientX - rect.x) / rect.width;
-            const y = (e.clientY - rect.y) / rect.height;
+            const x = (e.clientX - canvasRect.current.x) / canvasRect.current.width;
+            const y = (e.clientY - canvasRect.current.y) / canvasRect.current.height;
             editor.current.scaleViewportBy(delta, x, y);
 
             if (mode == 1) {
               const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
-              const cr = utils.getAngle(editor.current.activeLayer.previewTransform);
               overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
-              overlay.current.style.setProperty("--rotate", `${cr.toFixed(1)}deg`);
-            } else if (mode == 4) {
-              const rect = canvasRef.current.getBoundingClientRect();
-              const boxScale = rect.width / canvasRef.current.width;
-              const cs = utils.getScale(editor.current.viewportTransform);
-              overlay.current.style.setProperty("--brushscale", (cs * boxScale).toFixed(4));
-              overlay.current.style.setProperty("--brushsize", strokeStyle.width);
             }
           }
         },
@@ -1066,20 +1035,16 @@ module.exports = function (meta) {
           });
 
           if (mode === 4) {
-            const rect = e.currentTarget.getBoundingClientRect();
-            console.log(rect, canvasRect.current)
-            const boxScale = rect.width / e.currentTarget.width;
-            const startX = (e.clientX - rect.x) / boxScale;
-            const startY = (e.clientY - rect.y) / boxScale;
+            const boxScale = canvasRect.current.width / e.currentTarget.width;
+            const startX = (e.clientX - canvasRect.current.x) / boxScale;
+            const startY = (e.clientY - canvasRect.current.y) / boxScale;
             editor.current.startDrawing(new DOMPoint(startX, startY), strokeStyle.width, strokeStyle.color);
           }
         },
         onChange: (e, store) => {
           if (e.buttons & 4 || mode == null || mode == 3) {
-            const rect = e.currentTarget.getBoundingClientRect();
-            console.log(rect, canvasRect.current)
-            const dx = (e.clientX - store.startX) / rect.width * e.currentTarget.width;
-            const dy = (e.clientY - store.startY) / rect.height * e.currentTarget.height;
+            const dx = (e.clientX - store.startX) / canvasRect.current.width * e.currentTarget.width;
+            const dy = (e.clientY - store.startY) / canvasRect.current.height * e.currentTarget.height;
             editor.current.translateViewportBy(dx, dy);
             if (mode == 1) {
               const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
@@ -1092,13 +1057,11 @@ module.exports = function (meta) {
                 break;
               }
               case 1: {
-                const rect = e.currentTarget.getBoundingClientRect();
-                console.log(rect, canvasRect.current)
                 const currentTranslate = utils.getTranslate(editor.current.viewportTransform);
-                const boxScale = rect.width / e.currentTarget.width;
+                const boxScale = canvasRect.current.width / e.currentTarget.width;
 
-                const currentX = e.clientX - (rect.x + rect.width / 2 + currentTranslate.x * boxScale);
-                const currentY = e.clientY - (rect.y + rect.height / 2 + currentTranslate.y * boxScale);
+                const currentX = e.clientX - (canvasRect.current.x + canvasRect.current.width / 2 + currentTranslate.x * boxScale);
+                const currentY = e.clientY - (canvasRect.current.y + canvasRect.current.height / 2 + currentTranslate.y * boxScale);
 
                 const previousX = currentX - (e.clientX - store.startX);
                 const previousY = currentY - (e.clientY - store.startY);
@@ -1112,7 +1075,6 @@ module.exports = function (meta) {
                 editor.current.render();
 
                 const cr = utils.getAngle(editor.current.activeLayer.previewTransform).toFixed(1);
-                overlay.current.style.setProperty("--rotate", `${cr}deg`);
                 auxRef.current?.previewValue(cr);
                 break;
               }
@@ -1124,11 +1086,9 @@ module.exports = function (meta) {
                 break;
               }
               case 4: {
-                const rect = e.currentTarget.getBoundingClientRect();
-                console.log(rect, canvasRect.current)
-                const boxScale = rect.width / e.currentTarget.width;
-                const startX = (e.clientX - rect.x) / boxScale;
-                const startY = (e.clientY - rect.y) / boxScale;
+                const boxScale = canvasRect.current.width / e.currentTarget.width;
+                const startX = (e.clientX - canvasRect.current.x) / boxScale;
+                const startY = (e.clientY - canvasRect.current.y) / boxScale;
                 editor.current.drawLine(new DOMPoint(startX, startY));
                 break;
               }
@@ -1164,17 +1124,6 @@ module.exports = function (meta) {
         }
       });
 
-      /** @type {(e: React.MouseEvent) => void} */
-      const handleMouseMove = useCallback(e => {
-        if (mode !== 4) return;
-
-        const rect = e.currentTarget.getBoundingClientRect();
-        const tx = e.clientX - rect.x - rect.width / 2;
-        const ty = e.clientY - rect.y - rect.height / 2;
-
-        overlay.current.style.setProperty("--mouse-pos", `${tx}px, ${ty}px`);
-      }, [mode])
-
       return jsx("div", {
         className: "image-editor",
         children: [
@@ -1205,7 +1154,6 @@ module.exports = function (meta) {
                 className: ["canvas", ["cropping", "rotating", "moving", "scaling", "drawing"][mode]].filter(Boolean).join(" "),
                 ref: canvasRef,
                 onWheel: handleWheel,
-                onMouseMove: handleMouseMove,
                 ...pointerHandlers,
               }),
               jsx("div", {
@@ -1321,19 +1269,12 @@ module.exports = function (meta) {
                     maxValue: 400,
                     value: strokeStyle.width,
                     onSlide: value => {
-                      const rect = canvasRef.current.getBoundingClientRect();
-                      const boxScale = rect.width / canvasRef.current.width;
+                      const boxScale = canvasRect.current.width / canvasRef.current.width;
                       const cs = utils.getScale(editor.current.viewportTransform);
-                      overlay.current.style.setProperty("--brushscale", (cs * boxScale).toFixed(4));
-                      overlay.current.style.setProperty("--brushsize", value);
-                      overlay.current.style.setProperty("--mouse-pos", "0px, 0px");
+                      overlay.current.style.setProperty("--brushsize", (value * cs * boxScale).toFixed(4));
                     },
                     onChange: value => {
-                      const rect = canvasRef.current.getBoundingClientRect();
-                      const boxScale = rect.width / canvasRef.current.width;
-                      const cs = utils.getScale(editor.current.viewportTransform);
-                      overlay.current.style.setProperty("--brushscale", (cs * boxScale).toFixed(4));
-                      overlay.current.style.setProperty("--brushsize", value);
+                      overlay.current.style.removeProperty("--brushsize");
                       setStrokeStyle(s => ({ ...s, width: value }));
                     }
                   })
@@ -1626,7 +1567,6 @@ module.exports = function (meta) {
   inset: 0;
   margin: auto;
   translate: var(--translate, 0px) 0px;
-  rotate: var(--rotate, 0deg);
   border-radius: 100vmax;
   width: 15px;
   aspect-ratio: 1;
@@ -1672,8 +1612,8 @@ module.exports = function (meta) {
   position: absolute;
   inset: 0;
   margin: auto;
-  width: calc(1px * var(--brushscale, 1) * var(--brushsize, 0) - 1px);
-  transform: translate3d(var(--mouse-pos), 0px);
+  opactiy: calc(var(--brushsize, 0) / var(--brushsize, 1));
+  width: calc(1px * var(--brushsize, 0) - 1px);
   aspect-ratio: 1 / 1;
   border: 1px solid black;
   outline: 1px dashed white;
