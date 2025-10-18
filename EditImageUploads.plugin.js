@@ -745,14 +745,15 @@ module.exports = function (meta) {
         if (!e.deltaY) return;
 
         if (timer.current == null) {
-          onStart?.(e, smolStore);
+          onStart?.(e, smolStore.current);
         }
 
-        onChange?.(e, smolStore);
+        onChange?.(e, smolStore.current);
 
         timer.current && clearTimeout(timer.current);
         timer.current = setTimeout(() => {
-          onSubmit?.(e, smolStore);
+          onSubmit?.(e, smolStore.current);
+          smolStore.current = {};
           timer.current = null;
         }, wait);
 
@@ -984,11 +985,6 @@ module.exports = function (meta) {
       }, []);
 
       useEffect(() => {
-        const obs = new ResizeObserver(([entry]) => {
-          canvasRect.current = entry.target.getBoundingClientRect();
-        });
-        obs.observe(canvasRef.current);
-
         const rect = canvasRef.current.offsetParent.getBoundingClientRect();
         canvasRef.current.width = ~~(rect.width / 0.7);
         canvasRef.current.height = ~~(rect.height / 0.7);
@@ -1033,8 +1029,11 @@ module.exports = function (meta) {
               return;
           }
         }, ctrl);
+        addEventListener("resize", () => {
+          canvasRect.current = canvasRef.current.getBoundingClientRect();
+        }, ctrl)
 
-        return () => { ctrl.abort(); obs.disconnect(); }
+        return () => ctrl.abort()
       }, []);
 
       useEffect(() => {
@@ -1044,8 +1043,8 @@ module.exports = function (meta) {
       }, [ready]);
 
       const handleWheel = hooks.useDebouncedWheel({
-        onChange: (e) => {
-          if (mode === 3) {
+        onChange: (e, store) => {
+          if (mode === 3 && !e.ctrlKey) {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
             const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
             const viewportScale = utils.getScale(editor.current.viewportTransform);
@@ -1059,6 +1058,8 @@ module.exports = function (meta) {
 
             const cs = utils.getScale(editor.current.previewLayerTransform).toFixed(2);
             auxRef.current?.previewValue(cs);
+
+            store.changed = true;
           } else {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
             const x = (e.clientX - canvasRect.current.x) / canvasRect.current.width;
@@ -1071,8 +1072,8 @@ module.exports = function (meta) {
             }
           }
         },
-        onSubmit: () => {
-          if (mode === 3) {
+        onSubmit: (e, store) => {
+          if (mode === 3 && store.changed) {
             editor.current.finalizeLayerPreview();
             render();
 
