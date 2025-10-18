@@ -110,7 +110,11 @@ module.exports = function (meta) {
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
 
       const layer = new Layer(bitmap);
-      this.#state = new utils.StateHistory([{ layer, state: layer.state }]);
+      this.#state = new utils.StateHistory({
+        width: bitmap.width,
+        height: bitmap.height,
+        layers: [{ layer, state: layer.state }]
+      });
       this.#activeLayerIndex = 0;
       this.render();
 
@@ -131,7 +135,7 @@ module.exports = function (meta) {
       };
     }
 
-    get #layers() { return this.#state.state }
+    get #layers() { return this.#state.state.layers }
     get #activeLayer() { return this.#layers[this.#activeLayerIndex].layer }
     get viewportTransform() { return this.#viewportTransform }
     get canUndo() { return this.#state.canUndo }
@@ -142,8 +146,23 @@ module.exports = function (meta) {
     /** @param {ImageBitmap | null} bitmap */
     createNewLayer(bitmap) {
       const newLayer = new Layer(bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height });
-      this.#state.state = [...this.#state.state.layers, { layer: newLayer, state: newLayer.state }];
+      this.#state.state = {
+        ...this.#state.state,
+        layers: [
+          ...this.#state.state.layers,
+          { layer: newLayer, state: newLayer.state }
+        ]
+      };
       newLayer.drawOn(this.#mainCanvas);
+    }
+
+    /** @param {number} layerIndex */
+    deleteLayer(layerIndex) {
+      if (layerIndex in this.#layers) {
+        const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+        updated.layers.splice(layerIndex, 1);
+        this.#state.state = updated;
+      }
     }
 
     translateViewportBy(dx = 0, dy = 0) {
@@ -174,8 +193,8 @@ module.exports = function (meta) {
     previewLayerTransformTo(M) { this.#activeLayer.previewTransformTo(M) }
     finalizeLayerPreview() {
       const layerState = this.#activeLayer.finalizePreview();
-      const updated = [...this.#state.state];
-      updated[this.#activeLayerIndex] = { ...updated[this.#activeLayerIndex], state: layerState };
+      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+      updated.layers[this.#activeLayerIndex] = { ...updated.layers[this.#activeLayerIndex], state: layerState };
       this.#state.state = updated;
     }
 
@@ -291,8 +310,8 @@ module.exports = function (meta) {
         clipPath
       });
 
-      const updated = [...this.#state.state];
-      updated[this.#activeLayerIndex] = { ...updated[this.#activeLayerIndex], state: layerState };
+      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+      updated.layers[this.#activeLayerIndex] = { ...updated.layers[this.#activeLayerIndex], state: layerState };
       this.#state.state = updated;
 
       this.#mainCanvas.getContext("2d").restore();
@@ -335,7 +354,7 @@ module.exports = function (meta) {
     undo() {
       const undid = this.#state.undo();
       if (undid) {
-        this.#state.state.forEach(({ layer, state }) => layer.state = state);
+        this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
       }
       return undid;
     }
@@ -343,7 +362,7 @@ module.exports = function (meta) {
     redo() {
       const redid = this.#state.redo();
       if (redid) {
-        this.#state.state.forEach(({ layer, state }) => layer.state = state);
+        this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
       }
       return redid;
     }
