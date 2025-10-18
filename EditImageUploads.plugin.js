@@ -11,7 +11,7 @@ module.exports = function (meta) {
 
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI } = BdApi;
   /** @type {typeof import("react")} */
-  const { createElement: jsx, useState, useEffect, useRef, useImperativeHandle, useCallback, useLayoutEffect, cloneElement } = React;
+  const { createElement: jsx, useState, useEffect, useRef, useImperativeHandle, useCallback, cloneElement } = React;
 
   var internals, ctrl;
 
@@ -93,7 +93,7 @@ module.exports = function (meta) {
     #viewportCanvas;
     #viewportTransform;
 
-    #layers;
+    #state;
     #activeLayerIndex;
 
     #drawingCache;
@@ -109,8 +109,8 @@ module.exports = function (meta) {
       const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
 
-      this.#layers = [new Layer(bitmap.width, bitmap.height)];
-      this.#layers[0].img = bitmap;
+      const layer = new Layer(bitmap);
+      this.#state = new utils.StateHistory([{ layer, state: layer.state }]);
       this.#activeLayerIndex = 0;
       this.render();
 
@@ -131,8 +131,20 @@ module.exports = function (meta) {
       };
     }
 
-    get activeLayer() { return this.#layers[this.#activeLayerIndex] }
+    get #layers() { return this.#state.state }
+    get #activeLayer() { return this.#layers[this.#activeLayerIndex].layer }
     get viewportTransform() { return this.#viewportTransform }
+    get canUndo() { return this.#state.canUndo }
+    get canRedo() { return this.#state.canRedo }
+    get previewLayerTransform() { return this.#activeLayer.previewTransform }
+    get layerTransform() { return this.#activeLayer.state.transform }
+
+    /** @param {ImageBitmap | null} bitmap */
+    createNewLayer(bitmap) {
+      const newLayer = new Layer(bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height });
+      this.#state.state = [...this.#state.state.layers, { layer: newLayer, state: newLayer.state }];
+      newLayer.drawOn(this.#mainCanvas);
+    }
 
     translateViewportBy(dx = 0, dy = 0) {
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().translateSelf(dx, dy));
@@ -156,21 +168,34 @@ module.exports = function (meta) {
       this.#drawingCache.stale = true;
     }
 
+    /** @param {DOMMatrix} M  */
+    previewLayerTransformBy(M) { this.#activeLayer.previewTransformBy(M) }
+    /** @param {DOMMatrix} M  */
+    previewLayerTransformTo(M) { this.#activeLayer.previewTransformTo(M) }
+    finalizeLayerPreview() {
+      const layerState = this.#activeLayer.finalizePreview();
+      const updated = [...this.#state.state];
+      updated[this.#activeLayerIndex] = { ...updated[this.#activeLayerIndex], state: layerState };
+      this.#state.state = updated;
+    }
+
     /** 
      * @param {DOMPoint} startPoint
      * @param {number} width
      * @param {string} color
      */
     startDrawing(startPoint, width, color) {
+      // sandwich setup
       const bottomCtx = this.#mainCanvas.getContext("2d");
       const topCtx = this.#drawingCache.canvas.getContext("2d");
       bottomCtx.save();
       bottomCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       topCtx.clearRect(0, 0, this.#drawingCache.canvas.width, this.#drawingCache.canvas.height);
-      this.#layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(this.#mainCanvas));
-      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.drawOn(this.#drawingCache.canvas));
+      this.#layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#mainCanvas));
+      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#drawingCache.canvas));
 
       if (this.#drawingCache.stale) {
+        // viewport changed
         this.#drawingCache.viewportTransform_inv = new DOMMatrix()
           .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
           .multiplySelf(this.#viewportTransform)
@@ -181,9 +206,14 @@ module.exports = function (meta) {
 
       this.#drawingCache.width = width;
       this.#drawingCache.color = color;
+      bottomCtx.strokeStyle = color;
+      bottomCtx.lineWidth = width;
+      bottomCtx.lineCap = "round";
+      bottomCtx.lineJoin = "round";
+
       this.#drawingCache.layerTransform_inv = new DOMMatrix()
         .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
-        .multiplySelf(this.activeLayer.transform).invertSelf();
+        .multiplySelf(this.layerTransform).invertSelf();
 
       this.#drawingCache.lastPoint = startPoint.matrixTransform(this.#drawingCache.viewportTransform_inv);
       bottomCtx.beginPath();
@@ -197,6 +227,7 @@ module.exports = function (meta) {
     /** @param {DOMPoint} to */
     drawLine(to) {
       if (this.#drawingCache.stale) {
+        // viewport changed
         this.#drawingCache.viewportTransform_inv = new DOMMatrix()
           .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
           .multiplySelf(this.#viewportTransform)
@@ -223,11 +254,6 @@ module.exports = function (meta) {
         this.#drawingCache.lastPoint = to_inv;
         return;
       }
-
-      bottomCtx.strokeStyle = this.#drawingCache.color;
-      bottomCtx.lineWidth = this.#drawingCache.width;
-      bottomCtx.lineCap = "round";
-      bottomCtx.lineJoin = "round";
 
       if (!isOOB && prevIsOOB) {
         const rawLast = this.#drawingCache.lastPoint.matrixTransform(this.#drawingCache.layerTransform_inv);
@@ -257,13 +283,17 @@ module.exports = function (meta) {
       const clipPath = new Path2D();
       clipPath.addPath(rawClipPath, this.#drawingCache.layerTransform_inv);
 
-      this.activeLayer.resizeFitStroke(this.#drawingCache.rect, this.#drawingCache.width);
-      this.activeLayer.addStroke({
+      this.#activeLayer.resizeFitStroke(this.#drawingCache.rect, this.#drawingCache.width);
+      const layerState = this.#activeLayer.addStroke({
         color: this.#drawingCache.color,
-        width: this.#drawingCache.width,
+        width: this.#drawingCache.width / utils.getScale(this.#activeLayer.state.transform),
         path2D: this.#drawingCache.path2D,
         clipPath
       });
+
+      const updated = [...this.#state.state];
+      updated[this.#activeLayerIndex] = { ...updated[this.#activeLayerIndex], state: layerState };
+      this.#state.state = updated;
 
       this.#mainCanvas.getContext("2d").restore();
       this.#drawingCache.canvas.getContext("2d").clearRect(0, 0, this.#drawingCache.canvas.width, this.#drawingCache.canvas.height);
@@ -272,6 +302,13 @@ module.exports = function (meta) {
 
     /** @param {ImageEncodeOptions?} options */
     toBlob(options) { return this.#mainCanvas.convertToBlob(options) }
+
+    /** @param {number} layerIndex  */
+    toggleLayerVisibility(layerIndex) {
+      if (layerIndex in this.#layers) {
+        this.#layers[layerIndex].layer.toggleVisibility();
+      }
+    }
 
     refreshViewport() {
       const ctx = this.#viewportCanvas.getContext("2d");
@@ -291,55 +328,77 @@ module.exports = function (meta) {
     render() {
       const ctx = this.#mainCanvas.getContext("2d");
       ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      this.#layers.forEach(layer => layer.drawOn(this.#mainCanvas));
+      this.#layers.forEach(layer => layer.layer.drawOn(this.#mainCanvas));
       this.refreshViewport();
+    }
+
+    undo() {
+      const undid = this.#state.undo();
+      if (undid) {
+        this.#state.state.forEach(({ layer, state }) => layer.state = state);
+      }
+      return undid;
+    }
+
+    redo() {
+      const redid = this.#state.redo();
+      if (redid) {
+        this.#state.state.forEach(({ layer, state }) => layer.state = state);
+      }
+      return redid;
     }
   }
 
   class Layer {
-    /** @type {ImageBitmap | null} */
     #img;
     #canvas;
     #state;
     #previewTransform;
     #isVisible;
 
-    /** 
-     * @param {number} width
-     * @param {number} height
-     */
-    constructor(width, height) {
-      this.#canvas = new OffscreenCanvas(width, height);
-      this.#state = new utils.StateHistory({
+    /** @param {ImageBitmap | {width: number, height: number}} bitmap */
+    constructor(bitmap) {
+      this.#canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      this.#state = {
         transform: new DOMMatrix(),
         /** @type {{color: string, width: number, path2D: Path2D, clipPath: Path2D}[]} */
         strokes: []
-      });
+      };
       this.#previewTransform = new DOMMatrix();
       this.#isVisible = true;
+      if (bitmap instanceof ImageBitmap) {
+        this.#img = bitmap;
+        this.#drawImage();
+      }
     }
 
     get width() { return this.#canvas.width }
     get height() { return this.#canvas.height }
-    get canvas() { return this.#isVisible ? this.#canvas : null }
-    get transform() { return this.#state.state.transform }
-    get previewTransform() { return this.#previewTransform.multiply(this.transform) }
-    get strokes() { return this.#state.state.strokes }
-    get canUndo() { return this.#state.canUndo }
-    get canRedo() { return this.#state.canRedo }
+    get state() { return this.#state }
+    get previewTransform() { return this.#previewTransform.multiply(this.#state.transform) }
 
-    /** @param {ImageBitmap | null} bitmap */
-    set img(bitmap) {
-      this.#img = bitmap instanceof ImageBitmap ? bitmap : null;
-      this.#drawImage();
+    set state(state) {
+      if (this.#state.strokes.length < state.strokes.length) {
+        // adding strokes
+        for (let i = this.#state.strokes.length; i < state.strokes.length; i++) {
+          this.#drawStroke(state.strokes[i]);
+        }
+      } else if (this.#state.strokes.length > state.strokes.length) {
+        // removing strokes
+        this.#drawImage();
+        this.#drawStrokes(state.strokes);
+      }
+      this.#state = state;
     }
 
     previewTransformBy(dM) { this.#previewTransform.preMultiplySelf(dM) }
     previewTransformTo(M) { this.#previewTransform = M }
 
     finalizePreview() {
-      this.#state.state = { ...this.#state.state, transform: this.#previewTransform.multiplySelf(this.transform) };
+      const applied = this.#previewTransform.multiplySelf(this.#state.transform);
+      this.#state = { ...this.#state, transform: applied };
       this.#previewTransform = new DOMMatrix();
+      return this.#state;
     }
 
     toggleVisibility() { this.#isVisible = !this.#isVisible }
@@ -364,8 +423,9 @@ module.exports = function (meta) {
 
     /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D}} stroke  */
     addStroke(stroke) {
-      this.#state.state = { ...this.#state.state, strokes: [...this.strokes, stroke] };
+      this.#state = { ...this.#state, strokes: [...this.#state.strokes, stroke] };
       this.#drawStroke(stroke);
+      return this.#state;
     }
 
     /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D}} stroke  */
@@ -382,13 +442,13 @@ module.exports = function (meta) {
       ctx.restore();
     }
 
-    #drawStrokes() {
+    #drawStrokes(strokes = this.#state.strokes) {
       const ctx = this.#canvas.getContext("2d");
       ctx.save();
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
-      for (const stroke of this.strokes) {
+      for (const stroke of strokes) {
         ctx.save();
         ctx.lineWidth = stroke.width;
         ctx.strokeStyle = stroke.color;
@@ -409,40 +469,19 @@ module.exports = function (meta) {
       ctx.restore();
     }
 
-    /** @param {OffscreenCanvas} context */
+    /** @param {OffscreenCanvas} canvas */
     drawOn(canvas) {
-      if (!this.canvas) return;
+      if (!this.#isVisible) return;
 
       const ctx = canvas.getContext("2d");
       ctx.save();
       ctx.setTransform(new DOMMatrix()
         .translateSelf(canvas.width / 2, canvas.height / 2)
         .multiplySelf(this.#previewTransform)
-        .multiplySelf(this.transform)
+        .multiplySelf(this.#state.transform)
       );
       ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2);
       ctx.restore();
-    }
-
-    undo() {
-      const currentStrokes = this.strokes.length;
-      const undid = this.#state.undo();
-      const undoneStrokes = this.strokes.length;
-      if (undoneStrokes !== currentStrokes) {
-        this.#drawImage();
-        this.#drawStrokes();
-      }
-      return undid;
-    }
-
-    redo() {
-      const currentStrokes = this.strokes.length;
-      const redid = this.#state.redo();
-      const redoneStrokes = this.strokes.length;
-      if (redoneStrokes !== currentStrokes) {
-        this.#drawStroke(this.strokes[this.strokes.length - 1]);
-      }
-      return redid;
     }
   }
 
@@ -515,8 +554,8 @@ module.exports = function (meta) {
           this.#state = this.#history[this.#pointer];
           return true;
         }
-        get canUndo() { return this.#pointer > 0; }
-        get canRedo() { return this.#pointer < this.#history.length - 1; }
+        get canUndo() { return this.#pointer > 0 }
+        get canRedo() { return this.#pointer < this.#history.length - 1 }
       },
 
     /**
@@ -732,7 +771,7 @@ module.exports = function (meta) {
      * disabled?: boolean,
      * active?: boolean,
      * position?: string}} props
-     * */
+     */
     IconButton({ onClick, tooltip, d, disabled, active, position = 'top' }) {
       return jsx(BdApi.Components.ErrorBoundary, {
         children: jsx(BdApi.Components.Tooltip, {
@@ -774,15 +813,19 @@ module.exports = function (meta) {
       })
     },
 
+    /** @param {{url: string}} props */
     RemixIcon({ url }) {
       const [fetching, setFetching] = useState(false);
+      const ctrl = useRef(new AbortController());
       const userActions = useRef(null);
 
-      return jsx(Components.IconButton, {
-        onClick: !fetching ? async () => {
+      useEffect(() => () => ctrl.current.abort(), []);
+
+      return !fetching ? jsx(Components.IconButton, {
+        onClick: async () => {
           try {
             setFetching(true);
-            const response = await fetch(url); // BdApi.Net.fetch will reject blobs
+            const response = await fetch(url, { signal: ctrl.current.signal }); // BdApi.Net.fetch will reject blobs
             const blob = await response.blob();
             const bitmap = await createImageBitmap(blob);
 
@@ -795,7 +838,7 @@ module.exports = function (meta) {
                 cancelText: "Cancel",
                 confirmButtonColor: internals.Button.Colors.BRAND,
                 onConfirm: () => {
-                  userActions.current?.upload({})
+                  userActions.current?.upload()
                 },
                 children: jsx(Components.ImageEditor, {
                   bitmap,
@@ -807,12 +850,15 @@ module.exports = function (meta) {
             setFetching(false);
           } catch (e) {
             setFetching(false);
-            UI.showToast("Could not fetch image.", { type: "error" });
+            if (e.name !== "AbortError")
+              UI.showToast("Could not fetch image.", { type: "error" });
           }
-        } : null,
+        },
         position: 'bottom',
         tooltip: "Edit Image",
         d: utils.paths.Main
+      }) : jsx(BdApi.Components.Spinner, {
+        type: BdApi.Components.Spinner.Type.SPINNING_CIRCLE_SIMPLE
       })
     },
 
@@ -872,8 +918,8 @@ module.exports = function (meta) {
       const setMode = useCallback((newVal) => {
         _setMode((oldMode) => {
           const newMode = newVal instanceof Function ? newVal(oldMode) : newVal;
-          ["--translate"]
-            .forEach(prop => overlay.current.style.removeProperty(prop));
+          ["--translate"].forEach(prop => overlay.current.style.removeProperty(prop));
+
           switch (newMode) {
             case 1: {
               const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
@@ -887,6 +933,7 @@ module.exports = function (meta) {
 
       useImperativeHandle(ref, () => ({
         replace({ draftType, upload }) {
+          UI.showToast("Processing...", { type: "warn" });
           editor.current?.toBlob({ type: "image/webp" }).then(blob => {
             internals.uploadDispatcher.setFile({
               channelId: upload.channelId,
@@ -906,9 +953,12 @@ module.exports = function (meta) {
               }
             });
             UI.showToast("Saved changes", { type: "success" });
+          }).catch(() => {
+            UI.showToast("Failed to process image.", { type: "error" });
           });
         },
-        upload({ }) {
+        upload() {
+          UI.showToast("Processing...", { type: "warn" });
           editor.current?.toBlob({ type: "image/webp" }).then(blob => {
             internals.uploadDispatcher.addFile({
               file: {
@@ -917,18 +967,20 @@ module.exports = function (meta) {
                 origin: "clipboard",
                 platform: 1
               },
-              channelId: SelectedChannelStore.getCurrentlySelectedChannelId(),
+              channelId: internals.SelectedChannelStore.getCurrentlySelectedChannelId(),
               showLargeMessageDialog: false,
               draftType: 0,
             })
             UI.showToast("Saved changes", { type: "success" });
+          }).catch(() => {
+            UI.showToast("Failed to process image.", { type: "error" });
           });
         }
       }), []);
 
       const render = useCallback(() => {
         editor.current.render();
-        setCanUndoRedo(editor.current.activeLayer.canUndo << 1 ^ editor.current.activeLayer.canRedo);
+        setCanUndoRedo(editor.current.canUndo << 1 ^ editor.current.canRedo);
       }, []);
 
       useEffect(() => {
@@ -946,11 +998,11 @@ module.exports = function (meta) {
         addEventListener("keydown", e => {
           switch (e.key) {
             case e.ctrlKey && "z":
-              if (editor.current.activeLayer.undo()) render();
+              if (editor.current.undo()) render();
               return;
 
             case e.ctrlKey && "y":
-              if (editor.current.activeLayer.redo()) render();
+              if (editor.current.redo()) render();
               return;
 
             case !e.repeat && e.ctrlKey && "b":
@@ -980,7 +1032,6 @@ module.exports = function (meta) {
               setMode(m => m === 4 ? null : 4);
               return;
           }
-
         }, ctrl);
 
         return () => { ctrl.abort(); obs.disconnect(); }
@@ -1003,10 +1054,10 @@ module.exports = function (meta) {
             const Tx = (e.clientX - (canvasRect.current.x + canvasRect.current.width / 2 + ctx * boxScale)) / viewportScale;
             const Ty = (e.clientY - (canvasRect.current.y + canvasRect.current.height / 2 + cty * boxScale)) / viewportScale;
 
-            editor.current.activeLayer.previewTransformBy(new DOMMatrix().scaleSelf(delta, delta, 1, Tx, Ty));
+            editor.current.previewLayerTransformBy(new DOMMatrix().scaleSelf(delta, delta, 1, Tx, Ty));
             editor.current.render();
 
-            const cs = utils.getScale(editor.current.activeLayer.previewTransform).toFixed(2);
+            const cs = utils.getScale(editor.current.previewLayerTransform).toFixed(2);
             auxRef.current?.previewValue(cs);
           } else {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
@@ -1022,10 +1073,10 @@ module.exports = function (meta) {
         },
         onSubmit: () => {
           if (mode === 3) {
-            editor.current.activeLayer.finalizePreview();
+            editor.current.finalizeLayerPreview();
             render();
 
-            const cs = utils.getScale(editor.current.activeLayer.previewTransform).toFixed(2);
+            const cs = utils.getScale(editor.current.previewLayerTransform).toFixed(2);
             auxRef.current?.setValue(cs);
           }
         }
@@ -1076,17 +1127,17 @@ module.exports = function (meta) {
                   previousX * currentY - previousY * currentX
                 );
 
-                editor.current.activeLayer.previewTransformBy(new DOMMatrix().rotateSelf(dTheta));
+                editor.current.previewLayerTransformBy(new DOMMatrix().rotateSelf(dTheta));
                 editor.current.render();
 
-                const cr = utils.getAngle(editor.current.activeLayer.previewTransform).toFixed(1);
+                const cr = utils.getAngle(editor.current.previewLayerTransform).toFixed(1);
                 auxRef.current?.previewValue(cr);
                 break;
               }
               case 2: {
                 const dx = (e.clientX - store.startX) / utils.getScale(editor.current.viewportTransform);
                 const dy = (e.clientY - store.startY) / utils.getScale(editor.current.viewportTransform);
-                editor.current.activeLayer.previewTransformBy(new DOMMatrix().translateSelf(dx, dy));
+                editor.current.previewLayerTransformBy(new DOMMatrix().translateSelf(dx, dy));
                 editor.current.render();
                 break;
               }
@@ -1112,11 +1163,11 @@ module.exports = function (meta) {
               break;
             }
             case 1:
-              const cr = utils.getAngle(editor.current.activeLayer.previewTransform).toFixed(1);
+              const cr = utils.getAngle(editor.current.previewLayerTransform).toFixed(1);
               auxRef.current?.setValue(cr);
             // Intentional fall-through
             case 2: {
-              editor.current.activeLayer.finalizePreview();
+              editor.current.finalizeLayerPreview();
               render();
               break;
             }
@@ -1222,12 +1273,12 @@ module.exports = function (meta) {
                   suffix: "°",
                   decimals: 0,
                   withSlider: false,
-                  value: Number(utils.getAngle(editor.current.activeLayer.transform).toFixed(1)),
+                  value: Number(utils.getAngle(editor.current.layerTransform).toFixed(1)),
                   onChange: value => {
-                    const cr = utils.getAngle(editor.current.activeLayer.transform);
+                    const cr = utils.getAngle(editor.current.layerTransform);
                     const r = new DOMMatrix().rotateSelf(value - cr);
-                    editor.current.activeLayer.previewTransformBy(r);
-                    editor.current.activeLayer.finalizePreview();
+                    editor.current.previewLayerTransformBy(r);
+                    editor.current.finalizeLayerPreview();
                     render();
                   }
                 })
@@ -1241,18 +1292,18 @@ module.exports = function (meta) {
                   minValue: 0.01,
                   centerValue: 1,
                   maxValue: 10,
-                  value: Number(utils.getScale(editor.current.activeLayer.transform).toFixed(2)),
+                  value: Number(utils.getScale(editor.current.layerTransform).toFixed(2)),
                   onSlide: s => {
-                    const cs = utils.getScale(editor.current.activeLayer.transform);
+                    const cs = utils.getScale(editor.current.layerTransform);
                     const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
-                    editor.current.activeLayer.previewTransformTo(S);
+                    editor.current.previewLayerTransformTo(S);
                     editor.current.render();
                   },
                   onChange: s => {
-                    const cs = utils.getScale(editor.current.activeLayer.transform);
+                    const cs = utils.getScale(editor.current.layerTransform);
                     const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
-                    editor.current.activeLayer.previewTransformTo(S);
-                    editor.current.activeLayer.finalizePreview();
+                    editor.current.previewLayerTransformTo(S);
+                    editor.current.finalizeLayerPreview();
                     render();
                   }
                 })
@@ -1289,20 +1340,24 @@ module.exports = function (meta) {
                 tooltip: "Flip Horizontal",
                 d: utils.paths.FlipH,
                 onClick: () => {
-                  if (!editor.current.activeLayer) return;
-                  editor.current.activeLayer.previewTransformBy(new DOMMatrix().scaleSelf(-1, 1));
-                  editor.current.activeLayer.finalizePreview();
+                  editor.current.previewLayerTransformBy(new DOMMatrix().scaleSelf(-1, 1));
+                  editor.current.finalizeLayerPreview();
                   render();
+                  if (mode === 1) {
+                    auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
+                  }
                 },
               }),
               jsx(Components.IconButton, {
                 tooltip: "Flip Vertical",
                 d: utils.paths.FlipV,
                 onClick: () => {
-                  if (!editor.current.activeLayer) return;
-                  editor.current.activeLayer.previewTransformBy(new DOMMatrix().scaleSelf(1, -1));
-                  editor.current.activeLayer.finalizePreview();
+                  editor.current.previewLayerTransformBy(new DOMMatrix().scaleSelf(1, -1));
+                  editor.current.finalizeLayerPreview();
                   render();
+                  if (mode === 1) {
+                    auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
+                  }
                 },
               }),
               jsx(Components.IconButton, {
@@ -1318,13 +1373,13 @@ module.exports = function (meta) {
               jsx(Components.IconButton, {
                 tooltip: "Undo (Ctrl + Z)",
                 d: utils.paths.Undo,
-                onClick: () => { if (editor.current.activeLayer.undo()) render() },
+                onClick: () => { if (editor.current.undo()) render() },
                 disabled: !(canUndoRedo & 2)
               }),
               jsx(Components.IconButton, {
                 tooltip: "Redo (Ctrl + Y)",
                 d: utils.paths.Redo,
-                onClick: () => { if (editor.current.activeLayer.redo()) render() },
+                onClick: () => { if (editor.current.redo()) render() },
                 disabled: !(canUndoRedo & 1)
               }),
             ]
@@ -1556,9 +1611,6 @@ module.exports = function (meta) {
 
 .canvas.drawing {
   cursor: crosshair;
-  &.pointerdown {
-    cursor: none;
-  }
 }
 
 @keyframes pulsing {
@@ -1617,7 +1669,7 @@ module.exports = function (meta) {
   position: absolute;
   inset: 0;
   margin: auto;
-  opactiy: calc(var(--brushsize, 0) / var(--brushsize, 1));
+  opacity: calc(var(--brushsize, 0) / var(--brushsize, 1));
   width: calc(1px * var(--brushsize, 0) - 1px);
   aspect-ratio: 1 / 1;
   border: 1px solid black;
