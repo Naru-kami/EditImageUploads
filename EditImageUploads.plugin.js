@@ -22,6 +22,7 @@ module.exports = function (meta) {
       uploadDispatcher: { filter: Filters.byKeys("setFile") }, // 166459
       uploadCard: { filter: Filters.bySource(".attachmentItemSmall]:") }, // 898463
       nativeUI: { filter: m => m.showToast }, // 481060
+      Modal: { filter: Filters.bySource(".MODAL_ROOT_LEGACY,") },
       Button: { filter: Filters.byKeys("Colors", "Link"), searchExports: true }, // 693789
 
       actionButtonClass: { filter: Filters.byKeys("dangerous", "button") },
@@ -41,10 +42,13 @@ module.exports = function (meta) {
           MenuSliderControl: "moveGrabber",
           closeModalInAllContexts: ".onCloseCallback)",
           Popout: "Unsupported animation config:",
+        }),
+        ...utils.getKeysInModule(internals.Modal, {
+          ModalRoot: ".MODAL_ROOT_LEGACY,",
+          ModalContent: ",scrollbarType:"
         })
       }
     })
-
     BdApi.Logger.info(meta.slug, "Initialized");
   }
 
@@ -92,11 +96,13 @@ module.exports = function (meta) {
     #mainCanvas;
     #viewportCanvas;
     #viewportTransform;
+    #viewportTransform_inv
+    #staleViewportInv;
 
     #state;
     #activeLayerIndex;
 
-    #drawingCache;
+    #interactionCache;
 
     /** 
      * @param {HTMLCanvasElement} canvas
@@ -108,6 +114,12 @@ module.exports = function (meta) {
 
       const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
+      this.#viewportTransform_inv = new DOMMatrix()
+        .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+        .multiplySelf(this.#viewportTransform)
+        .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+        .invertSelf();
+      this.#staleViewportInv = false;
 
       const layer = new Layer(bitmap);
       this.#state = new utils.StateHistory({
@@ -118,30 +130,56 @@ module.exports = function (meta) {
       this.#activeLayerIndex = 0;
       this.render();
 
-      this.#drawingCache = {
+      this.#interactionCache = {
         canvas: new OffscreenCanvas(this.#mainCanvas.width, this.#mainCanvas.height),
         path2D: new Path2D(),
         lastPoint: new DOMPoint(),
-        layerTransform_inv: new DOMMatrix(),
-        viewportTransform_inv: new DOMMatrix()
-          .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-          .multiplySelf(this.#viewportTransform)
-          .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
-          .invertSelf(),
         rect: new DOMRect(),
         width: 0,
         color: "#000",
-        stale: false,
       };
     }
 
     get #layers() { return this.#state.state.layers }
     get #activeLayer() { return this.#layers[this.#activeLayerIndex].layer }
     get viewportTransform() { return this.#viewportTransform }
+    get viewportTransform_inv() {
+      if (this.#staleViewportInv) {
+        this.#viewportTransform_inv = new DOMMatrix()
+          .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
+          .multiplySelf(this.#viewportTransform)
+          .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
+          .invertSelf();
+        this.#staleViewportInv = false;
+      }
+      return this.#viewportTransform_inv;
+    }
+    get regionRect() {
+      const T = this.viewportTransform_inv.inverse();
+      const topLeft = new DOMPoint(this.#interactionCache.rect.left, this.#interactionCache.rect.top).matrixTransform(T);
+      const bottomRight = new DOMPoint(this.#interactionCache.rect.right, this.#interactionCache.rect.bottom).matrixTransform(T);
+      return new DOMRect(
+        Math.min(topLeft.x, bottomRight.x) / this.#viewportCanvas.width,
+        Math.min(topLeft.y, bottomRight.y) / this.#viewportCanvas.height,
+        Math.abs(topLeft.x - bottomRight.x) / this.#viewportCanvas.width,
+        Math.abs(topLeft.y - bottomRight.y) / this.#viewportCanvas.height,
+      );
+    }
     get canUndo() { return this.#state.canUndo }
     get canRedo() { return this.#state.canRedo }
     get previewLayerTransform() { return this.#activeLayer.previewTransform }
     get layerTransform() { return this.#activeLayer.state.transform }
+
+    get width() { return this.#mainCanvas.width }
+    get height() { return this.#mainCanvas.height }
+    set width(width) {
+      this.#mainCanvas.width = width;
+      this.#state.state = { ...this.#state.state, width }
+    }
+    set height(height) {
+      this.#mainCanvas.height = height;
+      this.#state.state = { ...this.#state.state, height }
+    }
 
     /** @param {ImageBitmap | null} bitmap */
     createNewLayer(bitmap) {
@@ -153,22 +191,24 @@ module.exports = function (meta) {
           { layer: newLayer, state: newLayer.state }
         ]
       };
-      newLayer.drawOn(this.#mainCanvas);
+      bitmap && newLayer.drawOn(this.#mainCanvas);
+      this.#activeLayerIndex = this.#state.state.layers.length - 1;
     }
 
     /** @param {number} layerIndex */
     deleteLayer(layerIndex) {
-      if (layerIndex in this.#layers) {
+      if (layerIndex in this.#layers && this.#layers.length > 1) {
         const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
         updated.layers.splice(layerIndex, 1);
         this.#state.state = updated;
+        this.#activeLayerIndex = Math.min(this.#activeLayerIndex, updated.layers.length - 1);
       }
     }
 
     translateViewportBy(dx = 0, dy = 0) {
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().translateSelf(dx, dy));
       this.refreshViewport();
-      this.#drawingCache.stale = true;
+      this.#staleViewportInv = true;
     }
 
     scaleViewportBy(ds = 1, x = 0.5, y = 0.5) {
@@ -177,14 +217,14 @@ module.exports = function (meta) {
 
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().scaleSelf(ds, ds, 1, Tx, Ty));
       this.refreshViewport();
-      this.#drawingCache.stale = true;
+      this.#staleViewportInv = true;
     }
 
     resetViewport() {
       const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       this.refreshViewport();
-      this.#drawingCache.stale = true;
+      this.#staleViewportInv = true;
     }
 
     /** @param {DOMMatrix} M  */
@@ -206,107 +246,88 @@ module.exports = function (meta) {
     startDrawing(startPoint, width, color) {
       // sandwich setup
       const bottomCtx = this.#mainCanvas.getContext("2d");
-      const topCtx = this.#drawingCache.canvas.getContext("2d");
+      const topCtx = this.#interactionCache.canvas.getContext("2d");
       bottomCtx.save();
       bottomCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      topCtx.clearRect(0, 0, this.#drawingCache.canvas.width, this.#drawingCache.canvas.height);
+      topCtx.clearRect(0, 0, this.#interactionCache.canvas.width, this.#interactionCache.canvas.height);
       this.#layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#mainCanvas));
-      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#drawingCache.canvas));
+      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#interactionCache.canvas));
 
-      if (this.#drawingCache.stale) {
-        // viewport changed
-        this.#drawingCache.viewportTransform_inv = new DOMMatrix()
-          .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-          .multiplySelf(this.#viewportTransform)
-          .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
-          .invertSelf();
-        this.#drawingCache.stale = false;
-      }
-
-      this.#drawingCache.width = width;
-      this.#drawingCache.color = color;
+      this.#interactionCache.width = width;
+      this.#interactionCache.color = color;
       bottomCtx.strokeStyle = color;
       bottomCtx.lineWidth = width;
       bottomCtx.lineCap = "round";
       bottomCtx.lineJoin = "round";
 
-      this.#drawingCache.layerTransform_inv = new DOMMatrix()
+      this.#interactionCache.layerTransform_inv = new DOMMatrix()
         .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
         .multiplySelf(this.layerTransform).invertSelf();
 
-      this.#drawingCache.lastPoint = startPoint.matrixTransform(this.#drawingCache.viewportTransform_inv);
+      this.#interactionCache.lastPoint = startPoint.matrixTransform(this.viewportTransform_inv);
       bottomCtx.beginPath();
-      bottomCtx.moveTo(this.#drawingCache.lastPoint.x, this.#drawingCache.lastPoint.y);
+      bottomCtx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
 
-      const rawPoint = this.#drawingCache.lastPoint.matrixTransform(this.#drawingCache.layerTransform_inv);
-      this.#drawingCache.path2D.moveTo(rawPoint.x, rawPoint.y);
-      this.#drawingCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
+      const rawPoint = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#interactionCache.path2D.moveTo(rawPoint.x, rawPoint.y);
+      this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
     }
 
     /** @param {DOMPoint} to */
     drawLine(to) {
-      if (this.#drawingCache.stale) {
-        // viewport changed
-        this.#drawingCache.viewportTransform_inv = new DOMMatrix()
-          .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
-          .multiplySelf(this.#viewportTransform)
-          .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
-          .invertSelf();
-        this.#drawingCache.stale = false;
-      }
       const bottomCtx = this.#mainCanvas.getContext("2d");
-      const to_inv = to.matrixTransform(this.#drawingCache.viewportTransform_inv);
+      const to_inv = to.matrixTransform(this.viewportTransform_inv);
 
       // out of bounds
       const isOOB =
-        to_inv.x < -this.#drawingCache.width / 2 ||
-        to_inv.x > this.#mainCanvas.width + this.#drawingCache.width / 2 ||
-        to_inv.y < -this.#drawingCache.height / 2 ||
-        to_inv.y > this.#mainCanvas.height + this.#drawingCache.height / 2;
+        to_inv.x < -this.#interactionCache.width / 2 ||
+        to_inv.x > this.#mainCanvas.width + this.#interactionCache.width / 2 ||
+        to_inv.y < -this.#interactionCache.height / 2 ||
+        to_inv.y > this.#mainCanvas.height + this.#interactionCache.height / 2;
       const prevIsOOB =
-        this.#drawingCache.lastPoint.x < -this.#drawingCache.width / 2 ||
-        this.#drawingCache.lastPoint.x > this.#mainCanvas.width + this.#drawingCache.width / 2 ||
-        this.#drawingCache.lastPoint.y < -this.#drawingCache.height / 2 ||
-        this.#drawingCache.lastPoint.y > this.#mainCanvas.height + this.#drawingCache.height / 2;
+        this.#interactionCache.lastPoint.x < -this.#interactionCache.width / 2 ||
+        this.#interactionCache.lastPoint.x > this.#mainCanvas.width + this.#interactionCache.width / 2 ||
+        this.#interactionCache.lastPoint.y < -this.#interactionCache.height / 2 ||
+        this.#interactionCache.lastPoint.y > this.#mainCanvas.height + this.#interactionCache.height / 2;
 
       if (prevIsOOB && isOOB) {
-        this.#drawingCache.lastPoint = to_inv;
+        this.#interactionCache.lastPoint = to_inv;
         return;
       }
 
       if (!isOOB && prevIsOOB) {
-        const rawLast = this.#drawingCache.lastPoint.matrixTransform(this.#drawingCache.layerTransform_inv);
-        this.#drawingCache.path2D.moveTo(rawLast.x, rawLast.y);
-        bottomCtx.moveTo(this.#drawingCache.lastPoint.x, this.#drawingCache.lastPoint.y);
+        const rawLast = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
+        this.#interactionCache.path2D.moveTo(rawLast.x, rawLast.y);
+        bottomCtx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       }
 
       bottomCtx.lineTo(to_inv.x, to_inv.y);
       bottomCtx.stroke();
 
-      bottomCtx.drawImage(this.#drawingCache.canvas, 0, 0);
+      bottomCtx.drawImage(this.#interactionCache.canvas, 0, 0);
       this.refreshViewport();
 
-      this.#drawingCache.lastPoint = to_inv;
-      const rawPoint = to_inv.matrixTransform(this.#drawingCache.layerTransform_inv);
-      this.#drawingCache.path2D.lineTo(rawPoint.x, rawPoint.y);
+      this.#interactionCache.lastPoint = to_inv;
+      const rawPoint = to_inv.matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#interactionCache.path2D.lineTo(rawPoint.x, rawPoint.y);
 
-      this.#drawingCache.rect.width += Math.max(this.#drawingCache.rect.x - rawPoint.x, rawPoint.x - this.#drawingCache.rect.right, 0);
-      this.#drawingCache.rect.height += Math.max(this.#drawingCache.rect.y - rawPoint.y, rawPoint.y - this.#drawingCache.rect.bottom, 0);
-      this.#drawingCache.rect.x = Math.min(rawPoint.x, this.#drawingCache.rect.x);
-      this.#drawingCache.rect.y = Math.min(rawPoint.y, this.#drawingCache.rect.y);
+      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawPoint.x, rawPoint.x - this.#interactionCache.rect.right, 0);
+      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.y - rawPoint.y, rawPoint.y - this.#interactionCache.rect.bottom, 0);
+      this.#interactionCache.rect.x = Math.min(rawPoint.x, this.#interactionCache.rect.x);
+      this.#interactionCache.rect.y = Math.min(rawPoint.y, this.#interactionCache.rect.y);
     }
 
-    finishDrawing() {
+    endDrawing() {
       const rawClipPath = new Path2D();
       rawClipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       const clipPath = new Path2D();
-      clipPath.addPath(rawClipPath, this.#drawingCache.layerTransform_inv);
+      clipPath.addPath(rawClipPath, this.#interactionCache.layerTransform_inv);
 
-      this.#activeLayer.resizeFitStroke(this.#drawingCache.rect, this.#drawingCache.width);
+      this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, this.#interactionCache.width);
       const layerState = this.#activeLayer.addStroke({
-        color: this.#drawingCache.color,
-        width: this.#drawingCache.width / utils.getScale(this.#activeLayer.state.transform),
-        path2D: this.#drawingCache.path2D,
+        color: this.#interactionCache.color,
+        width: this.#interactionCache.width / utils.getScale(this.#activeLayer.state.transform),
+        path2D: this.#interactionCache.path2D,
         clipPath
       });
 
@@ -315,8 +336,53 @@ module.exports = function (meta) {
       this.#state.state = updated;
 
       this.#mainCanvas.getContext("2d").restore();
-      this.#drawingCache.canvas.getContext("2d").clearRect(0, 0, this.#drawingCache.canvas.width, this.#drawingCache.canvas.height);
-      this.#drawingCache.path2D = new Path2D();
+      this.#interactionCache.canvas.getContext("2d").clearRect(0, 0, this.#interactionCache.canvas.width, this.#interactionCache.canvas.height);
+      this.#interactionCache.path2D = new Path2D();
+    }
+
+    /** @param {DOMPoint} startPoint  */
+    startRegionSelect(startPoint) {
+      const start_T = startPoint.matrixTransform(this.viewportTransform_inv);
+      start_T.x = utils.clamp(0, start_T.x, this.#mainCanvas.width);
+      start_T.y = utils.clamp(0, start_T.y, this.#mainCanvas.height);
+      this.#interactionCache.lastPoint = start_T;
+      this.#interactionCache.rect = new DOMRect(start_T.x, start_T.y, 0, 0);
+    }
+
+    /** @param {DOMPoint} to  */
+    regionSelect(to) {
+      const to_T = to.matrixTransform(this.viewportTransform_inv);
+      to_T.x = utils.clamp(0, to_T.x, this.#mainCanvas.width);
+      to_T.y = utils.clamp(0, to_T.y, this.#mainCanvas.height);
+
+      this.#interactionCache.rect.x = Math.min(this.#interactionCache.lastPoint.x, to_T.x);
+      this.#interactionCache.rect.y = Math.min(this.#interactionCache.lastPoint.y, to_T.y);
+      this.#interactionCache.rect.width = Math.abs(this.#interactionCache.lastPoint.x - to_T.x);
+      this.#interactionCache.rect.height = Math.abs(this.#interactionCache.lastPoint.y - to_T.y);
+    }
+
+    endRegionSelect() {
+      if (this.#interactionCache.rect.width === 0 || this.#interactionCache.rect.height === 0) return false;
+
+      const ccx = this.#interactionCache.rect.left + this.#interactionCache.rect.width / 2;
+      const ccy = this.#interactionCache.rect.top + this.#interactionCache.rect.height / 2;
+
+      const cx = this.#mainCanvas.width / 2;
+      const cy = this.#mainCanvas.height / 2;
+
+      const T = new DOMMatrix().translateSelf(cx - ccx, cy - ccy);
+      const updated = { ...this.#state.state, width: this.#interactionCache.rect.width, height: this.#interactionCache.rect.height };
+      updated.layers = updated.layers.map(({ layer, state }) => {
+        const newState = { ...state, transform: T.multiply(state.transform) };
+        layer.state = newState;
+        return { layer, state: newState };
+      });
+      this.#mainCanvas.width = this.#interactionCache.rect.width;
+      this.#mainCanvas.height = this.#interactionCache.rect.height;
+      this.#state.state = updated;
+      this.#staleViewportInv = true;
+
+      return true;
     }
 
     /** @param {ImageEncodeOptions?} options */
@@ -324,9 +390,11 @@ module.exports = function (meta) {
 
     /** @param {number} layerIndex  */
     toggleLayerVisibility(layerIndex) {
-      if (layerIndex in this.#layers) {
-        this.#layers[layerIndex].layer.toggleVisibility();
-      }
+      if (!(layerIndex in this.#layers)) return;
+
+      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+      updated.layers[layerIndex] = { ...updated.layers[layerIndex], visible: !updated.layers[layerIndex].visible };
+      this.#state.state = updated;
     }
 
     refreshViewport() {
@@ -352,19 +420,31 @@ module.exports = function (meta) {
     }
 
     undo() {
+      const oldWidth = this.#mainCanvas.width;
+      const oldHeight = this.#mainCanvas.height;
+
       const undid = this.#state.undo();
-      if (undid) {
-        this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
+      if (!undid) return false;
+      if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
+        this.#mainCanvas.width = this.#state.state.width;
+        this.#mainCanvas.height = this.#state.state.height;
       }
-      return undid;
+      this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
+      return true;
     }
 
     redo() {
+      const oldWidth = this.#mainCanvas.width;
+      const oldHeight = this.#mainCanvas.height;
+
       const redid = this.#state.redo();
-      if (redid) {
-        this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
+      if (!redid) return false;
+      if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
+        this.#mainCanvas.width = this.#state.state.width;
+        this.#mainCanvas.height = this.#state.state.height;
       }
-      return redid;
+      this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
+      return true;
     }
   }
 
@@ -373,7 +453,6 @@ module.exports = function (meta) {
     #canvas;
     #state;
     #previewTransform;
-    #isVisible;
 
     /** @param {ImageBitmap | {width: number, height: number}} bitmap */
     constructor(bitmap) {
@@ -381,10 +460,10 @@ module.exports = function (meta) {
       this.#state = {
         transform: new DOMMatrix(),
         /** @type {{color: string, width: number, path2D: Path2D, clipPath: Path2D}[]} */
-        strokes: []
+        strokes: [],
+        isVisible: true,
       };
       this.#previewTransform = new DOMMatrix();
-      this.#isVisible = true;
       if (bitmap instanceof ImageBitmap) {
         this.#img = bitmap;
         this.#drawImage();
@@ -419,8 +498,6 @@ module.exports = function (meta) {
       this.#previewTransform = new DOMMatrix();
       return this.#state;
     }
-
-    toggleVisibility() { this.#isVisible = !this.#isVisible }
 
     /**
      * @param {DOMRect} strokeRect
@@ -490,7 +567,7 @@ module.exports = function (meta) {
 
     /** @param {OffscreenCanvas} canvas */
     drawOn(canvas) {
-      if (!this.#isVisible) return;
+      if (!this.#state.isVisible) return;
 
       const ctx = canvas.getContext("2d");
       ctx.save();
@@ -803,7 +880,7 @@ module.exports = function (meta) {
             const handleClick = e => { if (!disabled) { onClick?.(e); onClick2?.(e) } };
             const handleKeyUp = e => (e.key === 'Enter' || e.key === ' ') && handleClick(e);
 
-            return jsx(internals.nativeUI[internals.keys.FocusRing], {
+            return [internals.keys.FocusRing] && jsx(internals.nativeUI[internals.keys.FocusRing], {
               children: jsx("div", {
                 onMouseEnter,
                 onMouseLeave,
@@ -835,6 +912,8 @@ module.exports = function (meta) {
 
     /** @param {{url: string}} props */
     RemixIcon({ url }) {
+      if (!internals.keys.ModalRoot || !internals.keys.ModalContent) return;
+
       const [fetching, setFetching] = useState(false);
       const ctrl = useRef(new AbortController());
       const userActions = useRef(null);
@@ -850,22 +929,20 @@ module.exports = function (meta) {
             const bitmap = await createImageBitmap(blob);
 
             internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
-            internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, null,
-              jsx(internals.nativeUI.ConfirmModal, {
+            internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, {
+              children: jsx(internals.Modal[internals.keys.ModalRoot], {
                 ...e,
+                animation: "subtle",
+                size: "dynamic",
                 className: `${meta.slug}Root`,
-                confirmText: "Save",
-                cancelText: "Cancel",
-                confirmButtonColor: internals.Button.Colors.BRAND,
-                onConfirm: () => {
-                  userActions.current?.upload()
-                },
-                children: jsx(Components.ImageEditor, {
-                  bitmap,
-                  ref: userActions,
-                  ready: !!e.transitionState,
+                children: jsx(internals.Modal[internals.keys.ModalContent], {
+                  children: jsx(Components.ImageEditor, {
+                    bitmap,
+                    ref: userActions,
+                  })
                 }),
-              }))
+              })
+            })
             );
             setFetching(false);
           } catch (e) {
@@ -883,32 +960,27 @@ module.exports = function (meta) {
     },
 
     UploadIcon({ args }) {
+      if (!internals.keys.ModalRoot || !internals.keys.ModalContent) return;
       // forwardRef for replace()
       const userActions = useRef(null);
 
       return jsx(Components.IconButton, {
         onClick: () => {
           createImageBitmap(args.upload.item.file).then(bitmap => {
-            internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, null,
-              jsx(internals.nativeUI.ConfirmModal, {
+            internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, {
+              children: jsx(internals.Modal[internals.keys.ModalRoot], {
                 ...e,
+                animation: "subtle",
+                size: "dynamic",
                 className: `${meta.slug}Root`,
-                confirmText: "Save",
-                cancelText: "Cancel",
-                confirmButtonColor: internals.Button.Colors.BRAND,
-                onConfirm: () => {
-                  userActions.current?.replace({
-                    draftType: args.draftType,
-                    upload: args.upload,
-                  })
-                },
-                children: jsx(Components.ImageEditor, {
-                  bitmap,
-                  ref: userActions,
-                  ready: !!e.transitionState,
-                }),
-              }))
-            )
+                children: jsx(internals.Modal[internals.keys.ModalContent], {
+                  children: jsx(Components.ImageEditor, {
+                    bitmap,
+                    ref: userActions,
+                  }),
+                })
+              })
+            }))
           }).catch(() => {
             UI.showToast("Could not load image", { type: "error" });
           });
@@ -919,12 +991,14 @@ module.exports = function (meta) {
     },
 
     /** @param {{bitmap: ImageBitmap, ref: React.RefObject<any>}} props */
-    ImageEditor({ bitmap, ref, ready }) {
+    ImageEditor({ bitmap, ref }) {
       const [mode, _setMode] = useState(null);
       const [canUndoRedo, setCanUndoRedo] = useState(0);
+      const [dims, setDims] = useState({ width: bitmap.width, height: bitmap.height });
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 5, color: "#000000" }));
 
+      const isInteracting = useRef(false);
       /** @type { React.RefObject<HTMLCanvasElement | null> } */
       const canvasRef = useRef(null);
       const canvasRect = useRef(new DOMRect());
@@ -936,6 +1010,8 @@ module.exports = function (meta) {
       const auxRef = useRef(null);
 
       const setMode = useCallback((newVal) => {
+        if (isInteracting.current) return;
+
         _setMode((oldMode) => {
           const newMode = newVal instanceof Function ? newVal(oldMode) : newVal;
           ["--translate"].forEach(prop => overlay.current.style.removeProperty(prop));
@@ -1001,13 +1077,19 @@ module.exports = function (meta) {
       const render = useCallback(() => {
         editor.current.render();
         setCanUndoRedo(editor.current.canUndo << 1 ^ editor.current.canRedo);
+        setDims(d => {
+          if (d.width === editor.current.width && d.height === editor.current.height)
+            return d;
+          return { width: editor.current.width, height: editor.current.height }
+        });
       }, []);
 
       useEffect(() => {
         const rect = canvasRef.current.offsetParent.getBoundingClientRect();
-        canvasRef.current.width = ~~(rect.width / 0.7);
-        canvasRef.current.height = ~~(rect.height / 0.7);
+        canvasRef.current.width = ~~(rect.width);
+        canvasRef.current.height = ~~(rect.height);
         editor.current = new CanvasEditor(canvasRef.current, bitmap);
+        canvasRect.current = canvasRef.current.getBoundingClientRect();
 
         const ctrl = new AbortController();
         addEventListener("keydown", e => {
@@ -1024,6 +1106,22 @@ module.exports = function (meta) {
               editor.current.resetViewport();
               if (canvasRef.current?.matches(".rotating")) {
                 overlay.current.style.removeProperty("--translate");
+              }
+              return;
+
+            case !e.repeat && e.ctrlKey && "c":
+              if (DiscordNative?.clipboard.copyImage) {
+                editor.current.toBlob({
+                  type: 'image/png'
+                }).then(blob =>
+                  blob.arrayBuffer()
+                ).then(buf => {
+                  DiscordNative.clipboard.copyImage(new Uint8Array(buf), "image.png");
+                }).then(() => {
+                  UI.showToast("Image copied", { type: "success" })
+                }).catch(() => {
+                  UI.showToast("Failed to copy image", { type: "error" })
+                });
               }
               return;
 
@@ -1050,16 +1148,26 @@ module.exports = function (meta) {
         }, ctrl);
         addEventListener("resize", () => {
           canvasRect.current = canvasRef.current.getBoundingClientRect();
-        }, ctrl)
+        }, ctrl);
+        addEventListener("paste", async (e) => {
+          e.stopPropagation()
+          const items = e.clipboardData.items;
+          for (const index in items) {
+            const item = items[index];
+            if (item.kind === 'file') {
+              const file = item.getAsFile();
+              if (!file) continue;
+
+              const bitmap = await createImageBitmap(file)
+              editor.current.createNewLayer(bitmap);
+              render();
+              break;
+            }
+          }
+        }, { signal: ctrl.signal, capture: true });
 
         return () => ctrl.abort()
       }, []);
-
-      useEffect(() => {
-        if (ready) {
-          canvasRect.current = canvasRef.current.getBoundingClientRect();
-        }
-      }, [ready]);
 
       const handleWheel = hooks.useDebouncedWheel({
         onChange: (e, store) => {
@@ -1085,9 +1193,19 @@ module.exports = function (meta) {
             const y = (e.clientY - canvasRect.current.y) / canvasRect.current.height;
             editor.current.scaleViewportBy(delta, x, y);
 
-            if (mode == 1) {
-              const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
-              overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
+            switch (mode) {
+              case 0: {
+                const rect = editor.current.regionRect;
+                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+              }
+              case 1: {
+                const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
+                overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
+                break;
+              }
             }
           }
         },
@@ -1109,12 +1227,24 @@ module.exports = function (meta) {
             startX: e.clientX,
             startY: e.clientY,
           });
+          isInteracting.current = true;
 
-          if (mode === 4) {
-            const boxScale = canvasRect.current.width / e.currentTarget.width;
-            const startX = (e.clientX - canvasRect.current.x) / boxScale;
-            const startY = (e.clientY - canvasRect.current.y) / boxScale;
-            editor.current.startDrawing(new DOMPoint(startX, startY), strokeStyle.width, strokeStyle.color);
+          switch (mode) {
+            case !!(e.buttons & 1) && 0: {
+              canvasRef.current.classList.add("pointerdown");
+              const boxScale = canvasRect.current.width / e.currentTarget.width;
+              const startX = (e.clientX - canvasRect.current.x) / boxScale;
+              const startY = (e.clientY - canvasRect.current.y) / boxScale;
+              editor.current.startRegionSelect(new DOMPoint(startX, startY));
+              break;
+            }
+            case 4: {
+              const boxScale = canvasRect.current.width / e.currentTarget.width;
+              const startX = (e.clientX - canvasRect.current.x) / boxScale;
+              const startY = (e.clientY - canvasRect.current.y) / boxScale;
+              editor.current.startDrawing(new DOMPoint(startX, startY), strokeStyle.width, strokeStyle.color);
+              break;
+            }
           }
         },
         onChange: (e, store) => {
@@ -1122,14 +1252,36 @@ module.exports = function (meta) {
             const dx = (e.clientX - store.startX) / canvasRect.current.width * e.currentTarget.width;
             const dy = (e.clientY - store.startY) / canvasRect.current.height * e.currentTarget.height;
             editor.current.translateViewportBy(dx, dy);
-            if (mode == 1) {
-              const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
-              overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
+
+            switch (mode) {
+              case 0: {
+                const rect = editor.current.regionRect;
+                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+                break;
+              }
+              case 1: {
+                const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
+                overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
+                break;
+              }
             }
           } else {
             store.changed = true;
             switch (mode) {
               case 0: {
+                const boxScale = canvasRect.current.width / e.currentTarget.width;
+                const startX = (e.clientX - canvasRect.current.x) / boxScale;
+                const startY = (e.clientY - canvasRect.current.y) / boxScale;
+                editor.current.regionSelect(new DOMPoint(startX, startY));
+
+                const rect = editor.current.regionRect;
+                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
                 break;
               }
               case 1: {
@@ -1176,23 +1328,27 @@ module.exports = function (meta) {
           });
         },
         onSubmit: (e, store) => {
-          if (!store.changed) return;
+          isInteracting.current = false;
 
           switch (mode) {
             case 0: {
+              canvasRef.current.classList.remove("pointerdown");
+              ["--x1", "--x2", "--y1", "--y2"].forEach(a => overlay.current.style.removeProperty(a));
+              if (store.changed && editor.current.endRegionSelect()) render();
+
               break;
             }
-            case 1:
+            case store.changed && 1:
               const cr = utils.getAngle(editor.current.previewLayerTransform).toFixed(1);
               auxRef.current?.setValue(cr);
             // Intentional fall-through
-            case 2: {
+            case store.changed && 2: {
               editor.current.finalizeLayerPreview();
               render();
               break;
             }
-            case 4: {
-              editor.current.finishDrawing();
+            case store.changed && 4: {
+              editor.current.endDrawing();
               render();
               break;
             }
@@ -1207,19 +1363,31 @@ module.exports = function (meta) {
             className: "canvas-dims",
             children: [
               jsx(Components.NumberSlider, {
-                value: bitmap.width,
+                value: dims.width,
                 decimals: 0,
                 onChange: null,
                 withSlider: false,
                 minValue: 0,
+                onChange: width => {
+                  if (width !== editor.current.width) {
+                    editor.current.width = width;
+                    render();
+                  }
+                }
               }),
               "x",
               jsx(Components.NumberSlider, {
-                value: bitmap.height,
+                value: dims.height,
                 decimals: 0,
                 onChange: null,
                 withSlider: false,
                 minValue: 0,
+                onChange: height => {
+                  if (height !== editor.current.width) {
+                    editor.current.height = height;
+                    render();
+                  }
+                }
               }),
             ]
           }),
@@ -1531,7 +1699,7 @@ module.exports = function (meta) {
         className: "number-input-wrapper",
         children: [
           withSlider && jsx("span", {
-            children: jsx(internals.nativeUI[internals.keys.MenuSliderControl], {
+            children: internals.keys.MenuSliderControl && jsx(internals.nativeUI[internals.keys.MenuSliderControl], {
               ref: sliderRef,
               mini: true,
               className: internals.sliderClass?.slider,
