@@ -170,15 +170,11 @@ module.exports = function (meta) {
     get previewLayerTransform() { return this.#activeLayer.previewTransform }
     get layerTransform() { return this.#activeLayer.state.transform }
 
-    get width() { return this.#mainCanvas.width }
-    get height() { return this.#mainCanvas.height }
-    set width(width) {
-      this.#mainCanvas.width = width;
-      this.#state.state = { ...this.#state.state, width }
-    }
-    set height(height) {
-      this.#mainCanvas.height = height;
-      this.#state.state = { ...this.#state.state, height }
+    get canvasDims() { return { width: this.#mainCanvas.width, height: this.#mainCanvas.height } }
+    set canvasDims(dims) {
+      this.#mainCanvas.width = dims.width;
+      this.#mainCanvas.height = dims.height;
+      this.#state.state = { ... this.#state.state, width: dims.width, height: dims.height }
     }
 
     /** @param {ImageBitmap | null} bitmap */
@@ -341,12 +337,13 @@ module.exports = function (meta) {
     }
 
     /** @param {DOMPoint} startPoint  */
-    startRegionSelect(startPoint) {
+    startRegionSelect(startPoint, fixedAspect = false) {
       const start_T = startPoint.matrixTransform(this.viewportTransform_inv);
       start_T.x = utils.clamp(0, start_T.x, this.#mainCanvas.width);
       start_T.y = utils.clamp(0, start_T.y, this.#mainCanvas.height);
       this.#interactionCache.lastPoint = start_T;
       this.#interactionCache.rect = new DOMRect(start_T.x, start_T.y, 0, 0);
+      this.#interactionCache.width = Number(fixedAspect);
     }
 
     /** @param {DOMPoint} to  */
@@ -355,14 +352,27 @@ module.exports = function (meta) {
       to_T.x = utils.clamp(0, to_T.x, this.#mainCanvas.width);
       to_T.y = utils.clamp(0, to_T.y, this.#mainCanvas.height);
 
-      this.#interactionCache.rect.x = Math.min(this.#interactionCache.lastPoint.x, to_T.x);
-      this.#interactionCache.rect.y = Math.min(this.#interactionCache.lastPoint.y, to_T.y);
-      this.#interactionCache.rect.width = Math.abs(this.#interactionCache.lastPoint.x - to_T.x);
-      this.#interactionCache.rect.height = Math.abs(this.#interactionCache.lastPoint.y - to_T.y);
+      this.#interactionCache.rect.width = to_T.x - this.#interactionCache.lastPoint.x;
+      this.#interactionCache.rect.height = to_T.y - this.#interactionCache.lastPoint.y;
+
+      if (this.#interactionCache.width) {
+        // fixed Aspect ratio
+        const aspect = this.#mainCanvas.width / this.#mainCanvas.height;
+
+        this.#interactionCache.rect.width = utils.maxAbs(this.#interactionCache.rect.width, (Math.sign(this.#interactionCache.rect.width) || 1) * Math.abs(this.#interactionCache.rect.height) * aspect);
+        this.#interactionCache.rect.height = utils.maxAbs(this.#interactionCache.rect.height, (Math.sign(this.#interactionCache.rect.height) || 1) * Math.abs(this.#interactionCache.rect.width) / aspect);
+
+        this.#interactionCache.rect.width = utils.clamp(-this.#interactionCache.lastPoint.x, this.#interactionCache.rect.width, this.#mainCanvas.width - this.#interactionCache.lastPoint.x);
+        this.#interactionCache.rect.height = utils.clamp(-this.#interactionCache.lastPoint.y, this.#interactionCache.rect.height, this.#mainCanvas.height - this.#interactionCache.lastPoint.y);
+
+        this.#interactionCache.rect.width = utils.minAbs(this.#interactionCache.rect.width, (Math.sign(this.#interactionCache.rect.width) || 1) * Math.abs(this.#interactionCache.rect.height) * aspect);
+        this.#interactionCache.rect.height = utils.minAbs(this.#interactionCache.rect.height, (Math.sign(this.#interactionCache.rect.height) || 1) * Math.abs(this.#interactionCache.rect.width) / aspect);
+      }
     }
 
     endRegionSelect() {
-      if (this.#interactionCache.rect.width === 0 || this.#interactionCache.rect.height === 0) return false;
+      if (this.#interactionCache.rect.width === 0 || this.#interactionCache.rect.height === 0)
+        return false;
 
       const ccx = this.#interactionCache.rect.left + this.#interactionCache.rect.width / 2;
       const ccy = this.#interactionCache.rect.top + this.#interactionCache.rect.height / 2;
@@ -377,12 +387,34 @@ module.exports = function (meta) {
         layer.state = newState;
         return { layer, state: newState };
       });
-      this.#mainCanvas.width = this.#interactionCache.rect.width;
-      this.#mainCanvas.height = this.#interactionCache.rect.height;
+      this.#mainCanvas.width = Math.abs(this.#interactionCache.rect.width);
+      this.#mainCanvas.height = Math.abs(this.#interactionCache.rect.height);
       this.#state.state = updated;
       this.#staleViewportInv = true;
 
       return true;
+    }
+
+    /** @param {1 | -1} x @param {1 | -1} y */
+    flip(x, y) {
+      const T = new DOMMatrix().scaleSelf(x, y);
+      const layers = this.#layers.map(({ layer, state }) => {
+        layer.previewTransformBy(T);
+        return { layer, state: layer.finalizePreview() }
+      });
+      this.#state.state = { ...this.#state.state, layers }
+    }
+
+    /** @param {90 | -90} angle  */
+    rotate(angle) {
+      const T = new DOMMatrix().rotateSelf(angle);
+      const layers = this.#layers.map(({ layer, state }) => {
+        layer.previewTransformBy(T);
+        return { layer, state: layer.finalizePreview() }
+      });
+      this.#mainCanvas.width = this.#state.state.height;
+      this.#mainCanvas.height = this.#state.state.width;
+      this.#state.state = { ...this.#state.state, layers, width: this.#state.state.height, height: this.#state.state.width }
     }
 
     /** @param {ImageEncodeOptions?} options */
@@ -1078,9 +1110,10 @@ module.exports = function (meta) {
         editor.current.render();
         setCanUndoRedo(editor.current.canUndo << 1 ^ editor.current.canRedo);
         setDims(d => {
-          if (d.width === editor.current.width && d.height === editor.current.height)
+          const { width, height } = editor.current.canvasDims;
+          if (d.width === width && d.height === height)
             return d;
-          return { width: editor.current.width, height: editor.current.height }
+          return { width, height }
         });
       }, []);
 
@@ -1235,10 +1268,10 @@ module.exports = function (meta) {
               const boxScale = canvasRect.current.width / e.currentTarget.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
-              editor.current.startRegionSelect(new DOMPoint(startX, startY));
+              editor.current.startRegionSelect(new DOMPoint(startX, startY), fixedAspect);
               break;
             }
-            case 4: {
+            case !!(e.buttons & 1) && 4: {
               const boxScale = canvasRect.current.width / e.currentTarget.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
@@ -1368,9 +1401,10 @@ module.exports = function (meta) {
                 onChange: null,
                 withSlider: false,
                 minValue: 0,
-                onChange: width => {
-                  if (width !== editor.current.width) {
-                    editor.current.width = width;
+                onChange: newWidth => {
+                  const { width, height } = editor.current.canvasDims;
+                  if (newWidth !== width) {
+                    editor.current.canvasDims = { width: newWidth, height };
                     render();
                   }
                 }
@@ -1382,9 +1416,10 @@ module.exports = function (meta) {
                 onChange: null,
                 withSlider: false,
                 minValue: 0,
-                onChange: height => {
-                  if (height !== editor.current.width) {
-                    editor.current.height = height;
+                onChange: newHeight => {
+                  const { width, height } = editor.current.canvasDims;
+                  if (newHeight !== height) {
+                    editor.current.canvasDims = { width, height: newHeight };
                     render();
                   }
                 }
@@ -1443,17 +1478,17 @@ module.exports = function (meta) {
                 active: mode === 4,
                 onClick: () => setMode(m => m === 4 ? null : 4)
               }),
-              // mode == 0 && jsx("label", {
-              //   className: "aux-input",
-              //   style: { gap: 8, cursor: "pointer" },
-              //   children: [
-              //     jsx(Components.IconButton, {
-              //       tooltip: fixedAspect ? "Preserve aspect ratio" : "Free region select",
-              //       d: fixedAspect ? utils.paths.Lock : utils.paths.LockOpen,
-              //       onClick: () => setFixedAspect(e => !e),
-              //     }),
-              //   ]
-              // }),
+              mode == 0 && jsx("label", {
+                className: "aux-input",
+                style: { gap: 8, cursor: "pointer" },
+                children: [
+                  jsx(Components.IconButton, {
+                    tooltip: fixedAspect ? "Preserve aspect ratio" : "Free region select",
+                    d: fixedAspect ? utils.paths.Lock : utils.paths.LockOpen,
+                    onClick: () => !isInteracting && setFixedAspect(e => !e),
+                  }),
+                ]
+              }),
               mode == 1 && jsx("div", {
                 className: "aux-input",
                 children: jsx(Components.NumberSlider, {
@@ -1528,8 +1563,7 @@ module.exports = function (meta) {
                 tooltip: "Flip Horizontal",
                 d: utils.paths.FlipH,
                 onClick: () => {
-                  editor.current.previewLayerTransformBy(new DOMMatrix().scaleSelf(-1, 1));
-                  editor.current.finalizeLayerPreview();
+                  editor.current.flip(-1, 1);
                   render();
                   if (mode === 1) {
                     auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
@@ -1540,8 +1574,7 @@ module.exports = function (meta) {
                 tooltip: "Flip Vertical",
                 d: utils.paths.FlipV,
                 onClick: () => {
-                  editor.current.previewLayerTransformBy(new DOMMatrix().scaleSelf(1, -1));
-                  editor.current.finalizeLayerPreview();
+                  editor.current.flip(1, -1);
                   render();
                   if (mode === 1) {
                     auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
@@ -1551,12 +1584,24 @@ module.exports = function (meta) {
               jsx(Components.IconButton, {
                 tooltip: "Rotate Left",
                 d: utils.paths.RotL,
-                onClick: () => { },
+                onClick: () => {
+                  editor.current.rotate(-90);
+                  render();
+                  if (mode === 1) {
+                    auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
+                  }
+                },
               }),
               jsx(Components.IconButton, {
                 tooltip: "Rotate Right",
                 d: utils.paths.RotR,
-                onClick: () => { },
+                onClick: () => {
+                  editor.current.rotate(90);
+                  render();
+                  if (mode === 1) {
+                    auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
+                  }
+                },
               }),
               jsx(Components.IconButton, {
                 tooltip: "Undo (Ctrl + Z)",
