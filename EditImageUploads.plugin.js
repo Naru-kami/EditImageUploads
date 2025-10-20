@@ -11,7 +11,7 @@ module.exports = function (meta) {
 
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI } = BdApi;
   /** @type {typeof import("react")} */
-  const { createElement: jsx, useState, useEffect, useRef, useImperativeHandle, useCallback, cloneElement } = React;
+  const { createElement: jsx, useState, useEffect, useRef, useImperativeHandle, useCallback, Fragment, cloneElement } = React;
 
   var internals, ctrl;
 
@@ -22,8 +22,8 @@ module.exports = function (meta) {
       uploadDispatcher: { filter: Filters.byKeys("setFile") }, // 166459
       uploadCard: { filter: Filters.bySource(".attachmentItemSmall]:") }, // 898463
       nativeUI: { filter: m => m.showToast }, // 481060
-      Modal: { filter: Filters.bySource(".MODAL_ROOT_LEGACY,") },
-      Button: { filter: Filters.byKeys("Colors", "Link"), searchExports: true }, // 693789
+      Modal: { filter: Filters.bySource(".MODAL_ROOT_LEGACY,") }, // 466377
+      Button: { filter: Filters.bySource("BUTTON_LOADING_STARTED_LABEL,") }, // 906003
 
       actionButtonClass: { filter: Filters.byKeys("dangerous", "button") },
       actionIconClass: { filter: m => m.actionBarIcon && m[Symbol.toStringTag] != "Module" },
@@ -36,16 +36,21 @@ module.exports = function (meta) {
         ...utils.getKeysInModule(internals.uploadCard, {
           uploadCard: ".attachmentItemSmall]:",
         }),
+        ...utils.getKeysInModule(internals.Button, {
+          Button: "BUTTON_LOADING_STARTED_LABEL,"
+        }),
         ...utils.getKeysInModule(internals.nativeUI, {
           FocusRing: "FocusRing was given a focusTarget",
           openModal: ",stackNextByDefault:",
+          closeModal: ".onCloseCallback()",
           MenuSliderControl: "moveGrabber",
           closeModalInAllContexts: ".onCloseCallback)",
           Popout: "Unsupported animation config:",
         }),
         ...utils.getKeysInModule(internals.Modal, {
           ModalRoot: ".MODAL_ROOT_LEGACY,",
-          ModalContent: ",scrollbarType:"
+          ModalContent: ",scrollbarType:",
+          ModalFooter: "footerSeparator]",
         })
       }
     })
@@ -69,12 +74,12 @@ module.exports = function (meta) {
 
     ctrl = new AbortController()
     Webpack.waitForModule(Filters.bySource('children:["IMAGE"==='), ctrl).then(m => { // 73249
-      Patcher.after(meta.slug, m.Z, "type", (_, [args], res) => {
+      m?.Z && Patcher.after(meta.slug, m.Z, "type", (_, [args], res) => {
         return cloneElement(res, {
           children: className => {
             const ret = res.props.children(className);
 
-            const url = args.item.original || args.item.url;
+            const url = utils.toImgSrc(args.item.url, args.item.proxyUrl);
             url && ret.props.children.unshift(jsx(Components.RemixIcon, { url }))
 
             return ret;
@@ -374,21 +379,25 @@ module.exports = function (meta) {
       if (this.#interactionCache.rect.width === 0 || this.#interactionCache.rect.height === 0)
         return false;
 
-      const ccx = this.#interactionCache.rect.left + this.#interactionCache.rect.width / 2;
-      const ccy = this.#interactionCache.rect.top + this.#interactionCache.rect.height / 2;
+      const width = Math.abs(this.#interactionCache.rect.width);
+      const height = Math.abs(this.#interactionCache.rect.height);
+
+      const ccx = this.#interactionCache.rect.left + width / 2;
+      const ccy = this.#interactionCache.rect.top + height / 2;
 
       const cx = this.#mainCanvas.width / 2;
       const cy = this.#mainCanvas.height / 2;
 
       const T = new DOMMatrix().translateSelf(cx - ccx, cy - ccy);
-      const updated = { ...this.#state.state, width: this.#interactionCache.rect.width, height: this.#interactionCache.rect.height };
+
+      const updated = { ...this.#state.state, width, height };
       updated.layers = updated.layers.map(({ layer, state }) => {
         const newState = { ...state, transform: T.multiply(state.transform) };
         layer.state = newState;
         return { layer, state: newState };
       });
-      this.#mainCanvas.width = Math.abs(this.#interactionCache.rect.width);
-      this.#mainCanvas.height = Math.abs(this.#interactionCache.rect.height);
+      this.#mainCanvas.width = width;
+      this.#mainCanvas.height = height;
       this.#state.state = updated;
       this.#staleViewportInv = true;
 
@@ -760,6 +769,72 @@ module.exports = function (meta) {
       }
     },
 
+    openEditor({ onSubmit, bitmap, userActions }) {
+      const id = internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, {
+        children: jsx(internals.Modal[internals.keys.ModalRoot], {
+          ...e,
+          animation: "subtle",
+          size: "dynamic",
+          className: `${meta.slug}Root`,
+          children: [
+            jsx(internals.Modal[internals.keys.ModalFooter], {
+              className: "modal-footer",
+              children: [
+                jsx(internals.Button[internals.keys.Button], {
+                  text: "Save",
+                  type: "submit",
+                  variant: "primary",
+                  onClick: () => {
+                    onSubmit?.();
+                    internals.nativeUI[internals.keys.closeModal](id);
+                  }
+                }),
+                jsx(internals.Button[internals.keys.Button], {
+                  text: "Cancel",
+                  variant: "secondary",
+                  onClick: () => {
+                    internals.nativeUI[internals.keys.closeModal](id);
+                  }
+                }),
+              ]
+            }),
+            jsx(internals.Modal[internals.keys.ModalContent], {
+              className: "image-editor",
+              children: jsx(Components.ImageEditor, {
+                bitmap,
+                ref: userActions,
+              })
+            })
+          ]
+        })
+      }));
+    },
+
+    toImgSrc(url, proxyUrl) {
+      function toURLSafe(e) {
+        try { return new URL(e) }
+        catch (e) { return null }
+      }
+      function cdn(e) {
+        let t = toURLSafe(e);
+        return null != t && (t.host === "cdn.discordapp.com" || /^.*\.discordapp\.net$/.test(t.hostname))
+      }
+      function g(e) {
+        let l = "https://media.discordapp.net", a = "cdn.discordapp.com", t = toURLSafe(e);
+        return null == t || t.host === l ? e : (t.origin === a ? (t.host = l,
+          t.searchParams.delete("size"),
+          t.searchParams.delete("width"),
+          t.searchParams.delete("height"),
+          t.searchParams.delete("quality")) : (
+          t.searchParams.delete("width"),
+          t.searchParams.delete("height"),
+          t.searchParams.set("quality", "lossless")),
+          t.searchParams.delete("format"),
+          t.toString())
+      }
+      return cdn(url) ? g(url) : (null != proxyUrl && "" !== proxyUrl ? proxyUrl : url)
+    },
+
     paths: {
       Main: "M7.47 21.49C4.2 19.93 1.86 16.76 1.5 13H0c.51 6.16 5.66 11 11.95 11 .23 0 .44-.02.66-.03L8.8 20.15zM12.05 0c-.23 0-.44.02-.66.04l3.81 3.81 1.33-1.33C19.8 4.07 22.14 7.24 22.5 11H24c-.51-6.16-5.66-11-11.95-11M16 14h2V8c0-1.11-.9-2-2-2h-6v2h6zm-8 2V4H6v2H4v2h2v8c0 1.1.89 2 2 2h8v2h2v-2h2v-2z",
       FlipH: "M1.2656 20.1094 8.7188 4.4531C9.1406 3.6094 10.3594 3.8906 10.3594 4.8281L10.3594 20.4375C10.3594 21.375 9.8906 21.7969 8.9531 21.7969L2.2969 21.7969C1.3594 21.7969.8438 20.9531 1.2656 20.1094ZM22.8281 20.1094 15.375 4.4531C14.9531 3.6094 13.7344 3.8906 13.7344 4.8281L13.7344 20.4375C13.7344 21.375 14.2031 21.7969 15.1406 21.7969L21.7969 21.7969C22.7344 21.7969 23.25 20.9531 22.8281 20.1094Z",
@@ -944,7 +1019,7 @@ module.exports = function (meta) {
 
     /** @param {{url: string}} props */
     RemixIcon({ url }) {
-      if (!internals.keys.ModalRoot || !internals.keys.ModalContent) return;
+      if (!internals.keys.ModalRoot || !internals.keys.ModalContent || !internals.keys.ModalFooter) return;
 
       const [fetching, setFetching] = useState(false);
       const ctrl = useRef(new AbortController());
@@ -961,21 +1036,11 @@ module.exports = function (meta) {
             const bitmap = await createImageBitmap(blob);
 
             internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
-            internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, {
-              children: jsx(internals.Modal[internals.keys.ModalRoot], {
-                ...e,
-                animation: "subtle",
-                size: "dynamic",
-                className: `${meta.slug}Root`,
-                children: jsx(internals.Modal[internals.keys.ModalContent], {
-                  children: jsx(Components.ImageEditor, {
-                    bitmap,
-                    ref: userActions,
-                  })
-                }),
-              })
-            })
-            );
+            utils.openEditor({
+              onSubmit: () => { userActions.current?.upload() },
+              userActions,
+              bitmap
+            });
             setFetching(false);
           } catch (e) {
             setFetching(false);
@@ -999,20 +1064,16 @@ module.exports = function (meta) {
       return jsx(Components.IconButton, {
         onClick: () => {
           createImageBitmap(args.upload.item.file).then(bitmap => {
-            internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, {
-              children: jsx(internals.Modal[internals.keys.ModalRoot], {
-                ...e,
-                animation: "subtle",
-                size: "dynamic",
-                className: `${meta.slug}Root`,
-                children: jsx(internals.Modal[internals.keys.ModalContent], {
-                  children: jsx(Components.ImageEditor, {
-                    bitmap,
-                    ref: userActions,
-                  }),
+            utils.openEditor({
+              onSubmit: () => {
+                userActions.current?.replace({
+                  draftType: args.draftType,
+                  upload: args.upload,
                 })
-              })
-            }))
+              },
+              userActions,
+              bitmap,
+            });
           }).catch(() => {
             UI.showToast("Could not load image", { type: "error" });
           });
@@ -1180,6 +1241,11 @@ module.exports = function (meta) {
           }
         }, ctrl);
         addEventListener("resize", () => {
+          const rect = canvasRef.current.offsetParent.getBoundingClientRect();
+          canvasRef.current.width = ~~(rect.width);
+          canvasRef.current.height = ~~(rect.height);
+          editor.current.refreshViewport();
+
           canvasRect.current = canvasRef.current.getBoundingClientRect();
         }, ctrl);
         addEventListener("paste", async (e) => {
@@ -1367,7 +1433,10 @@ module.exports = function (meta) {
             case 0: {
               canvasRef.current.classList.remove("pointerdown");
               ["--x1", "--x2", "--y1", "--y2"].forEach(a => overlay.current.style.removeProperty(a));
-              if (store.changed && editor.current.endRegionSelect()) render();
+              if (store.changed && editor.current.endRegionSelect()) {
+                render();
+                editor.current.resetViewport();
+              };
 
               break;
             }
@@ -1389,8 +1458,7 @@ module.exports = function (meta) {
         }
       });
 
-      return jsx("div", {
-        className: "image-editor",
+      return jsx(Fragment, {
         children: [
           jsx("div", {
             className: "canvas-dims",
@@ -1485,7 +1553,7 @@ module.exports = function (meta) {
                   jsx(Components.IconButton, {
                     tooltip: fixedAspect ? "Preserve aspect ratio" : "Free region select",
                     d: fixedAspect ? utils.paths.Lock : utils.paths.LockOpen,
-                    onClick: () => !isInteracting && setFixedAspect(e => !e),
+                    onClick: () => !isInteracting.current && setFixedAspect(e => !e),
                   }),
                 ]
               }),
@@ -1725,7 +1793,7 @@ module.exports = function (meta) {
 
       const handleWheel = useCallback(e => {
         if (document.activeElement !== e.currentTarget || !e.deltaY || e.buttons) return;
-        const delta = -Math.sign(e.deltaY) * (decimals ? Math.pow(10, -1 * decimals) : 1);
+        const delta = -Math.sign(e.deltaY) * (decimals ? Math.pow(10, -1 * decimals) : 1) * (e.ctrlKey ? 100 : e.shiftKey ? 10 : 1);
         setTextValue(val => {
           val = (Number(val) + delta).toFixed(decimals ?? 0);
           return Math.max(Number(val), minValue ?? Number(val)) + '';
@@ -1784,12 +1852,19 @@ module.exports = function (meta) {
   width: clamp(800px, 80vw, 1100px);
   height: clamp(440px, 80vh, 900px);
   margin-block: auto;
+  flex-direction: column-reverse;
 }
 
 .image-editor {
   height: 100%;
   display: grid;
   grid-template-rows: auto 1fr auto;
+  padding-bottom: 8px;
+  overflow: hidden !important;
+}
+
+.modal-footer {
+  gap: 12px;
 }
 
 .canvas-dims {
