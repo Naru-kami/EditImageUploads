@@ -11,7 +11,7 @@ module.exports = function (meta) {
 
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI } = BdApi;
   /** @type {typeof import("react")} */
-  const { createElement: jsx, useState, useEffect, useRef, useImperativeHandle, useCallback, Fragment, cloneElement } = React;
+  const { createElement: jsx, useState, useEffect, useRef, useImperativeHandle, useCallback, useId, Fragment, cloneElement } = React;
 
   var internals, ctrl;
 
@@ -27,7 +27,8 @@ module.exports = function (meta) {
 
       actionButtonClass: { filter: Filters.byKeys("dangerous", "button") },
       actionIconClass: { filter: m => m.actionBarIcon && m[Symbol.toStringTag] != "Module" },
-      sliderClass: { filter: Filters.byKeys("sliderContainer", "slider") }
+      sliderClass: { filter: Filters.byKeys("sliderContainer", "slider") },
+      scrollbarClass: { filter: Filters.byKeys("thin") },
     });
 
     Object.assign(internals, {
@@ -53,7 +54,7 @@ module.exports = function (meta) {
           ModalFooter: "footerSeparator]",
         })
       }
-    })
+    });
     BdApi.Logger.info(meta.slug, "Initialized");
   }
 
@@ -75,6 +76,8 @@ module.exports = function (meta) {
     ctrl = new AbortController()
     Webpack.waitForModule(Filters.bySource('children:["IMAGE"==='), ctrl).then(m => { // 73249
       m?.Z && Patcher.after(meta.slug, m.Z, "type", (_, [args], res) => {
+        if (args.item.type !== "IMAGE" || args.item.srcIsAnimated)
+          return res;
         return cloneElement(res, {
           children: className => {
             const ret = res.props.children(className);
@@ -104,6 +107,7 @@ module.exports = function (meta) {
     #viewportTransform_inv
     #staleViewportInv;
 
+    #inc_layer_id;
     #state;
     #activeLayerIndex;
 
@@ -126,7 +130,8 @@ module.exports = function (meta) {
         .invertSelf();
       this.#staleViewportInv = false;
 
-      const layer = new Layer(bitmap);
+      this.#inc_layer_id = 0;
+      const layer = new Layer(this.#inc_layer_id++, bitmap);
       this.#state = new utils.StateHistory({
         width: bitmap.width,
         height: bitmap.height,
@@ -145,8 +150,8 @@ module.exports = function (meta) {
       };
     }
 
-    get #layers() { return this.#state.state.layers }
-    get #activeLayer() { return this.#layers[this.#activeLayerIndex].layer }
+    get layers() { return this.#state.state.layers }
+    get #activeLayer() { return this.layers[this.#activeLayerIndex].layer }
     get viewportTransform() { return this.#viewportTransform }
     get viewportTransform_inv() {
       if (this.#staleViewportInv) {
@@ -184,7 +189,7 @@ module.exports = function (meta) {
 
     /** @param {ImageBitmap | null} bitmap */
     createNewLayer(bitmap) {
-      const newLayer = new Layer(bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height });
+      const newLayer = new Layer(this.#inc_layer_id++, bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height });
       this.#state.state = {
         ...this.#state.state,
         layers: [
@@ -196,14 +201,41 @@ module.exports = function (meta) {
       this.#activeLayerIndex = this.#state.state.layers.length - 1;
     }
 
+    /** @param {number} layerIndex  */
+    toggleLayerVisibility(layerIndex) {
+      if (!(layerIndex in this.layers)) return;
+
+      const isVisible = !this.layers[layerIndex].state.isVisible;
+      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+      updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, isVisible } };
+      this.#state.state = updated;
+      this.layers[layerIndex].layer.state.isVisible = isVisible;
+    }
+
     /** @param {number} layerIndex */
-    deleteLayer(layerIndex) {
-      if (layerIndex in this.#layers && this.#layers.length > 1) {
+    set activeLayerIndex(layerIndex) {
+      this.#activeLayerIndex = utils.clamp(0, layerIndex, this.layers.length - 1);
+    }
+    get activeLayerIndex() { return this.#activeLayerIndex }
+
+    deleteLayer(layerIndex = this.#activeLayerIndex) {
+      if (layerIndex in this.layers && this.layers.length > 1) {
         const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
         updated.layers.splice(layerIndex, 1);
         this.#state.state = updated;
         this.#activeLayerIndex = Math.min(this.#activeLayerIndex, updated.layers.length - 1);
       }
+    }
+
+    /** @param {1 | -1} delta  */
+    moveLayers(delta) {
+      if (!((this.#activeLayerIndex + delta) in this.layers)) return;
+
+      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+      [updated.layers[this.#activeLayerIndex], updated.layers[this.#activeLayerIndex + delta]] = [updated.layers[this.#activeLayerIndex + delta], updated.layers[this.#activeLayerIndex]];
+      this.#state.state = updated;
+
+      this.#activeLayerIndex += delta;
     }
 
     translateViewportBy(dx = 0, dy = 0) {
@@ -251,8 +283,8 @@ module.exports = function (meta) {
       bottomCtx.save();
       bottomCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       topCtx.clearRect(0, 0, this.#interactionCache.canvas.width, this.#interactionCache.canvas.height);
-      this.#layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#mainCanvas));
-      this.#layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#interactionCache.canvas));
+      this.layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#mainCanvas));
+      this.layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#interactionCache.canvas));
 
       this.#interactionCache.width = width;
       this.#interactionCache.color = color;
@@ -302,20 +334,31 @@ module.exports = function (meta) {
         bottomCtx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       }
 
-      bottomCtx.lineTo(to_inv.x, to_inv.y);
+      const midpoint = new DOMPoint(
+        (to_inv.x + this.#interactionCache.lastPoint.x) / 2,
+        (to_inv.y + this.#interactionCache.lastPoint.y) / 2
+      );
+
+      bottomCtx.quadraticCurveTo(
+        this.#interactionCache.lastPoint.x,
+        this.#interactionCache.lastPoint.y,
+        midpoint.x,
+        midpoint.y
+      );
       bottomCtx.stroke();
 
       bottomCtx.drawImage(this.#interactionCache.canvas, 0, 0);
       this.refreshViewport();
 
+      const rawMidpoint = midpoint.matrixTransform(this.#interactionCache.layerTransform_inv);
+      const rawLast = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#interactionCache.path2D.quadraticCurveTo(rawLast.x, rawLast.y, rawMidpoint.x, rawMidpoint.y);
       this.#interactionCache.lastPoint = to_inv;
-      const rawPoint = to_inv.matrixTransform(this.#interactionCache.layerTransform_inv);
-      this.#interactionCache.path2D.lineTo(rawPoint.x, rawPoint.y);
 
-      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawPoint.x, rawPoint.x - this.#interactionCache.rect.right, 0);
-      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.y - rawPoint.y, rawPoint.y - this.#interactionCache.rect.bottom, 0);
-      this.#interactionCache.rect.x = Math.min(rawPoint.x, this.#interactionCache.rect.x);
-      this.#interactionCache.rect.y = Math.min(rawPoint.y, this.#interactionCache.rect.y);
+      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawMidpoint.x, rawMidpoint.x - this.#interactionCache.rect.right, 0);
+      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.y - rawMidpoint.y, rawMidpoint.y - this.#interactionCache.rect.bottom, 0);
+      this.#interactionCache.rect.x = Math.min(rawMidpoint.x, this.#interactionCache.rect.x);
+      this.#interactionCache.rect.y = Math.min(rawMidpoint.y, this.#interactionCache.rect.y);
     }
 
     endDrawing() {
@@ -376,7 +419,7 @@ module.exports = function (meta) {
     }
 
     endRegionSelect() {
-      if (this.#interactionCache.rect.width === 0 || this.#interactionCache.rect.height === 0)
+      if (this.#interactionCache.rect.width < 1 || this.#interactionCache.rect.height < 1)
         return false;
 
       const width = Math.abs(this.#interactionCache.rect.width);
@@ -407,7 +450,7 @@ module.exports = function (meta) {
     /** @param {1 | -1} x @param {1 | -1} y */
     flip(x, y) {
       const T = new DOMMatrix().scaleSelf(x, y);
-      const layers = this.#layers.map(({ layer, state }) => {
+      const layers = this.layers.map(({ layer, state }) => {
         layer.previewTransformBy(T);
         return { layer, state: layer.finalizePreview() }
       });
@@ -417,7 +460,7 @@ module.exports = function (meta) {
     /** @param {90 | -90} angle  */
     rotate(angle) {
       const T = new DOMMatrix().rotateSelf(angle);
-      const layers = this.#layers.map(({ layer, state }) => {
+      const layers = this.layers.map(({ layer }) => {
         layer.previewTransformBy(T);
         return { layer, state: layer.finalizePreview() }
       });
@@ -428,15 +471,6 @@ module.exports = function (meta) {
 
     /** @param {ImageEncodeOptions?} options */
     toBlob(options) { return this.#mainCanvas.convertToBlob(options) }
-
-    /** @param {number} layerIndex  */
-    toggleLayerVisibility(layerIndex) {
-      if (!(layerIndex in this.#layers)) return;
-
-      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-      updated.layers[layerIndex] = { ...updated.layers[layerIndex], visible: !updated.layers[layerIndex].visible };
-      this.#state.state = updated;
-    }
 
     refreshViewport() {
       const ctx = this.#viewportCanvas.getContext("2d");
@@ -456,7 +490,7 @@ module.exports = function (meta) {
     render() {
       const ctx = this.#mainCanvas.getContext("2d");
       ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      this.#layers.forEach(layer => layer.layer.drawOn(this.#mainCanvas));
+      this.layers.forEach(layer => layer.layer.drawOn(this.#mainCanvas));
       this.refreshViewport();
     }
 
@@ -466,6 +500,7 @@ module.exports = function (meta) {
 
       const undid = this.#state.undo();
       if (!undid) return false;
+      this.#activeLayerIndex = utils.clamp(0, this.#activeLayerIndex, this.#state.state.layers.length - 1);
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#mainCanvas.width = this.#state.state.width;
         this.#mainCanvas.height = this.#state.state.height;
@@ -480,6 +515,7 @@ module.exports = function (meta) {
 
       const redid = this.#state.redo();
       if (!redid) return false;
+      this.#activeLayerIndex = utils.clamp(0, this.#activeLayerIndex, this.#state.state.layers.length - 1);
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#mainCanvas.width = this.#state.state.width;
         this.#mainCanvas.height = this.#state.state.height;
@@ -495,8 +531,9 @@ module.exports = function (meta) {
     #state;
     #previewTransform;
 
-    /** @param {ImageBitmap | {width: number, height: number}} bitmap */
-    constructor(bitmap) {
+    /** @param {ImageBitmap | {width: number, height: number}} bitmap @param {string} id */
+    constructor(id, bitmap) {
+      this.id = id;
       this.#canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#state = {
         transform: new DOMMatrix(),
@@ -651,6 +688,11 @@ module.exports = function (meta) {
         }
       }
       return found;
+    },
+
+    /** @param {...string} classNames */
+    clsx(...classNames) {
+      return classNames.filter(Boolean).join(" ");
     },
 
     StateHistory:
@@ -836,7 +878,7 @@ module.exports = function (meta) {
     },
 
     paths: {
-      Main: "M7.47 21.49C4.2 19.93 1.86 16.76 1.5 13H0c.51 6.16 5.66 11 11.95 11 .23 0 .44-.02.66-.03L8.8 20.15zM12.05 0c-.23 0-.44.02-.66.04l3.81 3.81 1.33-1.33C19.8 4.07 22.14 7.24 22.5 11H24c-.51-6.16-5.66-11-11.95-11M16 14h2V8c0-1.11-.9-2-2-2h-6v2h6zm-8 2V4H6v2H4v2h2v8c0 1.1.89 2 2 2h8v2h2v-2h2v-2z",
+      Main: "m22.7 14.3l-1 1l-2-2l1-1c.1-.1.2-.2.4-.2c.1 0 .3.1.4.2l1.3 1.3c.1.2.1.5-.1.7M13 19.9V22h2.1l6.1-6.1l-2-2zm-1.79-4.07l-1.96-2.36L6.5 17h6.62l2.54-2.45l-1.7-2.26zM11 19.9v-.85l.05-.05H5V5h14v6.31l2-1.93V5a2 2 0 0 0-2-2H5c-1.1 0-2 .9-2 2v14a2 2 0 0 0 2 2h6z",
       FlipH: "M1.2656 20.1094 8.7188 4.4531C9.1406 3.6094 10.3594 3.8906 10.3594 4.8281L10.3594 20.4375C10.3594 21.375 9.8906 21.7969 8.9531 21.7969L2.2969 21.7969C1.3594 21.7969.8438 20.9531 1.2656 20.1094ZM22.8281 20.1094 15.375 4.4531C14.9531 3.6094 13.7344 3.8906 13.7344 4.8281L13.7344 20.4375C13.7344 21.375 14.2031 21.7969 15.1406 21.7969L21.7969 21.7969C22.7344 21.7969 23.25 20.9531 22.8281 20.1094Z",
       FlipV: "M20.1094 22.7344 4.4531 15.2812C3.6094 14.8594 3.8906 13.6406 4.8281 13.6406L20.4375 13.6406C21.375 13.6406 21.7969 14.1094 21.7969 15.0469L21.7969 21.7031C21.7969 22.6406 20.9531 23.1563 20.1094 22.7344ZM20.1094 1.1719 4.4531 8.625C3.6094 9.0469 3.8906 10.2656 4.8281 10.2656L20.4375 10.2656C21.375 10.2656 21.7969 9.7969 21.7969 8.8594L21.7969 2.2031C21.7969 1.2656 20.9531.75 20.1094 1.1719Z",
       RotR: "M9.75 7.8516 7.8516 9.75C7.5 10.1016 7.5 10.6641 7.8516 11.0157 8.2032 11.3671 8.7657 11.3671 9.1171 11.0157L12.5625 7.5704C12.9844 7.1484 12.9844 6.7266 12.5625 6.3046L9.1171 2.8594C8.7657 2.5078 8.2032 2.5078 7.8516 2.8594 7.5 3.2109 7.5 3.7734 7.8516 4.125L9.75 6.0234 5.6719 6.0234C3.8438 6.0234 2.4375 7.4296 2.4375 9.2579L2.4375 12.0704C2.4375 12.5625 2.8594 12.9844 3.3516 12.9844 3.8438 12.9844 4.2657 12.5625 4.2657 12.0704L4.2657 9.1875C4.2657 8.4844 4.8984 7.8516 5.6016 7.8516ZM16.0313 21.7969 21.75 21.7969C22.3594 21.7969 23.0625 21.2813 22.6406 20.25L16.4063 5.2969C16.0313 4.2656 14.7656 4.5469 14.7656 5.5781L14.7656 20.3906C14.7656 21.2344 15.1875 21.7969 16.0313 21.7969ZM1.3594 20.3438C.7969 20.7188.8906 21.7969 1.9219 21.7969L12.5625 21.7969C13.3125 21.7969 13.6875 21.2344 13.6875 20.625L13.6875 14.7188C13.6875 14.0625 13.0313 13.4531 12.3281 13.875Z",
@@ -845,11 +887,18 @@ module.exports = function (meta) {
       Redo: "M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7z",
       Crop: "M17 15h2V7c0-1.1-.9-2-2-2H9v2h8zM7 17V1H5v4H1v2h4v10c0 1.1.9 2 2 2h10v4h2v-4h4v-2z",
       Rotate: "M10.217 19.339C6.62 17.623 4.046 14.136 3.65 10H2c.561 6.776 6.226 12.1 13.145 12.1.253 0 .484-.022.726-.033L11.68 17.865ZM8.855 1.9c-.253 0-.484.022-.726.044L12.32 6.135l1.463-1.463C17.38 6.377 19.954 9.864 20.35 14H22C21.439 7.224 15.774 1.9 8.855 1.9Z",
-      Draw: "M22 24H2v-4h20zM13.06 5.19l3.75 3.75L7.75 18H4v-3.75zm4.82 2.68-3.75-3.75 1.83-1.83c.39-.39 1.02-.39 1.41 0l2.34 2.34c.39.39.39 1.02 0 1.41z",
+      Draw: "M4 21v-4.25L17.175 3.6q.3-.3.675-.45T18.6 3q.4 0 .763.15T20 3.6L21.4 5q.3.275.45.638T22 6.4q0 .375-.15.75t-.45.675L8.25 21zm2-2h1.4l9.825-9.8l-.7-.725l-.725-.7L6 17.6zM20 6.425L18.575 5zm-3.475 2.05l-.725-.7L17.225 9.2zM14 21q1.85 0 3.425-.925T19 17.5q0-.9-.475-1.55t-1.275-1.125L15.775 16.3q.575.25.9.55t.325.65q0 .575-.913 1.038T14 19q-.425 0-.712.288T13 20t.288.713T14 21m-9.425-7.65l1.5-1.5q-.5-.2-.788-.412T5 11q0-.3.45-.6t1.9-.925q2.2-.95 2.925-1.725T11 6q0-1.375-1.1-2.187T7 3q-1.125 0-2.013.4t-1.362.975Q3.35 4.7 3.4 5.1t.375.65q.325.275.725.225t.675-.325q.35-.35.775-.5T7 5q1.025 0 1.513.3T9 6q0 .35-.437.637T6.55 7.65q-2 .875-2.775 1.588T3 11q0 .8.425 1.363t1.15.987",
+      Text: "m18.5 4l1.16 4.35l-.96.26c-.45-.87-.91-1.74-1.44-2.18C16.73 6 16.11 6 15.5 6H13v10.5c0 .5 0 1 .33 1.25c.34.25 1 .25 1.67.25v1H9v-1c.67 0 1.33 0 1.67-.25c.33-.25.33-.75.33-1.25V6H8.5c-.61 0-1.23 0-1.76.43c-.53.44-.99 1.31-1.44 2.18l-.96-.26L5.5 4z",
       Pan: "M23 12 18.886 7.864v2.772h-5.5v-5.5h2.75L12 1 7.886 5.136h2.75v5.5H5.092V7.886L1 12l4.136 4.136v-2.75h5.5v5.5H7.886L12 23l4.136-4.114h-2.75v-5.5h5.5v2.75L23 12Z",
       Scale: "M16 3a1 1 0 100 2h1.586L11 11.586V10A1 1 0 009 10v3.75c0 .69.56 1.25 1.25 1.25H14a1 1 0 100-2H12.414L19 6.414V8a1 1 0 102 0V4.25C21 3.56 20.44 3 19.75 3ZM5 3l-.15.005A2 2 0 003 5V19l.005.15A2 2 0 005 21H19l.15-.005A2 2 0 0021 19V13l-.007-.117A1 1 0 0019 13v6H5V5h6l.117-.007A1 1 0 0011 3Z",
       LockOpen: "M6 20h12V10H6zm6-3q.825 0 1.413-.587T14 15t-.587-1.412T12 13t-1.412.588T10 15t.588 1.413T12 17m-6 3V10zm0 2q-.825 0-1.412-.587T4 20V10q0-.825.588-1.412T6 8h7V6q0-2.075 1.463-3.537T18 1q1.775 0 3.1 1.075t1.75 2.7q.125.425-.162.825T22 6q-.425 0-.7-.175t-.4-.575q-.275-.95-1.062-1.6T18 3q-1.25 0-2.125.875T15 6v2h3q.825 0 1.413.588T20 10v10q0 .825-.587 1.413T18 22z",
       Lock: "M12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2m5 3c.55 0 1-.45 1-1V11c0-.55-.45-1-1-1H7c-.55 0-1 .45-1 1v8c0 .55.45 1 1 1H17M9 8h6V6c0-1.66-1.34-3-3-3S9 4.34 9 6Zm9 0c1.1 0 2 .9 2 2V20c0 1.1-.9 2-2 2H6c-1.1 0-2-.9-2-2V10c0-1.1.9-2 2-2H7V6c0-2.76 2.24-5 5-5s5 2.24 5 5V8h1",
+      AddLayer: "M18.94 12.002 11.976 8.143 5.059 11.965l6.964 3.89Zm2.544-.877a1 1 0 01.002 1.749l-8.978 5a1 1 0 01-.973-.001l-9.022-5.04a1 1 0 01.003-1.749l8.978-4.96a1 1 0 01.968.001l9.022 5zM12 22a1 1 0 00.485-.126l9-5-.971-1.748L12 19.856l-8.515-4.73-.971 1.748 9 5A1 1 0 0012 22m8-22h-2v3h-3v2h3v3h2V5h3V3h-3z",
+      DeleteLayer: "M5.06 11.965l6.964 3.89 6.917-3.853-6.964-3.859Zm-2.547.868a1 1 0 01.003-1.749l8.978-4.96a1 1 0 01.968.001l9.022 5a1 1 0 01.002 1.749l-8.978 5a1 1 0 01-.973-.001l-9.022-5.04M15 5h8V3H15ZM12 19.856l8.514-4.73.971 1.748-9 5a1 1 0 01-.971 0l-9-5 .971-1.748Z",
+      MoveLayerUp: "M11.604 3.061c-.687.193-1.306.752-2.604 2.353-.913 1.126-.958 1.193-.987 1.476-.076.733.611 1.281 1.311 1.049.27-.09.45-.27 1.139-1.143l.517-.654.02 4.582.02 4.582.121.197c.402.653 1.316.653 1.718 0l.121-.197.02-4.582.02-4.582.517.654c.689.873.869 1.053 1.139 1.143.7.232 1.387-.316 1.311-1.049-.029-.282-.073-.348-.985-1.477-1.15-1.421-1.883-2.107-2.471-2.311-.276-.096-.67-.113-.927-.041M7.8 10.549c-.033.013-.96.436-2.06.941-2.632 1.207-3.468 1.632-3.9 1.98-.888.715-1.085 1.674-.518 2.523.306.458.764.787 1.817 1.306.724.356 6.326 2.934 7.001 3.222 1.498.637 2.223.637 3.72-.001.684-.291 6.283-2.868 7.001-3.221 1.054-.519 1.511-.848 1.817-1.306.567-.849.37-1.808-.518-2.523-.429-.346-1.247-.762-3.92-1.993-1.863-.858-2.04-.932-2.283-.948-.492-.032-.888.242-1.024.71-.111.38.036.814.355 1.053.073.053.87.436 1.772.849.902.413 1.946.893 2.32 1.067.686.32 1.5.75 1.5.794 0 .04-.551.341-1.12.612-1.087.519-6.512 3.001-6.891 3.154-.733.295-1.005.295-1.738 0-.215-.087-1.732-.773-3.371-1.525-2.858-1.311-4.412-2.052-4.578-2.182-.077-.06-.077-.062 0-.12.154-.118 1.635-.83 3.498-1.682 1.045-.478 1.959-.914 2.032-.967.761-.568.342-1.779-.612-1.768-.132.001-.267.013-.3.025",
+      MoveLayerDown: "M11.449 3.057c-.701.134-.701.134-4.749 1.992C3.093 6.705 2.298 7.101 1.84 7.47c-.888.715-1.085 1.674-.518 2.523.31.464.765.789 1.858 1.325 1.212.595 4.561 2.117 4.751 2.16.137.031.235.026.413-.021a.966.966 0 00.743-.78.988.988 0 00-.21-.809c-.152-.184-.218-.217-2.337-1.186-1.7-.778-3.216-1.509-3.358-1.621-.077-.06-.077-.062 0-.121.167-.128 1.64-.83 4.478-2.132 1.628-.747 3.131-1.43 3.34-1.519.418-.178.802-.289 1-.289s.582.111 1 .289c.209.088 1.712.772 3.34 1.519 2.799 1.283 4.303 2 4.478 2.133.077.058.077.06 0 .119-.147.114-1.681.855-3.358 1.622-2.119.969-2.185 1.002-2.337 1.186-.123.149-.243.462-.243.632 0 .18.124.49.258.647.23.269.607.401.936.329.095-.021 1.04-.436 2.1-.923 3.083-1.415 3.555-1.657 4.07-2.085.811-.675.979-1.66.423-2.478-.276-.405-.718-.728-1.625-1.186-.76-.386-6.232-2.914-7.249-3.35-.903-.387-1.693-.521-2.344-.397m.246 5a1.04 1.04 0 00-.567.459l-.108.184-.02 4.579-.02 4.579-.52-.658c-.696-.881-.878-1.06-1.166-1.144-.704-.204-1.356.332-1.281 1.055.029.281.073.348.985 1.476.795.983 1.557 1.782 1.942 2.033.983.643 1.749.468 2.862-.654.428-.433 1.795-2.075 2.05-2.464.24-.365.172-.885-.157-1.205-.417-.405-1-.39-1.426.036-.115.115-.444.506-.729.867l-.52.658-.02-4.579-.02-4.579-.108-.184a1.005 1.005 0 00-1.177-.459",
+      Visibility: "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5M12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5m0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3",
+      VisibilityOff: "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7M2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2m4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3z",
     }
   }
 
@@ -894,6 +943,7 @@ module.exports = function (meta) {
     usePointerCapture({ onStart, onChange, onSubmit }) {
       /** @type {React.RefObject<null | number>} */
       const pointerId = useRef(null);
+      const rafId = useRef(null);
       const smolStore = useRef({});
 
       /** @type {(e: PointerEvent) => void} */
@@ -907,9 +957,12 @@ module.exports = function (meta) {
 
       /** @type {(e: PointerEvent) => void} */
       const onPointerMove = useCallback(e => {
-        if (!(e.buttons & 5) || pointerId.current !== e.pointerId) return;
+        if (!(e.buttons & 5) || pointerId.current !== e.pointerId || rafId.current) return;
 
-        onChange?.(e, smolStore.current);
+        rafId.current = requestAnimationFrame(() => {
+          onChange?.(e, smolStore.current);
+          rafId.current = null;
+        })
       }, [onChange]);
 
       /** @type {(e: PointerEvent) => void} */
@@ -918,6 +971,8 @@ module.exports = function (meta) {
 
         e.currentTarget.releasePointerCapture(e.pointerId);
         pointerId.current = null;
+        rafId.current && cancelAnimationFrame(rafId.current);
+        rafId.current = null;
         onSubmit?.(e, smolStore.current);
         smolStore.current = {};
       }, [onSubmit]);
@@ -984,16 +1039,16 @@ module.exports = function (meta) {
           position,
           children: e => {
             let { onMouseEnter, onMouseLeave, onClick: onClick2 } = e;
-            const handleClick = e => { if (!disabled) { onClick?.(e); onClick2?.(e) } };
+            const handleClick = e => { if (!disabled) { onClick?.(e); onClick2?.(e); e.stopPropagation() } };
             const handleKeyUp = e => (e.key === 'Enter' || e.key === ' ') && handleClick(e);
 
-            return [internals.keys.FocusRing] && jsx(internals.nativeUI[internals.keys.FocusRing], {
+            return internals.keys.FocusRing && jsx(internals.nativeUI[internals.keys.FocusRing], {
               children: jsx("div", {
                 onMouseEnter,
                 onMouseLeave,
                 onClick: handleClick,
                 onKeyUp: handleKeyUp,
-                className: [internals.actionButtonClass.button, disabled && "disabled", active && "active"].filter(Boolean).join(" "),
+                className: utils.clsx(internals.actionButtonClass.button, disabled && "disabled", active && "active"),
                 role: "button",
                 tabIndex: 0,
                 children: jsx("svg", {
@@ -1083,11 +1138,31 @@ module.exports = function (meta) {
       })
     },
 
+    /** @param {{onSelect: () => void, onVisibilityToggle: () => void, active: boolean, visible: boolean}} props */
+    LayerThumbnail({ onSelect, onVisibilityToggle, active, visible, name }) {
+      return internals.keys.FocusRing && jsx(internals.nativeUI[internals.keys.FocusRing], {
+        children: jsx("li", {
+          onClick: onSelect,
+          className: utils.clsx("thumbnail", active && "active"),
+          children: [
+            jsx(Components.IconButton, {
+              tooltip: visible ? "Visible" : "Hidden",
+              d: visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
+              onClick: onVisibilityToggle
+            }),
+            jsx("div", null, name)
+          ]
+        })
+      })
+    },
+
     /** @param {{bitmap: ImageBitmap, ref: React.RefObject<any>}} props */
     ImageEditor({ bitmap, ref }) {
-      const [mode, _setMode] = useState(null);
       const [canUndoRedo, setCanUndoRedo] = useState(0);
+      const [layers, setLayers] = useState(() => []);
       const [dims, setDims] = useState({ width: bitmap.width, height: bitmap.height });
+
+      const [mode, _setMode] = hooks.useStoredState("mode", null);
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 5, color: "#000000" }));
 
@@ -1176,14 +1251,33 @@ module.exports = function (meta) {
             return d;
           return { width, height }
         });
+        setLayers(l => {
+          if (
+            editor.current.layers.length !== l.length ||
+            l.some((e, i) => e.active !== (i === editor.current.activeLayerIndex)) ||
+            editor.current.layers.some((e, i) => e.state.isVisible !== l[i]?.visible)
+          ) {
+            return editor.current.layers.map((layer, i) => ({
+              visible: layer.state.isVisible,
+              active: i === editor.current.activeLayerIndex,
+              id: layer.layer.id
+            }));
+          }
+          return l;
+        })
       }, []);
 
       useEffect(() => {
         const rect = canvasRef.current.offsetParent.getBoundingClientRect();
         canvasRef.current.width = ~~(rect.width);
         canvasRef.current.height = ~~(rect.height);
-        editor.current = new CanvasEditor(canvasRef.current, bitmap);
         canvasRect.current = canvasRef.current.getBoundingClientRect();
+        editor.current = new CanvasEditor(canvasRef.current, bitmap);
+        setLayers(editor.current.layers.map((layer, i) => ({
+          visible: layer.state.isVisible,
+          active: i === editor.current.activeLayerIndex,
+          id: layer.layer.id
+        })));
 
         const ctrl = new AbortController();
         addEventListener("keydown", e => {
@@ -1274,7 +1368,7 @@ module.exports = function (meta) {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
             const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
             const viewportScale = utils.getScale(editor.current.viewportTransform);
-            const boxScale = canvasRect.current.width / e.currentTarget.width;
+            const boxScale = canvasRect.current.width / canvasRef.current.width;
 
             const Tx = (e.clientX - (canvasRect.current.x + canvasRect.current.width / 2 + ctx * boxScale)) / viewportScale;
             const Ty = (e.clientY - (canvasRect.current.y + canvasRect.current.height / 2 + cty * boxScale)) / viewportScale;
@@ -1331,14 +1425,14 @@ module.exports = function (meta) {
           switch (mode) {
             case !!(e.buttons & 1) && 0: {
               canvasRef.current.classList.add("pointerdown");
-              const boxScale = canvasRect.current.width / e.currentTarget.width;
+              const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
               editor.current.startRegionSelect(new DOMPoint(startX, startY), fixedAspect);
               break;
             }
             case !!(e.buttons & 1) && 4: {
-              const boxScale = canvasRect.current.width / e.currentTarget.width;
+              const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
               editor.current.startDrawing(new DOMPoint(startX, startY), strokeStyle.width, strokeStyle.color);
@@ -1348,8 +1442,8 @@ module.exports = function (meta) {
         },
         onChange: (e, store) => {
           if (e.buttons & 4 || mode == null || mode == 3) {
-            const dx = (e.clientX - store.startX) / canvasRect.current.width * e.currentTarget.width;
-            const dy = (e.clientY - store.startY) / canvasRect.current.height * e.currentTarget.height;
+            const dx = (e.clientX - store.startX) / canvasRect.current.width * canvasRef.current.width;
+            const dy = (e.clientY - store.startY) / canvasRect.current.height * canvasRef.current.height;
             editor.current.translateViewportBy(dx, dy);
 
             switch (mode) {
@@ -1371,7 +1465,7 @@ module.exports = function (meta) {
             store.changed = true;
             switch (mode) {
               case 0: {
-                const boxScale = canvasRect.current.width / e.currentTarget.width;
+                const boxScale = canvasRect.current.width / canvasRef.current.width;
                 const startX = (e.clientX - canvasRect.current.x) / boxScale;
                 const startY = (e.clientY - canvasRect.current.y) / boxScale;
                 editor.current.regionSelect(new DOMPoint(startX, startY));
@@ -1385,7 +1479,7 @@ module.exports = function (meta) {
               }
               case 1: {
                 const currentTranslate = utils.getTranslate(editor.current.viewportTransform);
-                const boxScale = canvasRect.current.width / e.currentTarget.width;
+                const boxScale = canvasRect.current.width / canvasRef.current.width;
 
                 const currentX = e.clientX - (canvasRect.current.x + canvasRect.current.width / 2 + currentTranslate.x * boxScale);
                 const currentY = e.clientY - (canvasRect.current.y + canvasRect.current.height / 2 + currentTranslate.y * boxScale);
@@ -1413,7 +1507,7 @@ module.exports = function (meta) {
                 break;
               }
               case 4: {
-                const boxScale = canvasRect.current.width / e.currentTarget.width;
+                const boxScale = canvasRect.current.width / canvasRef.current.width;
                 const startX = (e.clientX - canvasRect.current.x) / boxScale;
                 const startY = (e.clientY - canvasRect.current.y) / boxScale;
                 editor.current.drawLine(new DOMPoint(startX, startY));
@@ -1461,44 +1555,10 @@ module.exports = function (meta) {
       return jsx(Fragment, {
         children: [
           jsx("div", {
-            className: "canvas-dims",
-            children: [
-              jsx(Components.NumberSlider, {
-                value: dims.width,
-                decimals: 0,
-                onChange: null,
-                withSlider: false,
-                minValue: 0,
-                onChange: newWidth => {
-                  const { width, height } = editor.current.canvasDims;
-                  if (newWidth !== width) {
-                    editor.current.canvasDims = { width: newWidth, height };
-                    render();
-                  }
-                }
-              }),
-              "x",
-              jsx(Components.NumberSlider, {
-                value: dims.height,
-                decimals: 0,
-                onChange: null,
-                withSlider: false,
-                minValue: 0,
-                onChange: newHeight => {
-                  const { width, height } = editor.current.canvasDims;
-                  if (newHeight !== height) {
-                    editor.current.canvasDims = { width, height: newHeight };
-                    render();
-                  }
-                }
-              }),
-            ]
-          }),
-          jsx("div", {
             className: "canvas-wrapper",
             children: [
               jsx("canvas", {
-                className: ["canvas", ["cropping", "rotating", "moving", "scaling", "drawing"][mode]].filter(Boolean).join(" "),
+                className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing"][mode]),
                 ref: canvasRef,
                 onWheel: handleWheel,
                 ...pointerHandlers,
@@ -1513,163 +1573,263 @@ module.exports = function (meta) {
               })
             ]
           }),
-          jsx("div", {
-            className: "image-actions",
+          jsx("aside", {
+            className: utils.clsx("sidebar", internals.scrollbarClass.thin),
             children: [
-              jsx(Components.IconButton, {
-                tooltip: "Crop (C)",
-                d: utils.paths.Crop,
-                active: mode === 0,
-                onClick: () => setMode(m => m === 0 ? null : 0)
+              jsx("div", {
+                className: "canvas-dims",
+                children: [
+                  jsx(Components.NumberSlider, {
+                    value: dims.width,
+                    decimals: 0,
+                    onChange: null,
+                    withSlider: false,
+                    minValue: 0,
+                    onChange: newWidth => {
+                      const { width, height } = editor.current.canvasDims;
+                      if (newWidth !== width) {
+                        editor.current.canvasDims = { width: newWidth, height };
+                        render();
+                      }
+                    }
+                  }),
+                  "x",
+                  jsx(Components.NumberSlider, {
+                    value: dims.height,
+                    decimals: 0,
+                    onChange: null,
+                    withSlider: false,
+                    minValue: 0,
+                    onChange: newHeight => {
+                      const { width, height } = editor.current.canvasDims;
+                      if (newHeight !== height) {
+                        editor.current.canvasDims = { width, height: newHeight };
+                        render();
+                      }
+                    }
+                  }),
+                ]
               }),
-              jsx(Components.IconButton, {
-                tooltip: "Rotate (R)",
-                d: utils.paths.Rotate,
-                active: mode === 1,
-                onClick: () => setMode(m => m === 1 ? null : 1)
-              }),
-              jsx(Components.IconButton, {
-                tooltip: "Move (M)",
-                d: utils.paths.Pan,
-                active: mode === 2,
-                onClick: () => setMode(m => m === 2 ? null : 2)
-              }),
-              jsx(Components.IconButton, {
-                tooltip: "Scale (S)",
-                d: utils.paths.Scale,
-                active: mode === 3,
-                onClick: () => setMode(m => m === 3 ? null : 3)
-              }),
-              jsx(Components.IconButton, {
-                tooltip: "Draw (D)",
-                d: utils.paths.Draw,
-                active: mode === 4,
-                onClick: () => setMode(m => m === 4 ? null : 4)
-              }),
-              mode == 0 && jsx("label", {
-                className: "aux-input",
-                style: { gap: 8, cursor: "pointer" },
+              jsx("div", {
+                className: "canvas-actions",
                 children: [
                   jsx(Components.IconButton, {
+                    tooltip: "Draw (D)",
+                    d: utils.paths.Draw,
+                    active: mode === 4,
+                    onClick: () => setMode(m => m === 4 ? null : 4)
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Move (M)",
+                    d: utils.paths.Pan,
+                    active: mode === 2,
+                    onClick: () => setMode(m => m === 2 ? null : 2)
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Rotate (R)",
+                    d: utils.paths.Rotate,
+                    active: mode === 1,
+                    onClick: () => setMode(m => m === 1 ? null : 1)
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Scale (S)",
+                    d: utils.paths.Scale,
+                    active: mode === 3,
+                    onClick: () => setMode(m => m === 3 ? null : 3)
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Crop (C)",
+                    d: utils.paths.Crop,
+                    active: mode === 0,
+                    onClick: () => setMode(m => m === 0 ? null : 0)
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Text (T)",
+                    d: utils.paths.Text,
+                    active: mode === 5,
+                    onClick: () => setMode(m => m === 5 ? null : 5)
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Flip Horizontal",
+                    d: utils.paths.FlipH,
+                    onClick: () => {
+                      editor.current.flip(-1, 1);
+                      render();
+                      if (mode === 1) {
+                        auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
+                      }
+                    },
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Flip Vertical",
+                    d: utils.paths.FlipV,
+                    onClick: () => {
+                      editor.current.flip(1, -1);
+                      render();
+                      if (mode === 1) {
+                        auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
+                      }
+                    },
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Rotate Left",
+                    d: utils.paths.RotL,
+                    onClick: () => {
+                      editor.current.rotate(-90);
+                      render();
+                      if (mode === 1) {
+                        auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
+                      }
+                    },
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Rotate Right",
+                    d: utils.paths.RotR,
+                    onClick: () => {
+                      editor.current.rotate(90);
+                      render();
+                      if (mode === 1) {
+                        auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
+                      }
+                    },
+                  })
+                ]
+              }),
+              jsx("div", {
+                className: "aux-inputs",
+                children: [
+                  jsx(Fragment, {
+                    children: [
+                      jsx(BdApi.Components.ColorInput, {
+                        value: strokeStyle.color,
+                        colors: ["#000000", 0xffffff, 0xffea00, 0xff9100, 0xff1744, 0xff4081, 0xd500f9, 0x651fff, 0x2979ff, 0x10e5ff, 0x1de9b6, 0x10e676],
+                        onChange: c => setStrokeStyle(s => ({ ...s, color: c }))
+                      }),
+                      jsx(Components.NumberSlider, {
+                        ref: auxRef,
+                        label: "Size",
+                        suffix: "px",
+                        decimals: 0,
+                        minValue: 1,
+                        centerValue: 100,
+                        maxValue: 400,
+                        value: strokeStyle.width,
+                        onSlide: value => {
+                          const boxScale = canvasRect.current.width / canvasRef.current.width;
+                          const cs = utils.getScale(editor.current.viewportTransform);
+                          overlay.current.style.setProperty("--brushsize", (value * cs * boxScale).toFixed(4));
+                        },
+                        onChange: value => {
+                          overlay.current.style.removeProperty("--brushsize");
+                          setStrokeStyle(s => ({ ...s, width: value }));
+                        }
+                      })
+                    ]
+                  }),
+                  mode == 0 && jsx(Components.IconButton, {
                     tooltip: fixedAspect ? "Preserve aspect ratio" : "Free region select",
                     d: fixedAspect ? utils.paths.Lock : utils.paths.LockOpen,
                     onClick: () => !isInteracting.current && setFixedAspect(e => !e),
                   }),
+                  mode == 1 && jsx(Components.NumberSlider, {
+                    ref: auxRef,
+                    label: "Angle",
+                    suffix: "°",
+                    decimals: 0,
+                    withSlider: false,
+                    value: Number(utils.getAngle(editor.current.layerTransform).toFixed(1)),
+                    onChange: value => {
+                      const cr = utils.getAngle(editor.current.layerTransform);
+                      const r = new DOMMatrix().rotateSelf(value - cr);
+                      editor.current.previewLayerTransformBy(r);
+                      editor.current.finalizeLayerPreview();
+                      render();
+                    }
+                  }),
+                  mode == 3 && jsx(Components.NumberSlider, {
+                    ref: auxRef,
+                    label: "Scale",
+                    suffix: "x",
+                    decimals: 2,
+                    minValue: 0.01,
+                    centerValue: 1,
+                    maxValue: 10,
+                    value: Number(utils.getScale(editor.current.layerTransform).toFixed(2)),
+                    onSlide: s => {
+                      const cs = utils.getScale(editor.current.layerTransform);
+                      const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
+                      editor.current.previewLayerTransformTo(S);
+                      editor.current.render();
+                    },
+                    onChange: s => {
+                      const cs = utils.getScale(editor.current.layerTransform);
+                      const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
+                      editor.current.previewLayerTransformTo(S);
+                      editor.current.finalizeLayerPreview();
+                      render();
+                    }
+                  }),
                 ]
               }),
-              mode == 1 && jsx("div", {
-                className: "aux-input",
-                children: jsx(Components.NumberSlider, {
-                  ref: auxRef,
-                  suffix: "°",
-                  decimals: 0,
-                  withSlider: false,
-                  value: Number(utils.getAngle(editor.current.layerTransform).toFixed(1)),
-                  onChange: value => {
-                    const cr = utils.getAngle(editor.current.layerTransform);
-                    const r = new DOMMatrix().rotateSelf(value - cr);
-                    editor.current.previewLayerTransformBy(r);
-                    editor.current.finalizeLayerPreview();
-                    render();
-                  }
-                })
-              }),
-              mode == 3 && jsx("div", {
-                className: "aux-input",
-                children: jsx(Components.NumberSlider, {
-                  ref: auxRef,
-                  suffix: "x",
-                  decimals: 2,
-                  minValue: 0.01,
-                  centerValue: 1,
-                  maxValue: 10,
-                  value: Number(utils.getScale(editor.current.layerTransform).toFixed(2)),
-                  onSlide: s => {
-                    const cs = utils.getScale(editor.current.layerTransform);
-                    const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
-                    editor.current.previewLayerTransformTo(S);
-                    editor.current.render();
-                  },
-                  onChange: s => {
-                    const cs = utils.getScale(editor.current.layerTransform);
-                    const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
-                    editor.current.previewLayerTransformTo(S);
-                    editor.current.finalizeLayerPreview();
-                    render();
-                  }
-                })
-              }),
-              mode == 4 && jsx("div", {
-                className: "aux-input",
-                children: [
-                  jsx(BdApi.Components.ColorInput, {
-                    value: strokeStyle.color,
-                    colors: ["#000000", 16777215, 16771899, 16750592, 16007990, 15277667, 10233776, 2201331, 1087112, 5025616],
-                    onChange: c => setStrokeStyle(s => ({ ...s, color: c }))
-                  }),
-                  jsx(Components.NumberSlider, {
-                    ref: auxRef,
-                    suffix: "px",
-                    decimals: 0,
-                    minValue: 1,
-                    centerValue: 100,
-                    maxValue: 400,
-                    value: strokeStyle.width,
-                    onSlide: value => {
-                      const boxScale = canvasRect.current.width / canvasRef.current.width;
-                      const cs = utils.getScale(editor.current.viewportTransform);
-                      overlay.current.style.setProperty("--brushsize", (value * cs * boxScale).toFixed(4));
+              jsx("ul", {
+                className: utils.clsx("thumbnails", internals.scrollbarClass.thin),
+                children: layers.map(({ visible, active, id }, idx) => {
+                  return jsx(Components.LayerThumbnail, {
+                    key: id,
+                    name: "Layer " + id,
+                    visible,
+                    active,
+                    onVisibilityToggle: () => {
+                      editor.current.toggleLayerVisibility(idx);
+                      render();
                     },
-                    onChange: value => {
-                      overlay.current.style.removeProperty("--brushsize");
-                      setStrokeStyle(s => ({ ...s, width: value }));
+                    onSelect: () => {
+                      if (editor.current.activeLayerIndex === idx) return;
+                      editor.current.activeLayerIndex = idx;
+                      render();
                     }
                   })
+                })
+              }),
+              jsx("div", {
+                className: "thumbnail-actions",
+                children: [
+                  jsx(Components.IconButton, {
+                    tooltip: "Add Layer",
+                    d: utils.paths.AddLayer,
+                    onClick: () => {
+                      editor.current.createNewLayer();
+                      render();
+                    }
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Remove Layer",
+                    d: utils.paths.DeleteLayer,
+                    disabled: layers.length <= 1,
+                    onClick: () => {
+                      editor.current.deleteLayer();
+                      render();
+                    }
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Move Layer Up",
+                    d: utils.paths.MoveLayerUp,
+                    disabled: editor.current?.activeLayerIndex >= layers.length - 1,
+                    onClick: () => {
+                      editor.current.moveLayers(1);
+                      render();
+                    }
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Move Layer Down",
+                    d: utils.paths.MoveLayerDown,
+                    disabled: editor.current?.activeLayerIndex <= 0,
+                    onClick: () => {
+                      editor.current.moveLayers(-1);
+                      render();
+                    }
+                  }),
                 ]
-              }),
-              jsx(Components.IconButton, {
-                tooltip: "Flip Horizontal",
-                d: utils.paths.FlipH,
-                onClick: () => {
-                  editor.current.flip(-1, 1);
-                  render();
-                  if (mode === 1) {
-                    auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
-                  }
-                },
-              }),
-              jsx(Components.IconButton, {
-                tooltip: "Flip Vertical",
-                d: utils.paths.FlipV,
-                onClick: () => {
-                  editor.current.flip(1, -1);
-                  render();
-                  if (mode === 1) {
-                    auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
-                  }
-                },
-              }),
-              jsx(Components.IconButton, {
-                tooltip: "Rotate Left",
-                d: utils.paths.RotL,
-                onClick: () => {
-                  editor.current.rotate(-90);
-                  render();
-                  if (mode === 1) {
-                    auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
-                  }
-                },
-              }),
-              jsx(Components.IconButton, {
-                tooltip: "Rotate Right",
-                d: utils.paths.RotR,
-                onClick: () => {
-                  editor.current.rotate(90);
-                  render();
-                  if (mode === 1) {
-                    auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
-                  }
-                },
               }),
               jsx(Components.IconButton, {
                 tooltip: "Undo (Ctrl + Z)",
@@ -1684,7 +1844,7 @@ module.exports = function (meta) {
                 disabled: !(canUndoRedo & 1)
               }),
             ]
-          })
+          }),
         ]
       })
     },
@@ -1701,13 +1861,13 @@ module.exports = function (meta) {
      *  maxValue?: number,
      *  decimals?: number,
      *  onSlide?: (e: number) => void,
+     *  label?: string
      * }} props
      */
-    NumberSlider({ value, onChange, suffix, ref, minValue, centerValue, maxValue, decimals, onSlide, withSlider = true, ...restProps }) {
+    NumberSlider({ value, onChange, suffix, ref, minValue, centerValue, maxValue, decimals, onSlide, label, withSlider = true, ...restProps }) {
       const [textValue, setTextValue] = useState(value + '');
-      const [sliderValue, setSliderValue] = useState(() => {
-        return utils.logScaling(value, { minValue, centerValue, maxValue });
-      });
+      const [sliderValue, setSliderValue] = useState(() => utils.logScaling(value, { minValue, centerValue, maxValue }));
+      const id = useId();
       const oldValue = useRef(value);
       const inputRef = useRef(null);
       const sliderRef = useRef(null);
@@ -1811,23 +1971,13 @@ module.exports = function (meta) {
         ...restProps,
         className: "number-input-wrapper",
         children: [
-          withSlider && jsx("span", {
-            children: internals.keys.MenuSliderControl && jsx(internals.nativeUI[internals.keys.MenuSliderControl], {
-              ref: sliderRef,
-              mini: true,
-              className: internals.sliderClass?.slider,
-              initialValue: sliderValue,
-              onValueRender: (newValue) => {
-                const x = utils.clamp(0, newValue / 100, 1);
-                const val = utils.expScaling(x, { minValue, centerValue, maxValue })
-                return Number(val.toFixed(decimals ?? 0)) + (suffix ?? '');
-              },
-              onValueChange: handleSliderCommit,
-              asValueChanges: handleSliderChange,
-            }),
+          label && jsx("label", {
+            htmlFor: id,
+            children: label + ": "
           }),
           jsx("input", {
             className: "number-input",
+            id: id,
             value: textValue,
             ref: inputRef,
             onBlur: handleTextCommit,
@@ -1838,7 +1988,20 @@ module.exports = function (meta) {
             onMouseEnter: handleMouseEnter,
             onMouseLeave: handleMouseLeave
           }),
-          suffix != null && jsx("span", { style: { alignContent: 'center' } }, suffix)
+          suffix != null && jsx("span", { style: { alignContent: 'center' } }, suffix),
+          withSlider && internals.keys.MenuSliderControl && jsx(internals.nativeUI[internals.keys.MenuSliderControl], {
+            ref: sliderRef,
+            mini: true,
+            className: internals.sliderClass?.slider,
+            initialValue: sliderValue,
+            onValueRender: (newValue) => {
+              const x = utils.clamp(0, newValue / 100, 1);
+              const val = utils.expScaling(x, { minValue, centerValue, maxValue })
+              return Number(val.toFixed(decimals ?? 0)) + (suffix ?? '');
+            },
+            onValueChange: handleSliderCommit,
+            asValueChanges: handleSliderChange,
+          }),
         ]
       })
     },
@@ -1849,17 +2012,18 @@ module.exports = function (meta) {
 :scope {
   min-height: unset;
   max-height: unset;
-  width: clamp(800px, 80vw, 1100px);
-  height: clamp(440px, 80vh, 900px);
-  margin-block: auto;
+  width: calc(100vw - 72px * 2);
+  max-width: 1400px;
+  height: calc(100vh - 72px * 2);
   flex-direction: column-reverse;
 }
 
 .image-editor {
   height: 100%;
   display: grid;
-  grid-template-rows: auto 1fr auto;
-  padding-bottom: 8px;
+  gap: 8px;
+  grid-template-columns: 1fr auto;
+  padding-block: 24px 8px;
   overflow: hidden !important;
 }
 
@@ -1868,13 +2032,13 @@ module.exports = function (meta) {
 }
 
 .canvas-dims {
+  grid-column: 1 / -1;
   display: flex;
   justify-content: center;
   align-items: center;
   gap: 4px;
-  padding-bottom: 4px;
-  margin-bottom: 8px;
   color: var(--interactive-active);
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--border-normal);
   & .number-input {
     text-align: center;
@@ -1921,9 +2085,9 @@ module.exports = function (meta) {
   cursor: crosshair;
 }
 
-@keyframes pulsing {
+@keyframes fade-in {
   from {opacity: 0}
-  to {opacity: 0.8}
+  to {opacity: 1}
 }
 
 .canvas.rotating + .canvas-overlay::after {
@@ -1942,7 +2106,7 @@ module.exports = function (meta) {
     white;
   outline: 1px solid black;
   outline-offset: -2px;
-  animation: pulsing 1s infinite alternate ease-out;
+  animation: fade-in 1s infinite alternate ease-out;
 }
 
 .canvas-overlay {
@@ -1986,31 +2150,36 @@ module.exports = function (meta) {
   border-radius: 100vmax;
 }
 
-.image-actions {
+.canvas-actions {
+  grid-column: 1 / -1;
+  width: 128px;
   display: flex;
-  border-top: 1px solid var(--border-normal);
-  margin-top: 8px;
-  padding-top: 4px;
-  min-height: 42px;
-  align-items: end;
+  flex-wrap: wrap;
+  & > .active {
+    background-color: var(--background-modifier-active);
+    color: var(--interactive-active);
+    padding-bottom: 3px;
+    padding-top: 5px;
+  }
 }
 
-.image-actions > :nth-last-child(6 of div) {
-  margin-left: auto;
-}
-
-.image-actions > :nth-last-child(2 of div) {
-  margin-left: 12px;
-}
-
-.image-actions > .active {
-  background-color: var(--background-modifier-active);
+.aux-inputs {
+  display: grid;
+  gap: 16px;
+  grid-template-rows: auto auto 1fr;
+  align-self: start;
+  grid-column: 1 / -1;
   color: var(--interactive-active);
-  padding-bottom: 3px;
-  padding-top: 5px;
+  box-sizing: border-box;
+  height: 100%;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-normal);
+  & > :nth-child(3) {
+    align-self: end;
+  }
 }
 
-.image-actions .disabled {
+[role=button].disabled {
   opacity: 0.5;
   cursor: default;
   color: var(--interactive-normal);
@@ -2018,26 +2187,17 @@ module.exports = function (meta) {
   padding: 4px;
 }
 
-.aux-input {
-  padding-inline: 0.5rem;
-  flex: 1;
-  display: flex;
-  flex-wrap: nowrap;
-  justify-content: center;
-  align-items: center;
-  gap: 8px;
-  color: var(--interactive-active);
-}
-
 .number-input-wrapper {
   display: flex;
-  flex-wrap: nowrap;
-}
-
-.number-input-wrapper > :has(+ .number-input) {
-  margin-right: 8px;
-  margin-top: 0.5rem;
-  width: 100px;
+  flex-wrap: wrap;
+  color: var(--interactive-active);
+  & > label {
+    align-content: center;
+  }
+  & > .number-input ~ div {
+    flex-basis: 100%;
+    margin-top: 6px;
+  }
 }
 
 .number-input {
@@ -2048,24 +2208,89 @@ module.exports = function (meta) {
   background: var(--background-modifier-active);
   color: currentColor;
   width: 2.75em;
+  margin-left: auto;
   text-align: right;
 }
 
 .bd-color-picker-container {
-  margin-bottom: -3px;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.bd-color-picker-controls {
+  flex-basis: 100%;
 }
 
 .bd-color-picker {
   display: block;
-  height: 2.25rem;
+  height: 3rem;
+  width: 127px;
 }
 
 .bd-color-picker-swatch {
-  max-width: 105px;
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  place-items: center;
+  margin: 0 !important;
 }
 
 .bd-color-picker-swatch-item {
   margin: 3px;
+}
+
+.sidebar {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: auto auto 1fr auto auto auto;
+  gap: 8px;
+  align-items: end;
+  justify-content: center;
+  overflow: auto;
+}
+
+.thumbnails {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column-reverse;
+  height: calc(40px * 4);
+  box-sizing: content-box;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-normal);
+  overflow: auto;
+  scrollbar-gutter: stable;
+  &::before {
+    content: "";
+    position: absolute;
+    inset: anchor(--active-thumbnail inside);
+    background: #fff2;
+    pointer-events: none;
+    transition: inset 200ms ease-out;
+  }
+}
+
+.thumbnail {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  padding: 8px 4px;
+  color: var(--interactive-normal);
+  animation: fade-in 250ms;
+  & > [role=button] {
+    padding: 0;
+  }
+  &.active {
+    anchor-name: --active-thumbnail;
+  }
+  &:hover {
+    background: #fff1;
+  }
+}
+
+.thumbnail-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-normal);
 }
 
 }`);
