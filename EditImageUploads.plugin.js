@@ -111,6 +111,9 @@ module.exports = function (meta) {
     #state;
     #activeLayerIndex;
 
+    #bottomCache;
+    #middleCache;
+    #topCache;
     #interactionCache;
 
     /** 
@@ -119,6 +122,9 @@ module.exports = function (meta) {
      */
     constructor(canvas, bitmap) {
       this.#mainCanvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      this.#bottomCache = new OffscreenCanvas(bitmap.width, bitmap.height);
+      this.#middleCache = new OffscreenCanvas(bitmap.width, bitmap.height);
+      this.#topCache = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#viewportCanvas = canvas;
 
       const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
@@ -138,10 +144,9 @@ module.exports = function (meta) {
         layers: [{ layer, state: layer.state }]
       });
       this.#activeLayerIndex = 0;
-      this.render();
+      this.fullRender();
 
       this.#interactionCache = {
-        canvas: new OffscreenCanvas(this.#mainCanvas.width, this.#mainCanvas.height),
         path2D: new Path2D(),
         lastPoint: new DOMPoint(),
         rect: new DOMRect(),
@@ -151,7 +156,7 @@ module.exports = function (meta) {
     }
 
     get layers() { return this.#state.state.layers }
-    get #activeLayer() { return this.layers[this.#activeLayerIndex].layer }
+    get #activeLayer() { return this.layers[this.activeLayerIndex].layer }
     get viewportTransform() { return this.#viewportTransform }
     get viewportTransform_inv() {
       if (this.#staleViewportInv) {
@@ -180,11 +185,30 @@ module.exports = function (meta) {
     get previewLayerTransform() { return this.#activeLayer.previewTransform }
     get layerTransform() { return this.#activeLayer.state.transform }
 
+    get viewportDims() { return { width: this.#viewportCanvas.width, height: this.#viewportCanvas.height } }
+    set viewportDims(dims) {
+      this.#staleViewportInv = true;
+      this.#viewportCanvas.width = dims.width;
+      this.#viewportCanvas.height = dims.height;
+    }
+
     get canvasDims() { return { width: this.#mainCanvas.width, height: this.#mainCanvas.height } }
     set canvasDims(dims) {
-      this.#mainCanvas.width = dims.width;
-      this.#mainCanvas.height = dims.height;
-      this.#state.state = { ... this.#state.state, width: dims.width, height: dims.height }
+      this.#resizeCanvas(dims.width, dims.height);
+      this.#state.state = { ...this.#state.state, width: dims.width, height: dims.height };
+    }
+
+    get activeLayerIndex() { return this.#activeLayerIndex }
+    set activeLayerIndex(layerIndex) {
+      this.#activeLayerIndex = utils.clamp(0, layerIndex, this.layers.length - 1);
+
+      this.#bottomCache.getContext("2d").clearRect(0, 0, this.#bottomCache.width, this.#bottomCache.height);
+      this.#middleCache.getContext("2d").clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.#topCache.getContext("2d").clearRect(0, 0, this.#topCache.width, this.#topCache.height);
+
+      this.layers.slice(0, this.#activeLayerIndex).forEach(layer => layer.layer.drawOn(this.#bottomCache));
+      this.#activeLayer.drawOn(this.#middleCache);
+      this.layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
     }
 
     /** @param {ImageBitmap | null} bitmap */
@@ -197,8 +221,18 @@ module.exports = function (meta) {
           { layer: newLayer, state: newLayer.state }
         ]
       };
-      bitmap && newLayer.drawOn(this.#mainCanvas);
-      this.#activeLayerIndex = this.#state.state.layers.length - 1;
+      this.activeLayerIndex = this.layers.length - 1;
+      this.render();
+    }
+
+    deleteLayer(layerIndex = this.activeLayerIndex) {
+      if (layerIndex in this.layers && this.layers.length > 1) {
+        const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+        updated.layers.splice(layerIndex, 1);
+        this.#state.state = updated;
+        this.activeLayerIndex = Math.min(this.activeLayerIndex, updated.layers.length - 1);
+        this.render();
+      }
     }
 
     /** @param {number} layerIndex  */
@@ -210,32 +244,20 @@ module.exports = function (meta) {
       updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, isVisible } };
       this.#state.state = updated;
       this.layers[layerIndex].layer.state.isVisible = isVisible;
-    }
 
-    /** @param {number} layerIndex */
-    set activeLayerIndex(layerIndex) {
-      this.#activeLayerIndex = utils.clamp(0, layerIndex, this.layers.length - 1);
-    }
-    get activeLayerIndex() { return this.#activeLayerIndex }
-
-    deleteLayer(layerIndex = this.#activeLayerIndex) {
-      if (layerIndex in this.layers && this.layers.length > 1) {
-        const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-        updated.layers.splice(layerIndex, 1);
-        this.#state.state = updated;
-        this.#activeLayerIndex = Math.min(this.#activeLayerIndex, updated.layers.length - 1);
-      }
+      this.fullRender();
     }
 
     /** @param {1 | -1} delta  */
     moveLayers(delta) {
-      if (!((this.#activeLayerIndex + delta) in this.layers)) return;
+      if (!((this.activeLayerIndex + delta) in this.layers)) return;
 
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-      [updated.layers[this.#activeLayerIndex], updated.layers[this.#activeLayerIndex + delta]] = [updated.layers[this.#activeLayerIndex + delta], updated.layers[this.#activeLayerIndex]];
+      [updated.layers[this.activeLayerIndex], updated.layers[this.activeLayerIndex + delta]] = [updated.layers[this.activeLayerIndex + delta], updated.layers[this.activeLayerIndex]];
       this.#state.state = updated;
 
-      this.#activeLayerIndex += delta;
+      this.activeLayerIndex = this.activeLayerIndex + delta;
+      this.render();
     }
 
     translateViewportBy(dx = 0, dy = 0) {
@@ -261,13 +283,25 @@ module.exports = function (meta) {
     }
 
     /** @param {DOMMatrix} M  */
-    previewLayerTransformBy(M) { this.#activeLayer.previewTransformBy(M) }
+    previewLayerTransformBy(M) {
+      this.#activeLayer.previewTransformBy(M);
+      const ctx = this.#middleCache.getContext("2d");
+      ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.#activeLayer.drawOn(this.#middleCache);
+      this.render();
+    }
     /** @param {DOMMatrix} M  */
-    previewLayerTransformTo(M) { this.#activeLayer.previewTransformTo(M) }
+    previewLayerTransformTo(M) {
+      this.#activeLayer.previewTransformTo(M);
+      const ctx = this.#middleCache.getContext("2d");
+      ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.#activeLayer.drawOn(this.#middleCache);
+      this.render();
+    }
     finalizeLayerPreview() {
       const layerState = this.#activeLayer.finalizePreview();
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-      updated.layers[this.#activeLayerIndex] = { ...updated.layers[this.#activeLayerIndex], state: layerState };
+      updated.layers[this.activeLayerIndex] = { ...updated.layers[this.activeLayerIndex], state: layerState };
       this.#state.state = updated;
     }
 
@@ -277,38 +311,44 @@ module.exports = function (meta) {
      * @param {string} color
      */
     startDrawing(startPoint, width, color) {
-      // sandwich setup
-      const bottomCtx = this.#mainCanvas.getContext("2d");
-      const topCtx = this.#interactionCache.canvas.getContext("2d");
-      bottomCtx.save();
-      bottomCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      topCtx.clearRect(0, 0, this.#interactionCache.canvas.width, this.#interactionCache.canvas.height);
-      this.layers.slice(0, this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#mainCanvas));
-      this.layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#interactionCache.canvas));
+      const ctx = this.#mainCanvas.getContext("2d");
+      ctx.save();
+      ctx.drawImage(this.#bottomCache, 0, 0);
+      ctx.drawImage(this.#middleCache, 0, 0);
 
       this.#interactionCache.width = width;
       this.#interactionCache.color = color;
-      bottomCtx.strokeStyle = color;
-      bottomCtx.lineWidth = width;
-      bottomCtx.lineCap = "round";
-      bottomCtx.lineJoin = "round";
+      ctx.fillStyle = color;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
 
       this.#interactionCache.layerTransform_inv = new DOMMatrix()
         .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
         .multiplySelf(this.layerTransform).invertSelf();
 
       this.#interactionCache.lastPoint = startPoint.matrixTransform(this.viewportTransform_inv);
-      bottomCtx.beginPath();
-      bottomCtx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
+      if (this.#activeLayer.state.isVisible) {
+        ctx.beginPath();
+        ctx.arc(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y, width / 2, 0, 2 * Math.PI);
+        ctx.fill();
+        ctx.drawImage(this.#topCache, 0, 0);
+        this.refreshViewport();
+
+        ctx.beginPath();
+        ctx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
+      }
 
       const rawPoint = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
       this.#interactionCache.path2D.moveTo(rawPoint.x, rawPoint.y);
+      this.#interactionCache.path2D.lineTo(rawPoint.x, rawPoint.y);
       this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
     }
 
     /** @param {DOMPoint} to */
     drawLine(to) {
-      const bottomCtx = this.#mainCanvas.getContext("2d");
+      const ctx = this.#mainCanvas.getContext("2d");
       const to_inv = to.matrixTransform(this.viewportTransform_inv);
 
       // out of bounds
@@ -331,7 +371,7 @@ module.exports = function (meta) {
       if (!isOOB && prevIsOOB) {
         const rawLast = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
         this.#interactionCache.path2D.moveTo(rawLast.x, rawLast.y);
-        bottomCtx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
+        ctx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       }
 
       const midpoint = new DOMPoint(
@@ -339,16 +379,18 @@ module.exports = function (meta) {
         (to_inv.y + this.#interactionCache.lastPoint.y) / 2
       );
 
-      bottomCtx.quadraticCurveTo(
-        this.#interactionCache.lastPoint.x,
-        this.#interactionCache.lastPoint.y,
-        midpoint.x,
-        midpoint.y
-      );
-      bottomCtx.stroke();
+      if (this.#activeLayer.state.isVisible) {
+        ctx.quadraticCurveTo(
+          this.#interactionCache.lastPoint.x,
+          this.#interactionCache.lastPoint.y,
+          midpoint.x,
+          midpoint.y
+        );
+        ctx.stroke();
 
-      bottomCtx.drawImage(this.#interactionCache.canvas, 0, 0);
-      this.refreshViewport();
+        ctx.drawImage(this.#topCache, 0, 0);
+        this.refreshViewport();
+      }
 
       const rawMidpoint = midpoint.matrixTransform(this.#interactionCache.layerTransform_inv);
       const rawLast = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
@@ -376,12 +418,17 @@ module.exports = function (meta) {
       });
 
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-      updated.layers[this.#activeLayerIndex] = { ...updated.layers[this.#activeLayerIndex], state: layerState };
+      updated.layers[this.activeLayerIndex] = { ...updated.layers[this.activeLayerIndex], state: layerState };
       this.#state.state = updated;
 
       this.#mainCanvas.getContext("2d").restore();
-      this.#interactionCache.canvas.getContext("2d").clearRect(0, 0, this.#interactionCache.canvas.width, this.#interactionCache.canvas.height);
       this.#interactionCache.path2D = new Path2D();
+
+      this.layers.slice(0, this.#activeLayerIndex).forEach(layer => layer.layer.drawOn(this.#bottomCache));
+      this.#activeLayer.drawOn(this.#middleCache);
+      this.layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
+
+      this.render();
     }
 
     /** @param {DOMPoint} startPoint  */
@@ -439,12 +486,25 @@ module.exports = function (meta) {
         layer.state = newState;
         return { layer, state: newState };
       });
-      this.#mainCanvas.width = width;
-      this.#mainCanvas.height = height;
       this.#state.state = updated;
-      this.#staleViewportInv = true;
+      this.#resizeCanvas(width, height);
+      this.fullRender();
 
       return true;
+    }
+
+    /** @param {number} width @param {number} height  */
+    #resizeCanvas(width, height) {
+      this.#staleViewportInv = true;
+      this.#mainCanvas.width = width;
+      this.#mainCanvas.height = height;
+
+      this.#bottomCache.width = width;
+      this.#bottomCache.height = height;
+      this.#middleCache.width = width;
+      this.#middleCache.height = height;
+      this.#topCache.width = width;
+      this.#topCache.height = height;
     }
 
     /** @param {1 | -1} x @param {1 | -1} y */
@@ -454,7 +514,8 @@ module.exports = function (meta) {
         layer.previewTransformBy(T);
         return { layer, state: layer.finalizePreview() }
       });
-      this.#state.state = { ...this.#state.state, layers }
+      this.#state.state = { ...this.#state.state, layers };
+      this.fullRender();
     }
 
     /** @param {90 | -90} angle  */
@@ -464,9 +525,9 @@ module.exports = function (meta) {
         layer.previewTransformBy(T);
         return { layer, state: layer.finalizePreview() }
       });
-      this.#mainCanvas.width = this.#state.state.height;
-      this.#mainCanvas.height = this.#state.state.width;
-      this.#state.state = { ...this.#state.state, layers, width: this.#state.state.height, height: this.#state.state.width }
+      this.#resizeCanvas(this.#state.state.height, this.#state.state.width);
+      this.#state.state = { ...this.#state.state, layers, width: this.#state.state.height, height: this.#state.state.width };
+      this.fullRender();
     }
 
     /** @param {ImageEncodeOptions?} options */
@@ -474,53 +535,70 @@ module.exports = function (meta) {
 
     refreshViewport() {
       const ctx = this.#viewportCanvas.getContext("2d");
-      ctx.save();
 
       ctx.fillStyle = "#424242";
       ctx.fillRect(0, 0, this.#viewportCanvas.width, this.#viewportCanvas.height);
-
       ctx.setTransform(new DOMMatrix().translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2).multiplySelf(this.#viewportTransform));
 
       ctx.clearRect(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2, this.#mainCanvas.width, this.#mainCanvas.height);
       ctx.drawImage(this.#mainCanvas, -this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2);
 
-      ctx.restore();
+      ctx.resetTransform();
     }
 
     render() {
       const ctx = this.#mainCanvas.getContext("2d");
       ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      this.layers.forEach(layer => layer.layer.drawOn(this.#mainCanvas));
+      ctx.drawImage(this.#bottomCache, 0, 0);
+      ctx.drawImage(this.#middleCache, 0, 0);
+      ctx.drawImage(this.#topCache, 0, 0);
+      this.refreshViewport();
+    }
+
+    fullRender() {
+      const ctx = this.#mainCanvas.getContext("2d");
+
+      ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      this.#bottomCache.getContext("2d").clearRect(0, 0, this.#bottomCache.width, this.#bottomCache.height);
+      this.#middleCache.getContext("2d").clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.#topCache.getContext("2d").clearRect(0, 0, this.#topCache.width, this.#topCache.height);
+
+      this.layers.slice(0, this.activeLayerIndex).forEach(layer => layer.layer.drawOn(this.#bottomCache));
+      this.#activeLayer.drawOn(this.#middleCache);
+      this.layers.slice(this.activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
+
+      ctx.drawImage(this.#bottomCache, 0, 0);
+      ctx.drawImage(this.#middleCache, 0, 0);
+      ctx.drawImage(this.#topCache, 0, 0);
+
       this.refreshViewport();
     }
 
     undo() {
       const oldWidth = this.#mainCanvas.width;
       const oldHeight = this.#mainCanvas.height;
-
       const undid = this.#state.undo();
       if (!undid) return false;
-      this.#activeLayerIndex = utils.clamp(0, this.#activeLayerIndex, this.#state.state.layers.length - 1);
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
-        this.#mainCanvas.width = this.#state.state.width;
-        this.#mainCanvas.height = this.#state.state.height;
+        this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
       }
       this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
+      this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
+      this.render();
       return true;
     }
 
     redo() {
       const oldWidth = this.#mainCanvas.width;
       const oldHeight = this.#mainCanvas.height;
-
       const redid = this.#state.redo();
       if (!redid) return false;
-      this.#activeLayerIndex = utils.clamp(0, this.#activeLayerIndex, this.#state.state.layers.length - 1);
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
-        this.#mainCanvas.width = this.#state.state.width;
-        this.#mainCanvas.height = this.#state.state.height;
+        this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
       }
       this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
+      this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
+      this.render();
       return true;
     }
   }
@@ -618,7 +696,6 @@ module.exports = function (meta) {
 
     #drawStrokes(strokes = this.#state.strokes) {
       const ctx = this.#canvas.getContext("2d");
-      ctx.save();
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
@@ -630,17 +707,17 @@ module.exports = function (meta) {
         ctx.stroke(stroke.path2D);
         ctx.restore();
       }
-      ctx.restore();
+      ctx.resetTransform();
     }
 
     #drawImage() {
-      if (!this.#img) return;
       const ctx = this.#canvas.getContext("2d");
-      ctx.save();
       ctx.clearRect(0, 0, this.width, this.height);
-      ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
-      ctx.drawImage(this.#img, -this.#img.width / 2, -this.#img.height / 2);
-      ctx.restore();
+      if (this.#img) {
+        ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
+        ctx.drawImage(this.#img, -this.#img.width / 2, -this.#img.height / 2);
+        ctx.resetTransform();
+      }
     }
 
     /** @param {OffscreenCanvas} canvas */
@@ -648,14 +725,13 @@ module.exports = function (meta) {
       if (!this.#state.isVisible) return;
 
       const ctx = canvas.getContext("2d");
-      ctx.save();
       ctx.setTransform(new DOMMatrix()
         .translateSelf(canvas.width / 2, canvas.height / 2)
         .multiplySelf(this.#previewTransform)
         .multiplySelf(this.#state.transform)
       );
       ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2);
-      ctx.restore();
+      ctx.resetTransform();
     }
   }
 
@@ -935,9 +1011,9 @@ module.exports = function (meta) {
      * Wrapper for interaction events
      * @param {{
      *  buttons?: number,
-     *  onStart?: (e: PointerEvent, store: Record<string, any>) => void,
-     *  onChange?:(e: PointerEvent, store: Record<string, any>) => void,
-     *  onSubmit?: (e: PointerEvent, store: Record<string, any>) => void
+     *  onStart?: (e: Omit<React.PointerEvent, "currentTarget">, store: Record<string, any>) => void,
+     *  onChange?:(e: Omit<React.PointerEvent, "currentTarget">, store: Record<string, any>) => void,
+     *  onSubmit?: (e: Omit<React.PointerEvent, "currentTarget">, store: Record<string, any>) => void
      * }} props
     */
     usePointerCapture({ onStart, onChange, onSubmit }) {
@@ -1164,7 +1240,7 @@ module.exports = function (meta) {
 
       const [mode, _setMode] = hooks.useStoredState("mode", null);
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
-      const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 5, color: "#000000" }));
+      const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 25, color: "#000000" }));
 
       const isInteracting = useRef(false);
       /** @type { React.RefObject<HTMLCanvasElement | null> } */
@@ -1242,8 +1318,7 @@ module.exports = function (meta) {
         }
       }), []);
 
-      const render = useCallback(() => {
-        editor.current.render();
+      const syncStates = useCallback(() => {
         setCanUndoRedo(editor.current.canUndo << 1 ^ editor.current.canRedo);
         setDims(d => {
           const { width, height } = editor.current.canvasDims;
@@ -1283,11 +1358,11 @@ module.exports = function (meta) {
         addEventListener("keydown", e => {
           switch (e.key) {
             case e.ctrlKey && "z":
-              if (editor.current.undo()) render();
+              if (editor.current.undo()) syncStates();
               return;
 
             case e.ctrlKey && "y":
-              if (editor.current.redo()) render();
+              if (editor.current.redo()) syncStates();
               return;
 
             case !e.repeat && e.ctrlKey && "b":
@@ -1298,6 +1373,7 @@ module.exports = function (meta) {
               return;
 
             case !e.repeat && e.ctrlKey && "c":
+              if (document.activeElement.tagName === "INPUT") return;
               if (DiscordNative?.clipboard.copyImage) {
                 editor.current.toBlob({
                   type: 'image/png'
@@ -1336,8 +1412,7 @@ module.exports = function (meta) {
         }, ctrl);
         addEventListener("resize", () => {
           const rect = canvasRef.current.offsetParent.getBoundingClientRect();
-          canvasRef.current.width = ~~(rect.width);
-          canvasRef.current.height = ~~(rect.height);
+          editor.current.viewportDims = { width: ~~(rect.width), height: ~~(rect.height) };
           editor.current.refreshViewport();
 
           canvasRect.current = canvasRef.current.getBoundingClientRect();
@@ -1353,7 +1428,7 @@ module.exports = function (meta) {
 
               const bitmap = await createImageBitmap(file)
               editor.current.createNewLayer(bitmap);
-              render();
+              syncStates();
               break;
             }
           }
@@ -1374,7 +1449,6 @@ module.exports = function (meta) {
             const Ty = (e.clientY - (canvasRect.current.y + canvasRect.current.height / 2 + cty * boxScale)) / viewportScale;
 
             editor.current.previewLayerTransformBy(new DOMMatrix().scaleSelf(delta, delta, 1, Tx, Ty));
-            editor.current.render();
 
             const cs = utils.getScale(editor.current.previewLayerTransform).toFixed(2);
             auxRef.current?.previewValue(cs);
@@ -1405,7 +1479,7 @@ module.exports = function (meta) {
         onSubmit: (e, store) => {
           if (mode === 3 && store.changed) {
             editor.current.finalizeLayerPreview();
-            render();
+            syncStates();
 
             const cs = utils.getScale(editor.current.previewLayerTransform).toFixed(2);
             auxRef.current?.setValue(cs);
@@ -1429,6 +1503,10 @@ module.exports = function (meta) {
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
               editor.current.startRegionSelect(new DOMPoint(startX, startY), fixedAspect);
+              break;
+            }
+            case !!(e.buttons & 1) && 1: {
+              canvasRef.current.classList.add("pointerdown");
               break;
             }
             case !!(e.buttons & 1) && 4: {
@@ -1493,7 +1571,6 @@ module.exports = function (meta) {
                 );
 
                 editor.current.previewLayerTransformBy(new DOMMatrix().rotateSelf(dTheta));
-                editor.current.render();
 
                 const cr = utils.getAngle(editor.current.previewLayerTransform).toFixed(1);
                 auxRef.current?.previewValue(cr);
@@ -1503,7 +1580,6 @@ module.exports = function (meta) {
                 const dx = (e.clientX - store.startX) / utils.getScale(editor.current.viewportTransform);
                 const dy = (e.clientY - store.startY) / utils.getScale(editor.current.viewportTransform);
                 editor.current.previewLayerTransformBy(new DOMMatrix().translateSelf(dx, dy));
-                editor.current.render();
                 break;
               }
               case 4: {
@@ -1528,24 +1604,25 @@ module.exports = function (meta) {
               canvasRef.current.classList.remove("pointerdown");
               ["--x1", "--x2", "--y1", "--y2"].forEach(a => overlay.current.style.removeProperty(a));
               if (store.changed && editor.current.endRegionSelect()) {
-                render();
+                syncStates();
                 editor.current.resetViewport();
               };
 
               break;
             }
             case store.changed && 1:
+              canvasRef.current.classList.remove("pointerdown");
               const cr = utils.getAngle(editor.current.previewLayerTransform).toFixed(1);
               auxRef.current?.setValue(cr);
             // Intentional fall-through
             case store.changed && 2: {
               editor.current.finalizeLayerPreview();
-              render();
+              syncStates();
               break;
             }
-            case store.changed && 4: {
+            case 4: {
               editor.current.endDrawing();
-              render();
+              syncStates();
               break;
             }
           }
@@ -1558,7 +1635,7 @@ module.exports = function (meta) {
             className: "canvas-wrapper",
             children: [
               jsx("canvas", {
-                className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing"][mode]),
+                className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing", "texting"][mode]),
                 ref: canvasRef,
                 onWheel: handleWheel,
                 ...pointerHandlers,
@@ -1582,14 +1659,15 @@ module.exports = function (meta) {
                   jsx(Components.NumberSlider, {
                     value: dims.width,
                     decimals: 0,
-                    onChange: null,
                     withSlider: false,
                     minValue: 0,
                     onChange: newWidth => {
                       const { width, height } = editor.current.canvasDims;
+                      console.log(newWidth, width)
                       if (newWidth !== width) {
                         editor.current.canvasDims = { width: newWidth, height };
-                        render();
+                        editor.current.fullRender();
+                        syncStates();
                       }
                     }
                   }),
@@ -1597,14 +1675,14 @@ module.exports = function (meta) {
                   jsx(Components.NumberSlider, {
                     value: dims.height,
                     decimals: 0,
-                    onChange: null,
                     withSlider: false,
                     minValue: 0,
                     onChange: newHeight => {
                       const { width, height } = editor.current.canvasDims;
                       if (newHeight !== height) {
                         editor.current.canvasDims = { width, height: newHeight };
-                        render();
+                        editor.current.fullRender();
+                        syncStates();
                       }
                     }
                   }),
@@ -1638,23 +1716,23 @@ module.exports = function (meta) {
                     onClick: () => setMode(m => m === 3 ? null : 3)
                   }),
                   jsx(Components.IconButton, {
-                    tooltip: "Crop (C)",
-                    d: utils.paths.Crop,
-                    active: mode === 0,
-                    onClick: () => setMode(m => m === 0 ? null : 0)
-                  }),
-                  jsx(Components.IconButton, {
                     tooltip: "Text (T)",
                     d: utils.paths.Text,
                     active: mode === 5,
                     onClick: () => setMode(m => m === 5 ? null : 5)
                   }),
                   jsx(Components.IconButton, {
+                    tooltip: "Crop (C)",
+                    d: utils.paths.Crop,
+                    active: mode === 0,
+                    onClick: () => setMode(m => m === 0 ? null : 0)
+                  }),
+                  jsx(Components.IconButton, {
                     tooltip: "Flip Horizontal",
                     d: utils.paths.FlipH,
                     onClick: () => {
                       editor.current.flip(-1, 1);
-                      render();
+                      syncStates();
                       if (mode === 1) {
                         auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
                       }
@@ -1665,7 +1743,7 @@ module.exports = function (meta) {
                     d: utils.paths.FlipV,
                     onClick: () => {
                       editor.current.flip(1, -1);
-                      render();
+                      syncStates();
                       if (mode === 1) {
                         auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
                       }
@@ -1676,7 +1754,7 @@ module.exports = function (meta) {
                     d: utils.paths.RotL,
                     onClick: () => {
                       editor.current.rotate(-90);
-                      render();
+                      syncStates();
                       if (mode === 1) {
                         auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
                       }
@@ -1687,7 +1765,7 @@ module.exports = function (meta) {
                     d: utils.paths.RotR,
                     onClick: () => {
                       editor.current.rotate(90);
-                      render();
+                      syncStates();
                       if (mode === 1) {
                         auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
                       }
@@ -1698,7 +1776,7 @@ module.exports = function (meta) {
               jsx("div", {
                 className: "aux-inputs",
                 children: [
-                  jsx(Fragment, {
+                  (mode == 4 || mode == 5) && jsx(Fragment, {
                     children: [
                       jsx(BdApi.Components.ColorInput, {
                         value: strokeStyle.color,
@@ -1737,13 +1815,13 @@ module.exports = function (meta) {
                     suffix: "°",
                     decimals: 0,
                     withSlider: false,
-                    value: Number(utils.getAngle(editor.current.layerTransform).toFixed(1)),
+                    value: editor.current ? Number(utils.getAngle(editor.current.layerTransform).toFixed(1)) : 0,
                     onChange: value => {
                       const cr = utils.getAngle(editor.current.layerTransform);
                       const r = new DOMMatrix().rotateSelf(value - cr);
                       editor.current.previewLayerTransformBy(r);
                       editor.current.finalizeLayerPreview();
-                      render();
+                      syncStates();
                     }
                   }),
                   mode == 3 && jsx(Components.NumberSlider, {
@@ -1754,19 +1832,18 @@ module.exports = function (meta) {
                     minValue: 0.01,
                     centerValue: 1,
                     maxValue: 10,
-                    value: Number(utils.getScale(editor.current.layerTransform).toFixed(2)),
+                    value: editor.current ? Number(utils.getScale(editor.current.layerTransform).toFixed(2)) : 1,
                     onSlide: s => {
                       const cs = utils.getScale(editor.current.layerTransform);
                       const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
                       editor.current.previewLayerTransformTo(S);
-                      editor.current.render();
                     },
                     onChange: s => {
                       const cs = utils.getScale(editor.current.layerTransform);
                       const S = new DOMMatrix().scaleSelf(s / cs, s / cs);
                       editor.current.previewLayerTransformTo(S);
                       editor.current.finalizeLayerPreview();
-                      render();
+                      syncStates();
                     }
                   }),
                 ]
@@ -1781,12 +1858,12 @@ module.exports = function (meta) {
                     active,
                     onVisibilityToggle: () => {
                       editor.current.toggleLayerVisibility(idx);
-                      render();
+                      syncStates();
                     },
                     onSelect: () => {
                       if (editor.current.activeLayerIndex === idx) return;
                       editor.current.activeLayerIndex = idx;
-                      render();
+                      syncStates();
                     }
                   })
                 })
@@ -1799,7 +1876,7 @@ module.exports = function (meta) {
                     d: utils.paths.AddLayer,
                     onClick: () => {
                       editor.current.createNewLayer();
-                      render();
+                      syncStates();
                     }
                   }),
                   jsx(Components.IconButton, {
@@ -1808,7 +1885,7 @@ module.exports = function (meta) {
                     disabled: layers.length <= 1,
                     onClick: () => {
                       editor.current.deleteLayer();
-                      render();
+                      syncStates();
                     }
                   }),
                   jsx(Components.IconButton, {
@@ -1817,7 +1894,7 @@ module.exports = function (meta) {
                     disabled: editor.current?.activeLayerIndex >= layers.length - 1,
                     onClick: () => {
                       editor.current.moveLayers(1);
-                      render();
+                      syncStates();
                     }
                   }),
                   jsx(Components.IconButton, {
@@ -1826,7 +1903,7 @@ module.exports = function (meta) {
                     disabled: editor.current?.activeLayerIndex <= 0,
                     onClick: () => {
                       editor.current.moveLayers(-1);
-                      render();
+                      syncStates();
                     }
                   }),
                 ]
@@ -1834,13 +1911,13 @@ module.exports = function (meta) {
               jsx(Components.IconButton, {
                 tooltip: "Undo (Ctrl + Z)",
                 d: utils.paths.Undo,
-                onClick: () => { if (editor.current.undo()) render() },
+                onClick: () => { if (editor.current.undo()) syncStates() },
                 disabled: !(canUndoRedo & 2)
               }),
               jsx(Components.IconButton, {
                 tooltip: "Redo (Ctrl + Y)",
                 d: utils.paths.Redo,
-                onClick: () => { if (editor.current.redo()) render() },
+                onClick: () => { if (editor.current.redo()) syncStates() },
                 disabled: !(canUndoRedo & 1)
               }),
             ]
@@ -2072,7 +2149,7 @@ module.exports = function (meta) {
 
 .canvas.rotating {
   cursor: grab;
-  &:active {
+  &.pointerdown {
     cursor: grabbing;
   }
 }
@@ -2083,6 +2160,10 @@ module.exports = function (meta) {
 
 .canvas.drawing {
   cursor: crosshair;
+}
+
+.canvas.texting {
+  cursor: text;
 }
 
 @keyframes fade-in {
@@ -2161,6 +2242,9 @@ module.exports = function (meta) {
     padding-bottom: 3px;
     padding-top: 5px;
   }
+  & > :nth-child(5 of [role=button]) {
+    margin-right: 50%;
+  }
 }
 
 .aux-inputs {
@@ -2178,7 +2262,9 @@ module.exports = function (meta) {
     align-self: end;
   }
 }
-
+[role=button] {
+  border-radius: 8px;
+}
 [role=button].disabled {
   opacity: 0.5;
   cursor: default;
@@ -2258,11 +2344,12 @@ module.exports = function (meta) {
   border-top: 1px solid var(--border-normal);
   overflow: auto;
   scrollbar-gutter: stable;
+  font-size: .8125em;
   &::before {
     content: "";
     position: absolute;
     inset: anchor(--active-thumbnail inside);
-    background: #fff2;
+    background: #fff1;
     pointer-events: none;
     transition: inset 200ms ease-out;
   }
@@ -2273,6 +2360,7 @@ module.exports = function (meta) {
   gap: 4px;
   align-items: center;
   padding: 8px 4px;
+  cursor: pointer;
   color: var(--interactive-normal);
   animation: fade-in 250ms;
   & > [role=button] {
