@@ -480,7 +480,7 @@ module.exports = function (meta) {
     }
 
     endRegionSelect() {
-      if (this.#interactionCache.rect.width < 1 || this.#interactionCache.rect.height < 1)
+      if (Math.abs(this.#interactionCache.rect.width) < 1 || Math.abs(this.#interactionCache.rect.height) < 1)
         return false;
 
       const width = Math.abs(this.#interactionCache.rect.width);
@@ -2248,8 +2248,8 @@ module.exports = function (meta) {
   background: rgba(0, 0, 0, 0.7);
   clip-path: polygon(
     0% 0%, 100% 0%, 100% 100%, 0 100%,
-    var(--x1, 0%) var(--y2, 100%), var(--x2, 100%) var(--y2, 100%), var(--x2, 100%) var(--y1, 0%), var(--x1, 0%) var(--y1, 0%),
-    var(--x1, 0%) var(--y2, 100%), 0 100%
+    var(--x1, 50%) var(--y2, 50%), var(--x2, 50%) var(--y2, 50%), var(--x2, 50%) var(--y1, 50%), var(--x1, 50%) var(--y1, 50%),
+    var(--x1, 50%) var(--y2, 50%), 0 100%
   );
 }
 
