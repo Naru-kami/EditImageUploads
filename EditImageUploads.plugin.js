@@ -286,18 +286,20 @@ module.exports = function (meta) {
     /** @param {DOMMatrix} M  */
     previewLayerTransformBy(M) {
       this.#activeLayer.previewTransformBy(M);
-      const ctx = this.#middleCache.getContext("2d");
-      ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
-      this.#activeLayer.drawOn(this.#middleCache);
-      this.render();
+      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      this.#activeLayer.drawOn(canvas);
+      this.layers.length > 1 ? this.render() : this.refreshViewport();
     }
     /** @param {DOMMatrix} M  */
     previewLayerTransformTo(M) {
       this.#activeLayer.previewTransformTo(M);
-      const ctx = this.#middleCache.getContext("2d");
-      ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
-      this.#activeLayer.drawOn(this.#middleCache);
-      this.render();
+      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      this.#activeLayer.drawOn(canvas);
+      this.layers.length > 1 ? this.render() : this.refreshViewport();
     }
     finalizeLayerPreview() {
       const layerState = this.#activeLayer.finalizePreview();
@@ -312,7 +314,7 @@ module.exports = function (meta) {
      * @param {string} color
      */
     startDrawing(startPoint, width, color, globalCompositeOperation = "source-over") {
-      const ctx = this.#middleCache.getContext("2d");
+      const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
       ctx.save();
 
       this.#interactionCache.width = width;
@@ -337,14 +339,10 @@ module.exports = function (meta) {
         ctx.fill();
 
         const mainCtx = this.#mainCanvas.getContext("2d");
-        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-        if (this.#activeLayerIndex > 0) {
-          mainCtx.drawImage(this.#bottomCache, 0, 0);
-        }
-        mainCtx.drawImage(this.#middleCache, 0, 0);
-        if (this.#activeLayerIndex < this.layers.length - 1) {
-          mainCtx.drawImage(this.#topCache, 0, 0);
-        }
+        this.layers.length > 1 && mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
+        this.layers.length > 1 && mainCtx.drawImage(this.#middleCache, 0, 0);
+        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0)
 
         this.refreshViewport();
 
@@ -361,7 +359,7 @@ module.exports = function (meta) {
 
     /** @param {DOMPoint} to */
     drawLine(to) {
-      const ctx = this.#middleCache.getContext("2d");
+      const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
       const to_inv = to.matrixTransform(this.viewportTransform_inv);
 
       // out of bounds
@@ -396,20 +394,15 @@ module.exports = function (meta) {
         ctx.quadraticCurveTo(
           this.#interactionCache.lastPoint.x,
           this.#interactionCache.lastPoint.y,
-          midpoint.x,
-          midpoint.y
+          midpoint.x, midpoint.y
         );
         ctx.stroke();
 
         const mainCtx = this.#mainCanvas.getContext("2d");
-        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-        if (this.#activeLayerIndex > 0) {
-          mainCtx.drawImage(this.#bottomCache, 0, 0);
-        }
-        mainCtx.drawImage(this.#middleCache, 0, 0);
-        if (this.#activeLayerIndex < this.layers.length - 1) {
-          mainCtx.drawImage(this.#topCache, 0, 0);
-        }
+        this.layers.length > 1 && mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0)
+        this.layers.length > 1 && mainCtx.drawImage(this.#middleCache, 0, 0);
+        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0)
 
         this.refreshViewport();
       }
@@ -444,15 +437,12 @@ module.exports = function (meta) {
       updated.layers[this.activeLayerIndex] = { ...updated.layers[this.activeLayerIndex], state: layerState };
       this.#state.state = updated;
 
-      const ctx = this.#middleCache.getContext("2d");
+      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
+      const ctx = canvas.getContext("2d");
       ctx.restore();
-
-      if (this.#interactionCache.globalCompositeOperation !== "source-over") {
-        ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
-      }
-      this.#activeLayer.drawOn(this.#middleCache);
-
-      this.render();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      this.#activeLayer.drawOn(canvas);
+      this.layers.length > 1 ? this.render() : this.refreshViewport();
     }
 
     /** @param {DOMPoint} startPoint  */
@@ -560,7 +550,7 @@ module.exports = function (meta) {
     refreshViewport() {
       const ctx = this.#viewportCanvas.getContext("2d");
 
-      ctx.fillStyle = "#424242";
+      ctx.fillStyle = "#303038";
       ctx.fillRect(0, 0, this.#viewportCanvas.width, this.#viewportCanvas.height);
       ctx.setTransform(new DOMMatrix().translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2).multiplySelf(this.#viewportTransform));
 
@@ -573,11 +563,11 @@ module.exports = function (meta) {
     render() {
       const ctx = this.#mainCanvas.getContext("2d");
       ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      if (this.#activeLayerIndex > 0)
-        ctx.drawImage(this.#bottomCache, 0, 0);
+
+      this.#activeLayerIndex > 0 && ctx.drawImage(this.#bottomCache, 0, 0);
       ctx.drawImage(this.#middleCache, 0, 0);
-      if (this.#activeLayerIndex < this.layers.length - 1)
-        ctx.drawImage(this.#topCache, 0, 0);
+      this.#activeLayerIndex < this.layers.length - 1 && ctx.drawImage(this.#topCache, 0, 0);
+
       this.refreshViewport();
     }
 
@@ -585,19 +575,17 @@ module.exports = function (meta) {
       const ctx = this.#mainCanvas.getContext("2d");
 
       ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      this.#bottomCache.getContext("2d").clearRect(0, 0, this.#bottomCache.width, this.#bottomCache.height);
-      this.#middleCache.getContext("2d").clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
-      this.#topCache.getContext("2d").clearRect(0, 0, this.#topCache.width, this.#topCache.height);
+      this.#activeLayerIndex > 0 && this.#bottomCache.getContext("2d").clearRect(0, 0, this.#bottomCache.width, this.#bottomCache.height);
+      this.layers.length > 1 && this.#middleCache.getContext("2d").clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.#activeLayerIndex < this.layers.length - 1 && this.#topCache.getContext("2d").clearRect(0, 0, this.#topCache.width, this.#topCache.height);
 
       this.layers.slice(0, this.activeLayerIndex).forEach(layer => layer.layer.drawOn(this.#bottomCache));
-      this.#activeLayer.drawOn(this.#middleCache);
+      this.#activeLayer.drawOn(this.layers.length > 1 ? this.#middleCache : this.#mainCanvas);
       this.layers.slice(this.activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
 
-      if (this.#activeLayerIndex > 0)
-        ctx.drawImage(this.#bottomCache, 0, 0);
-      ctx.drawImage(this.#middleCache, 0, 0);
-      if (this.#activeLayerIndex < this.layers.length - 1)
-        ctx.drawImage(this.#topCache, 0, 0);
+      this.#activeLayerIndex > 0 && ctx.drawImage(this.#bottomCache, 0, 0);
+      this.layers.length > 1 && ctx.drawImage(this.#middleCache, 0, 0);
+      this.#activeLayerIndex < this.layers.length - 1 && ctx.drawImage(this.#topCache, 0, 0);
 
       this.refreshViewport();
     }
@@ -2337,6 +2325,7 @@ module.exports = function (meta) {
   & > .number-input ~ div {
     flex-basis: 100%;
     margin-top: 6px;
+    margin-inline: 6px;
   }
 }
 
