@@ -152,6 +152,7 @@ module.exports = function (meta) {
         rect: new DOMRect(),
         width: 0,
         color: "#000",
+        globalCompositeOperation: "source-over"
       };
     }
 
@@ -310,14 +311,15 @@ module.exports = function (meta) {
      * @param {number} width
      * @param {string} color
      */
-    startDrawing(startPoint, width, color) {
-      const ctx = this.#mainCanvas.getContext("2d");
+    startDrawing(startPoint, width, color, globalCompositeOperation = "source-over") {
+      const ctx = this.#middleCache.getContext("2d");
       ctx.save();
-      ctx.drawImage(this.#bottomCache, 0, 0);
-      ctx.drawImage(this.#middleCache, 0, 0);
 
       this.#interactionCache.width = width;
       this.#interactionCache.color = color;
+      this.#interactionCache.globalCompositeOperation = globalCompositeOperation;
+
+      ctx.globalCompositeOperation = globalCompositeOperation;
       ctx.fillStyle = color;
       ctx.strokeStyle = color;
       ctx.lineWidth = width;
@@ -333,7 +335,17 @@ module.exports = function (meta) {
         ctx.beginPath();
         ctx.arc(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y, width / 2, 0, 2 * Math.PI);
         ctx.fill();
-        ctx.drawImage(this.#topCache, 0, 0);
+
+        const mainCtx = this.#mainCanvas.getContext("2d");
+        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+        if (this.#activeLayerIndex > 0) {
+          mainCtx.drawImage(this.#bottomCache, 0, 0);
+        }
+        mainCtx.drawImage(this.#middleCache, 0, 0);
+        if (this.#activeLayerIndex < this.layers.length - 1) {
+          mainCtx.drawImage(this.#topCache, 0, 0);
+        }
+
         this.refreshViewport();
 
         ctx.beginPath();
@@ -341,6 +353,7 @@ module.exports = function (meta) {
       }
 
       const rawPoint = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#interactionCache.path2D = new Path2D();
       this.#interactionCache.path2D.moveTo(rawPoint.x, rawPoint.y);
       this.#interactionCache.path2D.lineTo(rawPoint.x, rawPoint.y);
       this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
@@ -348,7 +361,7 @@ module.exports = function (meta) {
 
     /** @param {DOMPoint} to */
     drawLine(to) {
-      const ctx = this.#mainCanvas.getContext("2d");
+      const ctx = this.#middleCache.getContext("2d");
       const to_inv = to.matrixTransform(this.viewportTransform_inv);
 
       // out of bounds
@@ -388,7 +401,16 @@ module.exports = function (meta) {
         );
         ctx.stroke();
 
-        ctx.drawImage(this.#topCache, 0, 0);
+        const mainCtx = this.#mainCanvas.getContext("2d");
+        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+        if (this.#activeLayerIndex > 0) {
+          mainCtx.drawImage(this.#bottomCache, 0, 0);
+        }
+        mainCtx.drawImage(this.#middleCache, 0, 0);
+        if (this.#activeLayerIndex < this.layers.length - 1) {
+          mainCtx.drawImage(this.#topCache, 0, 0);
+        }
+
         this.refreshViewport();
       }
 
@@ -414,6 +436,7 @@ module.exports = function (meta) {
         color: this.#interactionCache.color,
         width: this.#interactionCache.width / utils.getScale(this.#activeLayer.state.transform),
         path2D: this.#interactionCache.path2D,
+        globalCompositeOperation: this.#interactionCache.globalCompositeOperation,
         clipPath
       });
 
@@ -421,12 +444,13 @@ module.exports = function (meta) {
       updated.layers[this.activeLayerIndex] = { ...updated.layers[this.activeLayerIndex], state: layerState };
       this.#state.state = updated;
 
-      this.#mainCanvas.getContext("2d").restore();
-      this.#interactionCache.path2D = new Path2D();
+      const ctx = this.#middleCache.getContext("2d");
+      ctx.restore();
 
-      this.layers.slice(0, this.#activeLayerIndex).forEach(layer => layer.layer.drawOn(this.#bottomCache));
+      if (this.#interactionCache.globalCompositeOperation !== "source-over") {
+        ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      }
       this.#activeLayer.drawOn(this.#middleCache);
-      this.layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
 
       this.render();
     }
@@ -549,9 +573,11 @@ module.exports = function (meta) {
     render() {
       const ctx = this.#mainCanvas.getContext("2d");
       ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      ctx.drawImage(this.#bottomCache, 0, 0);
+      if (this.#activeLayerIndex > 0)
+        ctx.drawImage(this.#bottomCache, 0, 0);
       ctx.drawImage(this.#middleCache, 0, 0);
-      ctx.drawImage(this.#topCache, 0, 0);
+      if (this.#activeLayerIndex < this.layers.length - 1)
+        ctx.drawImage(this.#topCache, 0, 0);
       this.refreshViewport();
     }
 
@@ -567,9 +593,11 @@ module.exports = function (meta) {
       this.#activeLayer.drawOn(this.#middleCache);
       this.layers.slice(this.activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
 
-      ctx.drawImage(this.#bottomCache, 0, 0);
+      if (this.#activeLayerIndex > 0)
+        ctx.drawImage(this.#bottomCache, 0, 0);
       ctx.drawImage(this.#middleCache, 0, 0);
-      ctx.drawImage(this.#topCache, 0, 0);
+      if (this.#activeLayerIndex < this.layers.length - 1)
+        ctx.drawImage(this.#topCache, 0, 0);
 
       this.refreshViewport();
     }
@@ -615,7 +643,7 @@ module.exports = function (meta) {
       this.#canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#state = {
         transform: new DOMMatrix(),
-        /** @type {{color: string, width: number, path2D: Path2D, clipPath: Path2D}[]} */
+        /** @type {{color: string, width: number, path2D: Path2D, clipPath: Path2D, globalCompositeOperation: string}[]} */
         strokes: [],
         isVisible: true,
       };
@@ -673,14 +701,14 @@ module.exports = function (meta) {
       }
     }
 
-    /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D}} stroke  */
+    /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D, globalCompositeOperation: string}} stroke  */
     addStroke(stroke) {
       this.#state = { ...this.#state, strokes: [...this.#state.strokes, stroke] };
       this.#drawStroke(stroke);
       return this.#state;
     }
 
-    /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D}} stroke  */
+    /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D, globalCompositeOperation: string}} stroke  */
     #drawStroke(stroke) {
       const ctx = this.#canvas.getContext("2d");
       ctx.save();
@@ -690,6 +718,7 @@ module.exports = function (meta) {
       ctx.strokeStyle = stroke.color;
       ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
       ctx.clip(stroke.clipPath);
+      ctx.globalCompositeOperation = stroke.globalCompositeOperation;
       ctx.stroke(stroke.path2D);
       ctx.restore();
     }
@@ -704,6 +733,7 @@ module.exports = function (meta) {
         ctx.lineWidth = stroke.width;
         ctx.strokeStyle = stroke.color;
         ctx.clip(stroke.clipPath);
+        ctx.globalCompositeOperation = stroke.globalCompositeOperation;
         ctx.stroke(stroke.path2D);
         ctx.restore();
       }
@@ -962,8 +992,10 @@ module.exports = function (meta) {
       Undo: "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8",
       Redo: "M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7z",
       Crop: "M17 15h2V7c0-1.1-.9-2-2-2H9v2h8zM7 17V1H5v4H1v2h4v10c0 1.1.9 2 2 2h10v4h2v-4h4v-2z",
+      Cut: "m16.9 18.3-4.9-4.9-1.645 1.645q.14.2625.1925.56T10.6 16.2q0 1.155-.8225 1.9775T7.8 19t-1.9775-.8225T5 16.2t.8225-1.9775T7.8 13.4q.2975 0 .595.0525t.56.1925L10.6 12 8.955 10.355q-.2625.14-.56.1925T7.8 10.6q-1.155 0-1.9775-.8225T5 7.8t.8225-1.9775T7.8 5t1.9775.8225T10.6 7.8q0 .2975-.0525.595t-.1925.56L19 17.6v.7zm-2.8-7-1.4-1.4 4.2-4.2H19v.7zM7.8 9.2q.5775 0 .9891-.4109T9.2 7.8t-.4109-.9884T7.8 6.4t-.9884.4116T6.4 7.8t.4116.9891T7.8 9.2m4.2 3.15q.14 0 .245-.105t.105-.245-.105-.245-.245-.105-.245.105-.105.245.105.245.245.105M7.8 17.6q.5775 0 .9891-.4109T9.2 16.2t-.4109-.9884T7.8 14.8t-.9884.4116T6.4 16.2t.4116.9891T7.8 17.6ZM1 23v-6h2v4h4v2zm16 0v-2h4v-4h2v6zM1 7V1h6v2H3v4zM21 7V3h-4V1h6v6Z",
       Rotate: "M10.217 19.339C6.62 17.623 4.046 14.136 3.65 10H2c.561 6.776 6.226 12.1 13.145 12.1.253 0 .484-.022.726-.033L11.68 17.865ZM8.855 1.9c-.253 0-.484.022-.726.044L12.32 6.135l1.463-1.463C17.38 6.377 19.954 9.864 20.35 14H22C21.439 7.224 15.774 1.9 8.855 1.9Z",
       Draw: "M4 21v-4.25L17.175 3.6q.3-.3.675-.45T18.6 3q.4 0 .763.15T20 3.6L21.4 5q.3.275.45.638T22 6.4q0 .375-.15.75t-.45.675L8.25 21zm2-2h1.4l9.825-9.8l-.7-.725l-.725-.7L6 17.6zM20 6.425L18.575 5zm-3.475 2.05l-.725-.7L17.225 9.2zM14 21q1.85 0 3.425-.925T19 17.5q0-.9-.475-1.55t-1.275-1.125L15.775 16.3q.575.25.9.55t.325.65q0 .575-.913 1.038T14 19q-.425 0-.712.288T13 20t.288.713T14 21m-9.425-7.65l1.5-1.5q-.5-.2-.788-.412T5 11q0-.3.45-.6t1.9-.925q2.2-.95 2.925-1.725T11 6q0-1.375-1.1-2.187T7 3q-1.125 0-2.013.4t-1.362.975Q3.35 4.7 3.4 5.1t.375.65q.325.275.725.225t.675-.325q.35-.35.775-.5T7 5q1.025 0 1.513.3T9 6q0 .35-.437.637T6.55 7.65q-2 .875-2.775 1.588T3 11q0 .8.425 1.363t1.15.987",
+      Eraser: "m16.24 3.56l4.95 4.94c.78.79.78 2.05 0 2.84L12 20.53a4.01 4.01 0 0 1-5.66 0L2.81 17c-.78-.79-.78-2.05 0-2.84l10.6-10.6c.79-.78 2.05-.78 2.83 0M4.22 15.58l3.54 3.53c.78.79 2.04.79 2.83 0l3.53-3.53l-4.95-4.95z",
       Text: "m18.5 4l1.16 4.35l-.96.26c-.45-.87-.91-1.74-1.44-2.18C16.73 6 16.11 6 15.5 6H13v10.5c0 .5 0 1 .33 1.25c.34.25 1 .25 1.67.25v1H9v-1c.67 0 1.33 0 1.67-.25c.33-.25.33-.75.33-1.25V6H8.5c-.61 0-1.23 0-1.76.43c-.53.44-.99 1.31-1.44 2.18l-.96-.26L5.5 4z",
       Pan: "M23 12 18.886 7.864v2.772h-5.5v-5.5h2.75L12 1 7.886 5.136h2.75v5.5H5.092V7.886L1 12l4.136 4.136v-2.75h5.5v5.5H7.886L12 23l4.136-4.114h-2.75v-5.5h5.5v2.75L23 12Z",
       Scale: "M16 3a1 1 0 100 2h1.586L11 11.586V10A1 1 0 009 10v3.75c0 .69.56 1.25 1.25 1.25H14a1 1 0 100-2H12.414L19 6.414V8a1 1 0 102 0V4.25C21 3.56 20.44 3 19.75 3ZM5 3l-.15.005A2 2 0 003 5V19l.005.15A2 2 0 005 21H19l.15-.005A2 2 0 0021 19V13l-.007-.117A1 1 0 0019 13v6H5V5h6l.117-.007A1 1 0 0011 3Z",
@@ -1375,6 +1407,7 @@ module.exports = function (meta) {
             case !e.repeat && e.ctrlKey && "c":
               if (document.activeElement.tagName === "INPUT") return;
               if (DiscordNative?.clipboard.copyImage) {
+                UI.showToast("Processing...", { type: "warn" });
                 editor.current.toBlob({
                   type: 'image/png'
                 }).then(blob =>
@@ -1407,6 +1440,10 @@ module.exports = function (meta) {
 
             case !e.repeat && !e.ctrlKey && "d":
               setMode(m => m === 4 ? null : 4);
+              return;
+
+            case !e.repeat && !e.ctrlKey && "e":
+              setMode(m => m === 6 ? null : 6);
               return;
           }
         }, ctrl);
@@ -1509,11 +1546,17 @@ module.exports = function (meta) {
               canvasRef.current.classList.add("pointerdown");
               break;
             }
+            case !!(e.buttons & 1) && 6:
             case !!(e.buttons & 1) && 4: {
               const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
-              editor.current.startDrawing(new DOMPoint(startX, startY), strokeStyle.width, strokeStyle.color);
+              editor.current.startDrawing(
+                new DOMPoint(startX, startY),
+                strokeStyle.width,
+                strokeStyle.color,
+                mode === 6 ? "destination-out" : "source-over"
+              );
               break;
             }
           }
@@ -1582,6 +1625,7 @@ module.exports = function (meta) {
                 editor.current.previewLayerTransformBy(new DOMMatrix().translateSelf(dx, dy));
                 break;
               }
+              case 6:
               case 4: {
                 const boxScale = canvasRect.current.width / canvasRef.current.width;
                 const startX = (e.clientX - canvasRect.current.x) / boxScale;
@@ -1620,6 +1664,7 @@ module.exports = function (meta) {
               syncStates();
               break;
             }
+            case 6:
             case 4: {
               editor.current.endDrawing();
               syncStates();
@@ -1635,7 +1680,7 @@ module.exports = function (meta) {
             className: "canvas-wrapper",
             children: [
               jsx("canvas", {
-                className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing", "texting"][mode]),
+                className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing", "texting", "drawing"][mode]),
                 ref: canvasRef,
                 onWheel: handleWheel,
                 ...pointerHandlers,
@@ -1698,6 +1743,24 @@ module.exports = function (meta) {
                     onClick: () => setMode(m => m === 4 ? null : 4)
                   }),
                   jsx(Components.IconButton, {
+                    tooltip: "Eraser (E)",
+                    d: utils.paths.Eraser,
+                    active: mode === 6,
+                    onClick: () => setMode(m => m === 6 ? null : 6)
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Text (T)",
+                    d: utils.paths.Text,
+                    active: mode === 5,
+                    onClick: () => setMode(m => m === 5 ? null : 5)
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Cut Layer (C)",
+                    d: utils.paths.Cut,
+                    active: mode === 7,
+                    onClick: () => setMode(m => m === 7 ? null : 7)
+                  }),
+                  jsx(Components.IconButton, {
                     tooltip: "Move (M)",
                     d: utils.paths.Pan,
                     active: mode === 2,
@@ -1716,13 +1779,7 @@ module.exports = function (meta) {
                     onClick: () => setMode(m => m === 3 ? null : 3)
                   }),
                   jsx(Components.IconButton, {
-                    tooltip: "Text (T)",
-                    d: utils.paths.Text,
-                    active: mode === 5,
-                    onClick: () => setMode(m => m === 5 ? null : 5)
-                  }),
-                  jsx(Components.IconButton, {
-                    tooltip: "Crop (C)",
+                    tooltip: "Crop",
                     d: utils.paths.Crop,
                     active: mode === 0,
                     onClick: () => setMode(m => m === 0 ? null : 0)
@@ -2242,9 +2299,6 @@ module.exports = function (meta) {
     padding-bottom: 3px;
     padding-top: 5px;
   }
-  & > :nth-child(5 of [role=button]) {
-    margin-right: 50%;
-  }
 }
 
 .aux-inputs {
@@ -2338,7 +2392,7 @@ module.exports = function (meta) {
   grid-column: 1 / -1;
   display: flex;
   flex-direction: column-reverse;
-  height: calc(40px * 4);
+  max-height: calc(40px * 4);
   box-sizing: content-box;
   padding-top: 8px;
   border-top: 1px solid var(--border-normal);
