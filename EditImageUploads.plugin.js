@@ -76,7 +76,7 @@ module.exports = function (meta) {
     ctrl = new AbortController()
     Webpack.waitForModule(Filters.bySource('children:["IMAGE"==='), ctrl).then(m => { // 73249
       m?.Z && Patcher.after(meta.slug, m.Z, "type", (_, [args], res) => {
-        if (args.item.type !== "IMAGE" || args.item.srcIsAnimated)
+        if (args.item.type !== "IMAGE" || args.item.srcIsAnimated || args.item.animated)
           return res;
         return cloneElement(res, {
           children: className => {
@@ -147,12 +147,14 @@ module.exports = function (meta) {
       this.fullRender();
 
       this.#interactionCache = {
+        layerTransform_inv: new DOMMatrix(),
         path2D: new Path2D(),
-        lastPoint: new DOMPoint(),
+        lastPoint: new DOMPoint(NaN, NaN),
         rect: new DOMRect(),
         width: 0,
         color: "#000",
-        globalCompositeOperation: "source-over"
+        globalCompositeOperation: "source-over",
+        text: "",
       };
     }
 
@@ -169,6 +171,9 @@ module.exports = function (meta) {
         this.#staleViewportInv = false;
       }
       return this.#viewportTransform_inv;
+    }
+    get lastPoint() {
+      return Number.isNaN(this.#interactionCache.lastPoint.x) || Number.isNaN(this.#interactionCache.lastPoint.y) ? null : this.#interactionCache.lastPoint.matrixTransform(this.viewportTransform_inv.inverse());
     }
     get regionRect() {
       const T = this.viewportTransform_inv.inverse();
@@ -328,10 +333,6 @@ module.exports = function (meta) {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
-      this.#interactionCache.layerTransform_inv = new DOMMatrix()
-        .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
-        .multiplySelf(this.layerTransform).invertSelf();
-
       this.#interactionCache.lastPoint = startPoint.matrixTransform(this.viewportTransform_inv);
       if (this.#activeLayer.state.isVisible) {
         ctx.beginPath();
@@ -350,45 +351,42 @@ module.exports = function (meta) {
         ctx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       }
 
+      this.#interactionCache.layerTransform_inv = new DOMMatrix()
+        .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
+        .multiplySelf(this.layerTransform).invertSelf();
+
       const rawPoint = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
       this.#interactionCache.path2D = new Path2D();
-      this.#interactionCache.path2D.moveTo(rawPoint.x, rawPoint.y);
-      this.#interactionCache.path2D.lineTo(rawPoint.x, rawPoint.y);
+      this.#interactionCache.path2D.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
+      this.#interactionCache.path2D.lineTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
     }
 
-    /** @param {DOMPoint} to */
-    drawLine(to) {
+    /** @param {DOMPoint} point */
+    curveTo(point) {
       const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
-      const to_inv = to.matrixTransform(this.viewportTransform_inv);
+      const to_inv = point.matrixTransform(this.viewportTransform_inv);
 
+      const availRect = new DOMRect(-this.#interactionCache.width / 2, -this.#interactionCache.width / 2, this.#mainCanvas.width + this.#interactionCache.width, this.#mainCanvas.height + this.#interactionCache.width);
       // out of bounds
-      const isOOB =
-        to_inv.x < -this.#interactionCache.width / 2 ||
-        to_inv.x > this.#mainCanvas.width + this.#interactionCache.width / 2 ||
-        to_inv.y < -this.#interactionCache.height / 2 ||
-        to_inv.y > this.#mainCanvas.height + this.#interactionCache.height / 2;
-      const prevIsOOB =
-        this.#interactionCache.lastPoint.x < -this.#interactionCache.width / 2 ||
-        this.#interactionCache.lastPoint.x > this.#mainCanvas.width + this.#interactionCache.width / 2 ||
-        this.#interactionCache.lastPoint.y < -this.#interactionCache.height / 2 ||
-        this.#interactionCache.lastPoint.y > this.#mainCanvas.height + this.#interactionCache.height / 2;
+      const isOOB = !utils.pointInRect(to_inv, availRect);
+      const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect);
 
-      if (prevIsOOB && isOOB) {
+      const intersections = utils.lineRectIntersect(this.#interactionCache.lastPoint, to_inv, availRect);
+
+      if (isOOB && prevIsOOB && !intersections.length) {
         this.#interactionCache.lastPoint = to_inv;
         return;
       }
 
-      if (!isOOB && prevIsOOB) {
-        const rawLast = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
-        this.#interactionCache.path2D.moveTo(rawLast.x, rawLast.y);
-        ctx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
+      const [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect);
+
+      if (prevIsOOB) {
+        this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
+        ctx.moveTo(clampedFrom.x, clampedFrom.y);
       }
 
-      const midpoint = new DOMPoint(
-        (to_inv.x + this.#interactionCache.lastPoint.x) / 2,
-        (to_inv.y + this.#interactionCache.lastPoint.y) / 2
-      );
+      const midpoint = new DOMPoint((clampedTo.x + clampedFrom.x) / 2, (clampedTo.y + clampedFrom.y) / 2);
 
       if (this.#activeLayer.state.isVisible) {
         ctx.quadraticCurveTo(
@@ -408,8 +406,12 @@ module.exports = function (meta) {
       }
 
       const rawMidpoint = midpoint.matrixTransform(this.#interactionCache.layerTransform_inv);
-      const rawLast = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
-      this.#interactionCache.path2D.quadraticCurveTo(rawLast.x, rawLast.y, rawMidpoint.x, rawMidpoint.y);
+      this.#interactionCache.path2D.quadraticCurveTo(
+        this.#interactionCache.lastPoint.x,
+        this.#interactionCache.lastPoint.y,
+        midpoint.x,
+        midpoint.y
+      );
       this.#interactionCache.lastPoint = to_inv;
 
       this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawMidpoint.x, rawMidpoint.x - this.#interactionCache.rect.right, 0);
@@ -419,10 +421,8 @@ module.exports = function (meta) {
     }
 
     endDrawing() {
-      const rawClipPath = new Path2D();
-      rawClipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       const clipPath = new Path2D();
-      clipPath.addPath(rawClipPath, this.#interactionCache.layerTransform_inv);
+      clipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
 
       this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, this.#interactionCache.width);
       const layerState = this.#activeLayer.addStroke({
@@ -430,7 +430,8 @@ module.exports = function (meta) {
         width: this.#interactionCache.width / utils.getScale(this.#activeLayer.state.transform),
         path2D: this.#interactionCache.path2D,
         globalCompositeOperation: this.#interactionCache.globalCompositeOperation,
-        clipPath
+        clipPath,
+        transform: this.#interactionCache.layerTransform_inv
       });
 
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
@@ -450,7 +451,6 @@ module.exports = function (meta) {
       const start_T = startPoint.matrixTransform(this.viewportTransform_inv);
       start_T.x = utils.clamp(0, start_T.x, this.#mainCanvas.width);
       start_T.y = utils.clamp(0, start_T.y, this.#mainCanvas.height);
-      this.#interactionCache.lastPoint = start_T;
       this.#interactionCache.rect = new DOMRect(start_T.x, start_T.y, 0, 0);
       this.#interactionCache.width = Number(fixedAspect);
     }
@@ -461,8 +461,8 @@ module.exports = function (meta) {
       to_T.x = utils.clamp(0, to_T.x, this.#mainCanvas.width);
       to_T.y = utils.clamp(0, to_T.y, this.#mainCanvas.height);
 
-      this.#interactionCache.rect.width = to_T.x - this.#interactionCache.lastPoint.x;
-      this.#interactionCache.rect.height = to_T.y - this.#interactionCache.lastPoint.y;
+      this.#interactionCache.rect.width = to_T.x - this.#interactionCache.rect.x;
+      this.#interactionCache.rect.height = to_T.y - this.#interactionCache.rect.y;
 
       if (this.#interactionCache.width) {
         // fixed Aspect ratio
@@ -471,8 +471,8 @@ module.exports = function (meta) {
         this.#interactionCache.rect.width = utils.maxAbs(this.#interactionCache.rect.width, (Math.sign(this.#interactionCache.rect.width) || 1) * Math.abs(this.#interactionCache.rect.height) * aspect);
         this.#interactionCache.rect.height = utils.maxAbs(this.#interactionCache.rect.height, (Math.sign(this.#interactionCache.rect.height) || 1) * Math.abs(this.#interactionCache.rect.width) / aspect);
 
-        this.#interactionCache.rect.width = utils.clamp(-this.#interactionCache.lastPoint.x, this.#interactionCache.rect.width, this.#mainCanvas.width - this.#interactionCache.lastPoint.x);
-        this.#interactionCache.rect.height = utils.clamp(-this.#interactionCache.lastPoint.y, this.#interactionCache.rect.height, this.#mainCanvas.height - this.#interactionCache.lastPoint.y);
+        this.#interactionCache.rect.width = utils.clamp(-this.#interactionCache.rect.x, this.#interactionCache.rect.width, this.#mainCanvas.width - this.#interactionCache.rect.x);
+        this.#interactionCache.rect.height = utils.clamp(-this.#interactionCache.rect.y, this.#interactionCache.rect.height, this.#mainCanvas.height - this.#interactionCache.rect.y);
 
         this.#interactionCache.rect.width = utils.minAbs(this.#interactionCache.rect.width, (Math.sign(this.#interactionCache.rect.width) || 1) * Math.abs(this.#interactionCache.rect.height) * aspect);
         this.#interactionCache.rect.height = utils.minAbs(this.#interactionCache.rect.height, (Math.sign(this.#interactionCache.rect.height) || 1) * Math.abs(this.#interactionCache.rect.width) / aspect);
@@ -507,6 +507,69 @@ module.exports = function (meta) {
       return true;
     }
 
+    /** @param {DOMPoint} point @param {number} fontsize @param {string} color   */
+    insertTextAt(point, fontsize, color) {
+      const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
+      ctx.save();
+      const to_inv = point.matrixTransform(this.viewportTransform_inv);
+      ctx.font = `${fontsize}px sans-serif`;
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = color;
+
+      this.#interactionCache.layerTransform_inv = new DOMMatrix()
+        .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
+        .multiplySelf(this.layerTransform).invertSelf();
+
+      const textMetrics = ctx.measureText("");
+      const width = textMetrics.actualBoundingBoxRight + textMetrics.actualBoundingBoxLeft;
+      const height = textMetrics.fontBoundingBoxDescent + textMetrics.fontBoundingBoxAscent;
+
+      this.#interactionCache.rect = new DOMRect(to_inv.x, to_inv.y - height / 2, width, height);
+      this.#interactionCache.width = fontsize;
+      this.#interactionCache.color = color;
+    }
+
+    /** @param {(oldText: string) => string} setText */
+    updateText(setText) {
+      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
+      const ctx = canvas.getContext("2d");
+
+      this.#interactionCache.text = setText(this.#interactionCache.text);
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      this.#activeLayer.drawOn(canvas);
+      [this.#interactionCache.rect.width, this.#interactionCache.rect.height] = utils.renderMultilineText(
+        ctx, this.#interactionCache.text,
+        new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y)
+      );
+      this.layers.length > 1 ? this.render() : this.refreshViewport();
+    }
+
+    finalizeText() {
+      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
+      const ctx = canvas.getContext("2d");
+
+      const clipPath = new Path2D();
+      clipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+
+      const layerState = this.#activeLayer.addStroke({
+        text: this.#interactionCache.text,
+        origin: new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y),
+        color: this.#interactionCache.color,
+        width: this.#interactionCache.width / utils.getScale(this.#activeLayer.state.transform),
+        globalCompositeOperation: "source-over",
+        clipPath,
+        transform: this.#interactionCache.layerTransform_inv
+      });
+
+      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+      updated.layers[this.activeLayerIndex] = { ...updated.layers[this.activeLayerIndex], state: layerState };
+      this.#state.state = updated;
+
+      this.#interactionCache.text = "";
+      ctx.restore();
+    }
+
     /** @param {number} width @param {number} height  */
     #resizeCanvas(width, height) {
       this.#staleViewportInv = true;
@@ -524,7 +587,7 @@ module.exports = function (meta) {
     /** @param {1 | -1} x @param {1 | -1} y */
     flip(x, y) {
       const T = new DOMMatrix().scaleSelf(x, y);
-      const layers = this.layers.map(({ layer, state }) => {
+      const layers = this.layers.map(({ layer }) => {
         layer.previewTransformBy(T);
         return { layer, state: layer.finalizePreview() }
       });
@@ -593,8 +656,7 @@ module.exports = function (meta) {
     undo() {
       const oldWidth = this.#mainCanvas.width;
       const oldHeight = this.#mainCanvas.height;
-      const undid = this.#state.undo();
-      if (!undid) return false;
+      if (!this.#state.undo()) return false;
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
       }
@@ -607,8 +669,7 @@ module.exports = function (meta) {
     redo() {
       const oldWidth = this.#mainCanvas.width;
       const oldHeight = this.#mainCanvas.height;
-      const redid = this.#state.redo();
-      if (!redid) return false;
+      if (!this.#state.redo()) return false;
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
       }
@@ -631,7 +692,7 @@ module.exports = function (meta) {
       this.#canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#state = {
         transform: new DOMMatrix(),
-        /** @type {{color: string, width: number, path2D: Path2D, clipPath: Path2D, globalCompositeOperation: string}[]} */
+        /** @type {({color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D: Path2D, text: string, origin: DOMPoint})[]} */
         strokes: [],
         isVisible: true,
       };
@@ -682,6 +743,7 @@ module.exports = function (meta) {
       const dy = Math.max(0, canvasRect.top - (strokeRect.top - strokeWidth / 2), (strokeRect.bottom + strokeWidth / 2) - canvasRect.bottom);
 
       if (dx || dy) {
+        console.log(dx, dy)
         this.#canvas.width += ~~(2 * dx);
         this.#canvas.height += ~~(2 * dy);
         this.#drawImage();
@@ -689,14 +751,14 @@ module.exports = function (meta) {
       }
     }
 
-    /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D, globalCompositeOperation: string}} stroke  */
+    /** @param {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, origin: DOMPoint, transform: DOMMatrix}} stroke  */
     addStroke(stroke) {
       this.#state = { ...this.#state, strokes: [...this.#state.strokes, stroke] };
       this.#drawStroke(stroke);
       return this.#state;
     }
 
-    /** @param {{color: string, width: number, path2D: Path2D, clipPath: Path2D, globalCompositeOperation: string}} stroke  */
+    /** @param {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, origin: DOMPoint, transform: DOMMatrix}} stroke  */
     #drawStroke(stroke) {
       const ctx = this.#canvas.getContext("2d");
       ctx.save();
@@ -704,10 +766,14 @@ module.exports = function (meta) {
       ctx.lineCap = "round";
       ctx.lineWidth = stroke.width;
       ctx.strokeStyle = stroke.color;
-      ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
-      ctx.clip(stroke.clipPath);
+      ctx.fillStyle = stroke.color;
+      ctx.textBaseline = "middle";
       ctx.globalCompositeOperation = stroke.globalCompositeOperation;
-      ctx.stroke(stroke.path2D);
+      ctx.font = `${stroke.width}px sans-serif`;
+      ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2).multiplySelf(stroke.transform));
+      ctx.clip(stroke.clipPath);
+      if (stroke.path2D) ctx.stroke(stroke.path2D);
+      if (stroke.text) utils.renderMultilineText(ctx, stroke.text, stroke.origin);
       ctx.restore();
     }
 
@@ -715,17 +781,20 @@ module.exports = function (meta) {
       const ctx = this.#canvas.getContext("2d");
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
-      ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
       for (const stroke of strokes) {
         ctx.save();
         ctx.lineWidth = stroke.width;
         ctx.strokeStyle = stroke.color;
-        ctx.clip(stroke.clipPath);
+        ctx.fillStyle = stroke.color;
+        ctx.textBaseline = "middle";
         ctx.globalCompositeOperation = stroke.globalCompositeOperation;
-        ctx.stroke(stroke.path2D);
+        ctx.font = `${stroke.width}px sans-serif`;
+        ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2).multiplySelf(stroke.transform));
+        ctx.clip(stroke.clipPath);
+        if (stroke.path2D) ctx.stroke(stroke.path2D);
+        if (stroke.text) utils.renderMultilineText(ctx, stroke.text, stroke.origin);
         ctx.restore();
       }
-      ctx.resetTransform();
     }
 
     #drawImage() {
@@ -749,6 +818,18 @@ module.exports = function (meta) {
         .multiplySelf(this.#state.transform)
       );
       ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2);
+      ctx.resetTransform();
+    }
+
+    /** @param {OffscreenCanvas} canvas */
+    drawThumbnail(canvas) {
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(new DOMMatrix()
+        .translateSelf(canvas.width / 2, canvas.height / 2)
+        .multiplySelf(this.#previewTransform)
+        .multiplySelf(this.#state.transform)
+      );
+      ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2, canvas.width, canvas.height);
       ctx.resetTransform();
     }
   }
@@ -785,9 +866,7 @@ module.exports = function (meta) {
     },
 
     /** @param {...string} classNames */
-    clsx(...classNames) {
-      return classNames.filter(Boolean).join(" ");
-    },
+    clsx(...classNames) { return classNames.filter(Boolean).join(" ") },
 
     StateHistory:
     /** @template T */ class {
@@ -831,10 +910,7 @@ module.exports = function (meta) {
         get canRedo() { return this.#pointer < this.#history.length - 1 }
       },
 
-    /**
-     * @param {number} x
-     * @param {number} y
-     */
+    /** @param {number} x @param {number} y */
     atan2(x, y) {
       const angle = Math.round(Math.atan2(y, x) * 180 / Math.PI * 10) / 10;
       return (angle + 360) % 360;
@@ -871,17 +947,10 @@ module.exports = function (meta) {
       return best;
     },
 
-    /**
-     * @param {number} min
-     * @param {number} x
-     * @param {number} max
-     */
+    /** @param {number} min @param {number} x @param {number} max */
     clamp(min, x, max) { return Math.max(min, Math.min(x, max)) },
 
-    /**
-     * @param {number} x 
-     * @param {{minValue: number, centerValue: number, maxValue: number}} params
-     */
+    /** @param {number} x @param {{minValue: number, centerValue: number, maxValue: number}} params */
     expScaling(x, { minValue, centerValue, maxValue }) {
       if (x <= 0.5) {
         return Math.exp((1 - 2 * x) * Math.log(minValue) + 2 * x * Math.log(centerValue));
@@ -890,10 +959,7 @@ module.exports = function (meta) {
       }
     },
 
-    /**
-     * @param {number} x 
-     * @param {{minValue: number, centerValue: number, maxValue: number}} params
-     */
+    /** @param {number} x @param {{minValue: number, centerValue: number, maxValue: number}} params */
     logScaling(x, { minValue, centerValue, maxValue }) {
       x = utils.clamp(minValue, x, maxValue);
       if (x <= centerValue) {
@@ -902,6 +968,66 @@ module.exports = function (meta) {
       } else {
         const val = (Math.log(x) - Math.log(centerValue)) / (Math.log(maxValue) - Math.log(centerValue));
         return Math.round((1 + val) / 2 * 100);
+      }
+    },
+
+    /** @param {OffscreenCanvasRenderingContext2D} ctx @param {string} text @param {DOMPoint} origin  */
+    renderMultilineText(ctx, text, origin) {
+      const lines = text.split("\n");
+      let height = 0;
+      let width = 0;
+      for (const line of lines) {
+        const textMetrics = ctx.measureText(line);
+        const lineheight = textMetrics.fontBoundingBoxAscent + textMetrics.fontBoundingBoxDescent;
+        ctx.fillText(line, origin.x, origin.y + height + lineheight / 2);
+        height += lineheight;
+        width = Math.max(width, ctx.measureText(line).width);
+      }
+      return [width, height];
+    },
+
+    /** @param {DOMPoint} p @param {DOMRect} rect */
+    pointInRect(p, rect) { return p.x >= rect.left && p.x <= rect.right && p.y >= rect.top && p.y <= rect.bottom },
+
+    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMPoint} p3 @param {DOMPoint} p4  */
+    lineLine(p1, p2, p3, p4) {
+      const uA = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
+      const uB = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
+
+      if (uA >= 0 && uA <= 1 && uB >= 0 && uB <= 1) {
+        return new DOMPoint(p1.x + (uA * (p2.x - p1.x)), p1.y + (uA * (p2.y - p1.y)));
+      }
+      return null;
+    },
+
+    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]} */
+    lineRectIntersect(p1, p2, rect) {
+      const top = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.top), new DOMPoint(rect.right, rect.top));
+      const right = utils.lineLine(p1, p2, new DOMPoint(rect.right, rect.top), new DOMPoint(rect.right, rect.bottom));
+      const bottom = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.bottom), new DOMPoint(rect.right, rect.bottom));
+      const left = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.top), new DOMPoint(rect.left, rect.bottom));
+
+      return [top, right, bottom, left].filter(Boolean);
+    },
+
+    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect */
+    clampLineToRect(p1, p2, rect) {
+      const intersects = utils.lineRectIntersect(p1, p2, rect);
+
+      switch (intersects.length) {
+        case 1: {
+          return utils.pointInRect(p1, rect) ? [p1, intersects[0]] : [intersects[0], p2];
+        }
+        case 2: {
+          return intersects.sort((a, b) => {
+            const distA = Math.hypot(a.x - p1.x, a.y - p1.y);
+            const distB = Math.hypot(b.x - p1.x, b.y - p1.y);
+            return distA - distB;
+          });
+        }
+        default: {
+          return [p1, p2];
+        }
       }
     },
 
@@ -1130,7 +1256,7 @@ module.exports = function (meta) {
     IconButton({ onClick, tooltip, d, disabled, active, position = 'top' }) {
       return jsx(BdApi.Components.ErrorBoundary, {
         children: jsx(BdApi.Components.Tooltip, {
-          text: tooltip || '',
+          text: tooltip ?? '',
           hideOnClick: true,
           position,
           children: e => {
@@ -1270,6 +1396,8 @@ module.exports = function (meta) {
       const editor = useRef(null);
       /** @type { React.RefObject<HTMLDivElement | null> } */
       const overlay = useRef(null);
+      /** @type { React.RefObject<HTMLDivElement | null> } */
+      const thumbnailContainer = useRef(null);
       /**  @type { React.RefObject<{ setValue: (value: number) => void, previewValue: (value: number) => void } | null> } */
       const auxRef = useRef(null);
 
@@ -1376,6 +1504,43 @@ module.exports = function (meta) {
 
         const ctrl = new AbortController();
         addEventListener("keydown", e => {
+          if (canvasRef.current.matches(".texting") && isInteracting.current) {
+            switch (e.key) {
+              case (e.ctrlKey || e.shiftKey) && "Enter":
+                editor.current.updateText(t => t + "\n");
+                const rect = editor.current.regionRect;
+                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+                return;
+              case "Enter": {
+                editor.current.finalizeText();
+                syncStates();
+                isInteracting.current = false;
+                ["--x1", "--x2", "--y1", "--y2"].forEach(prop => overlay.current.style.removeProperty(prop));
+                return;
+              }
+              case "Backspace": {
+                editor.current.updateText(t => t.slice(0, -1));
+                const rect = editor.current.regionRect;
+                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+                return;
+              }
+              case !e.ctrlKey && e.key.length === 1 && e.key: {
+                editor.current.updateText(t => t + e.key);
+                const rect = editor.current.regionRect;
+                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+                return;
+              }
+            }
+          }
           switch (e.key) {
             case e.ctrlKey && "z":
               if (editor.current.undo()) syncStates();
@@ -1385,54 +1550,76 @@ module.exports = function (meta) {
               if (editor.current.redo()) syncStates();
               return;
 
-            case !e.repeat && e.ctrlKey && "b":
+            case !e.repeat && e.ctrlKey && "c":
+              if (document.activeElement.tagName === "INPUT" || !DiscordNative?.clipboard.copyImage) return;
+
+              UI.showToast("Processing...", { type: "warn" });
+              editor.current.toBlob({
+                type: 'image/png'
+              }).then(blob =>
+                blob.arrayBuffer()
+              ).then(buf => {
+                DiscordNative.clipboard.copyImage(new Uint8Array(buf), "image.png");
+              }).then(() => {
+                UI.showToast("Image copied", { type: "success" })
+              }).catch(() => {
+                UI.showToast("Failed to copy image", { type: "error" })
+              });
+
+              return;
+
+            case !e.repeat && e.ctrlKey && !e.shiftKey && "b":
               editor.current.resetViewport();
               if (canvasRef.current?.matches(".rotating")) {
                 overlay.current.style.removeProperty("--translate");
               }
               return;
 
-            case !e.repeat && e.ctrlKey && "c":
-              if (document.activeElement.tagName === "INPUT") return;
-              if (DiscordNative?.clipboard.copyImage) {
-                UI.showToast("Processing...", { type: "warn" });
-                editor.current.toBlob({
-                  type: 'image/png'
-                }).then(blob =>
-                  blob.arrayBuffer()
-                ).then(buf => {
-                  DiscordNative.clipboard.copyImage(new Uint8Array(buf), "image.png");
-                }).then(() => {
-                  UI.showToast("Image copied", { type: "success" })
-                }).catch(() => {
-                  UI.showToast("Failed to copy image", { type: "error" })
-                });
-              }
-              return;
-
-            case !e.repeat && !e.ctrlKey && "c":
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "c":
               setMode(m => m === 0 ? null : 0);
               return;
 
-            case !e.repeat && !e.ctrlKey && "r":
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "r":
               setMode(m => m === 1 ? null : 1);
               return;
 
-            case !e.repeat && !e.ctrlKey && "m":
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "m":
               setMode(m => m === 2 ? null : 2);
               return;
 
-            case !e.repeat && !e.ctrlKey && "s":
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "s":
               setMode(m => m === 3 ? null : 3);
               return;
 
-            case !e.repeat && !e.ctrlKey && "d":
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "d":
               setMode(m => m === 4 ? null : 4);
               return;
 
-            case !e.repeat && !e.ctrlKey && "e":
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "t":
+              setMode(m => m === 5 ? null : 5);
+              return;
+
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "e":
               setMode(m => m === 6 ? null : 6);
               return;
+
+            case !e.repeat && canvasRef.current.matches(".drawing") && "Shift": {
+              const lastPoint = editor.current.lastPoint;
+              if (!lastPoint || isInteracting.current) return;
+              overlay.current.style.setProperty("--line-from", `${lastPoint.x}px ${lastPoint.y}px`);
+              const phi = utils.atan2(e.clientX - canvasRect.current.x - lastPoint.x, e.clientY - canvasRect.current.y - lastPoint.y);
+              const r = Math.hypot(e.clientY - canvasRect.current.y - lastPoint.y, e.clientX - canvasRect.current.x - lastPoint.x);
+              overlay.current.style.setProperty("--phi", `${phi || 0}deg`);
+              overlay.current.style.setProperty("--r", `${r || 0}px`);
+              return;
+            }
+          }
+        }, ctrl);
+        addEventListener("keyup", e => {
+          if (e.key === "Shift") {
+            overlay.current.style.removeProperty("--line-from");
+            overlay.current.style.removeProperty("--phi");
+            overlay.current.style.removeProperty("--r");
           }
         }, ctrl);
         addEventListener("resize", () => {
@@ -1498,6 +1685,31 @@ module.exports = function (meta) {
                 overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
                 break;
               }
+              case isInteracting.current && 5: {
+                const rect = editor.current.regionRect;
+                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+                break;
+              }
+              case 4:
+              case 6: {
+                if (!e.shiftKey) {
+                  overlay.current.style.removeProperty("--line-from");
+                  overlay.current.style.removeProperty("--phi");
+                  overlay.current.style.removeProperty("--r");
+                } else {
+                  const lastPoint = editor.current.lastPoint;
+                  if (!lastPoint) return;
+                  overlay.current.style.setProperty("--line-from", `${lastPoint.x}px ${lastPoint.y}px`);
+                  const phi = utils.atan2(e.clientX - canvasRect.current.x - lastPoint.x, e.clientY - canvasRect.current.y - lastPoint.y);
+                  const r = Math.hypot(e.clientY - canvasRect.current.y - lastPoint.y, e.clientX - canvasRect.current.x - lastPoint.x);
+                  overlay.current.style.setProperty("--phi", `${phi || 0}deg`);
+                  overlay.current.style.setProperty("--r", `${r || 0}px`);
+                }
+                break;
+              }
             }
           }
         },
@@ -1534,17 +1746,55 @@ module.exports = function (meta) {
               canvasRef.current.classList.add("pointerdown");
               break;
             }
-            case !!(e.buttons & 1) && 6:
-            case !!(e.buttons & 1) && 4: {
+            case !!(e.buttons & 1) && 5: {
               const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
-              editor.current.startDrawing(
-                new DOMPoint(startX, startY),
-                strokeStyle.width,
-                strokeStyle.color,
-                mode === 6 ? "destination-out" : "source-over"
-              );
+              editor.current.insertTextAt(new DOMPoint(startX, startY), strokeStyle.width, strokeStyle.color);
+
+              const rect = editor.current.regionRect;
+              overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+              overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+              overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+              overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+
+              canvasRef.current.releasePointerCapture(e.pointerId);
+              break;
+            }
+            case !!(e.buttons & 1) && 4:
+            case !!(e.buttons & 1) && 6: {
+              const lastPoint = editor.current.lastPoint;
+              if (e.shiftKey && lastPoint) {
+                const boxScale = canvasRect.current.width / canvasRef.current.width;
+                const toX = (e.clientX - canvasRect.current.x) / boxScale;
+                const toY = (e.clientY - canvasRect.current.y) / boxScale;
+
+                editor.current.startDrawing(
+                  lastPoint,
+                  strokeStyle.width,
+                  strokeStyle.color,
+                  mode === 6 ? "destination-out" : "source-over"
+                );
+
+                editor.current.curveTo(new DOMPoint(toX, toY));
+                editor.current.curveTo(new DOMPoint(toX, toY));
+
+                canvasRef.current.releasePointerCapture(e.pointerId);
+
+                overlay.current.style.removeProperty("--line-from");
+                overlay.current.style.removeProperty("--phi");
+                overlay.current.style.removeProperty("--r");
+              } else {
+                const boxScale = canvasRect.current.width / canvasRef.current.width;
+                const startX = (e.clientX - canvasRect.current.x) / boxScale;
+                const startY = (e.clientY - canvasRect.current.y) / boxScale;
+                editor.current.startDrawing(
+                  new DOMPoint(startX, startY),
+                  strokeStyle.width,
+                  strokeStyle.color,
+                  mode === 6 ? "destination-out" : "source-over"
+                );
+              }
               break;
             }
           }
@@ -1567,6 +1817,14 @@ module.exports = function (meta) {
               case 1: {
                 const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
                 overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
+                break;
+              }
+              case isInteracting.current && 5: {
+                const rect = editor.current.regionRect;
+                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
                 break;
               }
             }
@@ -1618,7 +1876,7 @@ module.exports = function (meta) {
                 const boxScale = canvasRect.current.width / canvasRef.current.width;
                 const startX = (e.clientX - canvasRect.current.x) / boxScale;
                 const startY = (e.clientY - canvasRect.current.y) / boxScale;
-                editor.current.drawLine(new DOMPoint(startX, startY));
+                editor.current.curveTo(new DOMPoint(startX, startY));
                 break;
               }
             }
@@ -1652,8 +1910,12 @@ module.exports = function (meta) {
               syncStates();
               break;
             }
-            case 6:
-            case 4: {
+            case 5: {
+              isInteracting.current = true;
+              break;
+            }
+            case 4:
+            case 6: {
               editor.current.endDrawing();
               syncStates();
               break;
@@ -1661,6 +1923,24 @@ module.exports = function (meta) {
           }
         }
       });
+
+      /** @type {(e: React.MouseEvent) => void} */
+      const handleMouseMove = useCallback(e => {
+        if (!canvasRef.current.matches(".drawing") || (e.buttons & ~4)) return;
+        if (!e.shiftKey) {
+          overlay.current.style.removeProperty("--line-from");
+          overlay.current.style.removeProperty("--phi");
+          overlay.current.style.removeProperty("--r");
+        } else {
+          const lastPoint = editor.current.lastPoint;
+          if (!lastPoint) return;
+          overlay.current.style.setProperty("--line-from", `${lastPoint.x}px ${lastPoint.y}px`);
+          const phi = utils.atan2(e.clientX - canvasRect.current.x - lastPoint.x, e.clientY - canvasRect.current.y - lastPoint.y);
+          const r = Math.hypot(e.clientY - canvasRect.current.y - lastPoint.y, e.clientX - canvasRect.current.x - lastPoint.x);
+          overlay.current.style.setProperty("--phi", `${phi || 0}deg`);
+          overlay.current.style.setProperty("--r", `${r || 0}px`);
+        }
+      }, []);
 
       return jsx(Fragment, {
         children: [
@@ -1671,6 +1951,7 @@ module.exports = function (meta) {
                 className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing", "texting", "drawing"][mode]),
                 ref: canvasRef,
                 onWheel: handleWheel,
+                onMouseMove: handleMouseMove,
                 ...pointerHandlers,
               }),
               jsx("div", {
@@ -1742,12 +2023,7 @@ module.exports = function (meta) {
                     active: mode === 5,
                     onClick: () => setMode(m => m === 5 ? null : 5)
                   }),
-                  jsx(Components.IconButton, {
-                    tooltip: "Cut Layer (C)",
-                    d: utils.paths.Cut,
-                    active: mode === 7,
-                    onClick: () => setMode(m => m === 7 ? null : 7)
-                  }),
+                  jsx("div"),
                   jsx(Components.IconButton, {
                     tooltip: "Move (M)",
                     d: utils.paths.Pan,
@@ -1767,7 +2043,7 @@ module.exports = function (meta) {
                     onClick: () => setMode(m => m === 3 ? null : 3)
                   }),
                   jsx(Components.IconButton, {
-                    tooltip: "Crop",
+                    tooltip: "Crop (C)",
                     d: utils.paths.Crop,
                     active: mode === 0,
                     onClick: () => setMode(m => m === 0 ? null : 0)
@@ -1821,9 +2097,9 @@ module.exports = function (meta) {
               jsx("div", {
                 className: "aux-inputs",
                 children: [
-                  (mode == 4 || mode == 5) && jsx(Fragment, {
+                  (mode === 4 || mode === 5 || mode === 6) && jsx(Fragment, {
                     children: [
-                      jsx(BdApi.Components.ColorInput, {
+                      mode !== 6 && jsx(BdApi.Components.ColorInput, {
                         value: strokeStyle.color,
                         colors: ["#000000", 0xffffff, 0xffea00, 0xff9100, 0xff1744, 0xff4081, 0xd500f9, 0x651fff, 0x2979ff, 0x10e5ff, 0x1de9b6, 0x10e676],
                         onChange: c => setStrokeStyle(s => ({ ...s, color: c }))
@@ -1894,6 +2170,7 @@ module.exports = function (meta) {
                 ]
               }),
               jsx("ul", {
+                ref: thumbnailContainer,
                 className: utils.clsx("thumbnails", internals.scrollbarClass.thin),
                 children: layers.map(({ visible, active, id }, idx) => {
                   return jsx(Components.LayerThumbnail, {
@@ -2253,15 +2530,49 @@ module.exports = function (meta) {
   );
 }
 
-.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border {
+.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border,
+.canvas.texting + .canvas-overlay > .cropper-border {
   position: absolute;
+  border: 1px solid black;
   outline: 1px dashed currentColor;
   outline-offset: -1px;
-  left: var(--x1, 0%);
-  right: calc(100% - var(--x2, 0%));
-  top: var(--y1, 0%);
-  bottom: calc(100% - var(--y2, 0%));
+  left: var(--x1, -2px);
+  right: calc(100% - var(--x2));
+  top: var(--y1, -2px);
+  bottom: calc(100% - var(--y2));
 }
+
+.canvas.drawing + .canvas-overlay > .cropper-region {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: top left;
+  translate: var(--line-from, -1000px -1000px);
+  width: var(--r, 0px);
+  rotate: var(--phi, 0rad);
+  height: 1px;
+  background: white;
+  outline: 1px solid grey;
+  
+  &::before,
+  &::after {
+    content: '';
+    position: absolute;
+    outline: 2px solid grey;
+    outline-offset: 6px;
+    border-radius: 100vmax;
+    width: 2px;
+    height: 2px;
+    translate: 0 -1px;
+  }
+  &::after {
+    right: -1px;
+  }
+  &::before {
+    left: -1px;
+  }
+}
+
 
 .canvas.drawing + .canvas-overlay > .cropper-border {
   position: absolute;
@@ -2279,8 +2590,8 @@ module.exports = function (meta) {
 .canvas-actions {
   grid-column: 1 / -1;
   width: 128px;
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
   & > .active {
     background-color: var(--background-modifier-active);
     color: var(--interactive-active);
