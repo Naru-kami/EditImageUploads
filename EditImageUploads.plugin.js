@@ -47,6 +47,7 @@ module.exports = function (meta) {
           MenuSliderControl: "moveGrabber",
           closeModalInAllContexts: ".onCloseCallback)",
           Popout: "Unsupported animation config:",
+          SingleSelect: '"renderTrailing","value"',
         }),
         ...utils.getKeysInModule(internals.Modal, {
           ModalRoot: ".MODAL_ROOT_LEGACY,",
@@ -321,6 +322,7 @@ module.exports = function (meta) {
     startDrawing(startPoint, width, color, globalCompositeOperation = "source-over") {
       const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
       ctx.save();
+      ctx.beginPath();
 
       this.#interactionCache.width = width;
       this.#interactionCache.color = color;
@@ -350,7 +352,6 @@ module.exports = function (meta) {
       this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
 
       if (this.#activeLayer.state.isVisible) {
-        ctx.beginPath();
         ctx.arc(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y, width / 2, 0, 2 * Math.PI);
         ctx.fill();
 
@@ -380,9 +381,12 @@ module.exports = function (meta) {
       const isOOB = !utils.pointInRect(to_inv, availRect);
       const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect);
 
-      const intersections = utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect);
+      if (isOOB && !prevIsOOB) {
+        this.lineTo(point);
+        return;
+      }
 
-      if (isOOB && prevIsOOB && !intersections.length) {
+      if (isOOB && prevIsOOB && !utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect).length) {
         this.#interactionCache.lastPoint = to_inv;
         return;
       }
@@ -553,12 +557,12 @@ module.exports = function (meta) {
       return true;
     }
 
-    /** @param {DOMPoint} point @param {number} fontsize @param {string} color   */
-    insertTextAt(point, fontsize, color) {
+    /** @param {DOMPoint} point @param {number} fontsize @param {string} fontFamily @param {string} color   */
+    insertTextAt(point, fontsize, fontFamily, fontWeight, color) {
       const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
       ctx.save();
       const to_inv = point.matrixTransform(this.viewportTransform_inv);
-      ctx.font = `${fontsize}px sans-serif`;
+      ctx.font = `${fontWeight} ${fontsize}px ${fontFamily}`;
       ctx.textBaseline = "middle";
       ctx.fillStyle = color;
 
@@ -595,11 +599,17 @@ module.exports = function (meta) {
       const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
       const ctx = canvas.getContext("2d");
 
+      if (this.#interactionCache.text === "") {
+        ctx.restore();
+        return;
+      }
+
       const clipPath = new Path2D();
       clipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
 
       const layerState = this.#activeLayer.addStroke({
         text: this.#interactionCache.text,
+        font: ctx.font,
         origin: new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y),
         color: this.#interactionCache.color,
         width: this.#interactionCache.width / utils.getScale(this.#activeLayer.state.transform),
@@ -738,7 +748,7 @@ module.exports = function (meta) {
       this.#canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#state = {
         transform: new DOMMatrix(),
-        /** @type {({color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D: Path2D, text: string, origin: DOMPoint})[]} */
+        /** @type {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix}[]} */
         strokes: [],
         isVisible: true,
       };
@@ -789,7 +799,6 @@ module.exports = function (meta) {
       const dy = Math.max(0, canvasRect.top - (strokeRect.top - strokeWidth / 2), (strokeRect.bottom + strokeWidth / 2) - canvasRect.bottom);
 
       if (dx || dy) {
-        console.log(dx, dy)
         this.#canvas.width += ~~(2 * dx);
         this.#canvas.height += ~~(2 * dy);
         this.#drawImage();
@@ -797,14 +806,14 @@ module.exports = function (meta) {
       }
     }
 
-    /** @param {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, origin: DOMPoint, transform: DOMMatrix}} stroke  */
+    /** @param {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix}} stroke  */
     addStroke(stroke) {
       this.#state = { ...this.#state, strokes: [...this.#state.strokes, stroke] };
       this.#drawStroke(stroke);
       return this.#state;
     }
 
-    /** @param {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, origin: DOMPoint, transform: DOMMatrix}} stroke  */
+    /** @param {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix}} stroke  */
     #drawStroke(stroke) {
       const ctx = this.#canvas.getContext("2d");
       ctx.save();
@@ -815,11 +824,13 @@ module.exports = function (meta) {
       ctx.fillStyle = stroke.color;
       ctx.textBaseline = "middle";
       ctx.globalCompositeOperation = stroke.globalCompositeOperation;
-      ctx.font = `${stroke.width}px sans-serif`;
       ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2).multiplySelf(stroke.transform));
       ctx.clip(stroke.clipPath);
       if (stroke.path2D) ctx.stroke(stroke.path2D);
-      if (stroke.text) utils.renderMultilineText(ctx, stroke.text, stroke.origin);
+      if (stroke.text) {
+        ctx.font = stroke.font;
+        utils.renderMultilineText(ctx, stroke.text, stroke.origin);
+      }
       ctx.restore();
     }
 
@@ -838,7 +849,10 @@ module.exports = function (meta) {
         ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2).multiplySelf(stroke.transform));
         ctx.clip(stroke.clipPath);
         if (stroke.path2D) ctx.stroke(stroke.path2D);
-        if (stroke.text) utils.renderMultilineText(ctx, stroke.text, stroke.origin);
+        if (stroke.text) {
+          ctx.font = stroke.font;
+          utils.renderMultilineText(ctx, stroke.text, stroke.origin);
+        }
         ctx.restore();
       }
     }
@@ -1418,7 +1432,7 @@ module.exports = function (meta) {
               d: visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
               onClick: onVisibilityToggle
             }),
-            jsx("div", null, name)
+            jsx("span", { className: "layer-label" }, name)
           ]
         })
       })
@@ -1431,6 +1445,7 @@ module.exports = function (meta) {
       const [dims, setDims] = useState({ width: bitmap.width, height: bitmap.height });
 
       const [mode, _setMode] = hooks.useStoredState("mode", null);
+      const [font, setFont] = hooks.useStoredState("font", { family: "gg sans", weight: 500 });
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 25, color: "#000000" }));
 
@@ -1796,8 +1811,9 @@ module.exports = function (meta) {
               const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
-              editor.current.insertTextAt(new DOMPoint(startX, startY), strokeStyle.width, strokeStyle.color);
               canvasRef.current.focus();
+              editor.current.insertTextAt(new DOMPoint(startX, startY), strokeStyle.width, font.family, font.weight, strokeStyle.color);
+              editor.current.updateText(t => t);
 
               const rect = editor.current.regionRect;
               overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
@@ -1810,6 +1826,8 @@ module.exports = function (meta) {
             }
             case !!(e.buttons & 1) && 4:
             case !!(e.buttons & 1) && 6: {
+              store.changed = true;
+
               const lastPoint = editor.current.lastPoint;
               if (e.shiftKey && lastPoint) {
                 const boxScale = canvasRect.current.width / canvasRef.current.width;
@@ -1960,8 +1978,8 @@ module.exports = function (meta) {
               isInteracting.current = true;
               break;
             }
-            case 4:
-            case 6: {
+            case store.changed && 4:
+            case store.changed && 6: {
               editor.current.endDrawing();
               syncStates();
               break;
@@ -2034,7 +2052,6 @@ module.exports = function (meta) {
                     minValue: 0,
                     onChange: newWidth => {
                       const { width, height } = editor.current.canvasDims;
-                      console.log(newWidth, width)
                       if (newWidth !== width) {
                         editor.current.canvasDims = { width: newWidth, height };
                         editor.current.fullRender();
@@ -2179,6 +2196,17 @@ module.exports = function (meta) {
                           overlay.current.style.removeProperty("--brushsize");
                           setStrokeStyle(s => ({ ...s, width: value }));
                         }
+                      }),
+                      mode === 5 && jsx(internals.nativeUI[internals.keys.SingleSelect], {
+                        options: Array.from(new Set([...document.fonts.values()].map(e => e.family))).map(e => ({ value: e, label: e })),
+                        value: font.family,
+                        className: "select",
+                        onChange: family => setFont(f => ({ ...f, family: family })),
+                      }),
+                      mode === 5 && jsx(internals.nativeUI[internals.keys.SingleSelect], {
+                        options: Array.from({ length: 9 }, (e, i) => document.fonts.check((i + 1) * 100 + " 1rem " + font.family) && { value: (i + 1) * 100, label: (i + 1) * 100 }).filter(Boolean),
+                        value: font.weight,
+                        onChange: weight => setFont(f => ({ ...f, weight: weight })),
                       })
                     ]
                   }),
@@ -2248,7 +2276,7 @@ module.exports = function (meta) {
                 })
               }),
               jsx("div", {
-                className: "thumbnail-actions",
+                className: "layer-actions",
                 children: [
                   jsx(Components.IconButton, {
                     tooltip: "Add Layer",
@@ -2518,6 +2546,7 @@ module.exports = function (meta) {
   display: block;
   anchor-name: --canvas;
   overflow: hidden;
+  outline: none;
   touch-action: none;
   background: repeating-conic-gradient(#666 0 25%, #999 0 50%) 0 0 / 20px 20px fixed content-box;
 }                   
@@ -2662,16 +2691,22 @@ module.exports = function (meta) {
   gap: 16px;
   grid-template-rows: auto auto 1fr;
   align-self: start;
+  align-items: start;
   grid-column: 1 / -1;
   color: var(--interactive-active);
   box-sizing: border-box;
   height: 100%;
   padding-top: 8px;
   border-top: 1px solid var(--border-normal);
+
   & > :nth-child(3) {
-    align-self: end;
+    width: 128px;
+  }
+  & .select {
+    display: inline-block;
   }
 }
+
 [role=button] {
   border-radius: 8px;
 }
@@ -2767,13 +2802,18 @@ module.exports = function (meta) {
 }
 
 .thumbnail {
-  display: flex;
+  display: grid;
+  grid-template-columns: 24px 56px 32px;
+  height: 32px;
+  overflow: hidden;
   gap: 4px;
   align-items: center;
-  padding: 8px 4px;
+  padding: 4px;
   cursor: pointer;
   color: var(--interactive-normal);
+  transition: background-color 200ms ease;
   animation: fade-in 250ms;
+
   & > [role=button] {
     padding: 0;
   }
@@ -2785,7 +2825,14 @@ module.exports = function (meta) {
   }
 }
 
-.thumbnail-actions {
+.layer-label {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+}
+
+.layer-actions {
   display: flex;
   grid-column: 1 / -1;
   padding-bottom: 8px;
