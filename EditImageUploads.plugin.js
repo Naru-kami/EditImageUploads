@@ -333,7 +333,22 @@ module.exports = function (meta) {
       ctx.lineCap = "round";
       ctx.lineJoin = "round";
 
+      this.#interactionCache.path2D = new Path2D();
       this.#interactionCache.lastPoint = startPoint.matrixTransform(this.viewportTransform_inv);
+      const isOOB = !utils.pointInRect(this.#interactionCache.lastPoint, new DOMRect(-width / 2, -width / 2, this.#mainCanvas.width + width, this.#mainCanvas.height + width));
+
+      this.#interactionCache.layerTransform_inv = new DOMMatrix()
+        .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
+        .multiplySelf(this.layerTransform).invertSelf();
+
+      if (isOOB) {
+        this.#interactionCache.rect = new DOMRect(0, 0, 0, 0);
+        return;
+      }
+
+      const rawPoint = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
+
       if (this.#activeLayer.state.isVisible) {
         ctx.beginPath();
         ctx.arc(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y, width / 2, 0, 2 * Math.PI);
@@ -351,15 +366,8 @@ module.exports = function (meta) {
         ctx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       }
 
-      this.#interactionCache.layerTransform_inv = new DOMMatrix()
-        .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
-        .multiplySelf(this.layerTransform).invertSelf();
-
-      const rawPoint = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
-      this.#interactionCache.path2D = new Path2D();
       this.#interactionCache.path2D.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       this.#interactionCache.path2D.lineTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
-      this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
     }
 
     /** @param {DOMPoint} point */
@@ -372,7 +380,7 @@ module.exports = function (meta) {
       const isOOB = !utils.pointInRect(to_inv, availRect);
       const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect);
 
-      const intersections = utils.lineRectIntersect(this.#interactionCache.lastPoint, to_inv, availRect);
+      const intersections = utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect);
 
       if (isOOB && prevIsOOB && !intersections.length) {
         this.#interactionCache.lastPoint = to_inv;
@@ -389,35 +397,73 @@ module.exports = function (meta) {
       const midpoint = new DOMPoint((clampedTo.x + clampedFrom.x) / 2, (clampedTo.y + clampedFrom.y) / 2);
 
       if (this.#activeLayer.state.isVisible) {
-        ctx.quadraticCurveTo(
-          this.#interactionCache.lastPoint.x,
-          this.#interactionCache.lastPoint.y,
-          midpoint.x, midpoint.y
-        );
+        ctx.quadraticCurveTo(clampedFrom.x, clampedFrom.y, midpoint.x, midpoint.y);
         ctx.stroke();
 
         const mainCtx = this.#mainCanvas.getContext("2d");
         this.layers.length > 1 && mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0)
+        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
         this.layers.length > 1 && mainCtx.drawImage(this.#middleCache, 0, 0);
-        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0)
+        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
         this.refreshViewport();
       }
 
       const rawMidpoint = midpoint.matrixTransform(this.#interactionCache.layerTransform_inv);
-      this.#interactionCache.path2D.quadraticCurveTo(
-        this.#interactionCache.lastPoint.x,
-        this.#interactionCache.lastPoint.y,
-        midpoint.x,
-        midpoint.y
-      );
+      this.#interactionCache.path2D.quadraticCurveTo(clampedFrom.x, clampedFrom.y, midpoint.x, midpoint.y);
       this.#interactionCache.lastPoint = to_inv;
 
       this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawMidpoint.x, rawMidpoint.x - this.#interactionCache.rect.right, 0);
       this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.y - rawMidpoint.y, rawMidpoint.y - this.#interactionCache.rect.bottom, 0);
       this.#interactionCache.rect.x = Math.min(rawMidpoint.x, this.#interactionCache.rect.x);
       this.#interactionCache.rect.y = Math.min(rawMidpoint.y, this.#interactionCache.rect.y);
+    }
+
+    /** @param {DOMPoint} point */
+    lineTo(point) {
+      const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
+      const to_inv = point.matrixTransform(this.viewportTransform_inv);
+
+      const availRect = new DOMRect(-this.#interactionCache.width / 2, -this.#interactionCache.width / 2, this.#mainCanvas.width + this.#interactionCache.width, this.#mainCanvas.height + this.#interactionCache.width);
+      // out of bounds
+      const isOOB = !utils.pointInRect(to_inv, availRect);
+      const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect);
+
+      const intersections = utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect);
+
+      if (isOOB && prevIsOOB && !intersections.length) {
+        this.#interactionCache.lastPoint = to_inv;
+        return;
+      }
+
+      const [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect);
+
+      if (prevIsOOB) {
+        this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
+        ctx.moveTo(clampedFrom.x, clampedFrom.y);
+      }
+
+      if (this.#activeLayer.state.isVisible) {
+        ctx.lineTo(clampedTo.x, clampedTo.y);
+        ctx.stroke();
+
+        const mainCtx = this.#mainCanvas.getContext("2d");
+        this.layers.length > 1 && mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
+        this.layers.length > 1 && mainCtx.drawImage(this.#middleCache, 0, 0);
+        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
+
+        this.refreshViewport();
+      }
+
+      const rawClampedTo = clampedTo.matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#interactionCache.path2D.lineTo(clampedTo.x, clampedTo.y);
+      this.#interactionCache.lastPoint = to_inv;
+
+      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawClampedTo.x, rawClampedTo.x - this.#interactionCache.rect.right, 0);
+      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.y - rawClampedTo.y, rawClampedTo.y - this.#interactionCache.rect.bottom, 0);
+      this.#interactionCache.rect.x = Math.min(rawClampedTo.x, this.#interactionCache.rect.x);
+      this.#interactionCache.rect.y = Math.min(rawClampedTo.y, this.#interactionCache.rect.y);
     }
 
     endDrawing() {
@@ -989,7 +1035,7 @@ module.exports = function (meta) {
     /** @param {DOMPoint} p @param {DOMRect} rect */
     pointInRect(p, rect) { return p.x >= rect.left && p.x <= rect.right && p.y >= rect.top && p.y <= rect.bottom },
 
-    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMPoint} p3 @param {DOMPoint} p4  */
+    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMPoint} p3 @param {DOMPoint} p4 Intersection point between two lines */
     lineLine(p1, p2, p3, p4) {
       const uA = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
       const uB = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
@@ -1000,8 +1046,8 @@ module.exports = function (meta) {
       return null;
     },
 
-    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]} */
-    lineRectIntersect(p1, p2, rect) {
+    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]} Intersection points between line and Rect */
+    lineRect(p1, p2, rect) {
       const top = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.top), new DOMPoint(rect.right, rect.top));
       const right = utils.lineLine(p1, p2, new DOMPoint(rect.right, rect.top), new DOMPoint(rect.right, rect.bottom));
       const bottom = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.bottom), new DOMPoint(rect.right, rect.bottom));
@@ -1012,7 +1058,7 @@ module.exports = function (meta) {
 
     /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect */
     clampLineToRect(p1, p2, rect) {
-      const intersects = utils.lineRectIntersect(p1, p2, rect);
+      const intersects = utils.lineRect(p1, p2, rect);
 
       switch (intersects.length) {
         case 1: {
@@ -1751,6 +1797,7 @@ module.exports = function (meta) {
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
               editor.current.insertTextAt(new DOMPoint(startX, startY), strokeStyle.width, strokeStyle.color);
+              canvasRef.current.focus();
 
               const rect = editor.current.regionRect;
               overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
@@ -1776,8 +1823,7 @@ module.exports = function (meta) {
                   mode === 6 ? "destination-out" : "source-over"
                 );
 
-                editor.current.curveTo(new DOMPoint(toX, toY));
-                editor.current.curveTo(new DOMPoint(toX, toY));
+                editor.current.lineTo(new DOMPoint(toX, toY));
 
                 canvasRef.current.releasePointerCapture(e.pointerId);
 
@@ -1942,6 +1988,15 @@ module.exports = function (meta) {
         }
       }, []);
 
+      const handleBlur = useCallback(() => {
+        if (canvasRef.current.matches(".texting") && isInteracting.current) {
+          editor.current.finalizeText();
+          syncStates();
+          isInteracting.current = false;
+          ["--x1", "--x2", "--y1", "--y2"].forEach(prop => overlay.current.style.removeProperty(prop));
+        }
+      });
+
       return jsx(Fragment, {
         children: [
           jsx("div", {
@@ -1949,7 +2004,9 @@ module.exports = function (meta) {
             children: [
               jsx("canvas", {
                 className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing", "texting", "drawing"][mode]),
+                tabIndex: -1,
                 ref: canvasRef,
+                onBlur: handleBlur,
                 onWheel: handleWheel,
                 onMouseMove: handleMouseMove,
                 ...pointerHandlers,
