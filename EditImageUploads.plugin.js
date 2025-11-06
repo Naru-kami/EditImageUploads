@@ -579,12 +579,12 @@ module.exports = function (meta) {
       this.#interactionCache.color = color;
     }
 
-    /** @param {(oldText: string) => string} setText */
-    updateText(setText) {
+    /** @param {string?} text */
+    updateText(text = this.#interactionCache.text) {
       const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
       const ctx = canvas.getContext("2d");
 
-      this.#interactionCache.text = setText(this.#interactionCache.text);
+      this.#interactionCache.text = text;
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       this.#activeLayer.drawOn(canvas);
@@ -1457,6 +1457,8 @@ module.exports = function (meta) {
       const editor = useRef(null);
       /** @type { React.RefObject<HTMLDivElement | null> } */
       const overlay = useRef(null);
+      /** @type { React.RefObject<HTMLTextAreaElement | null> } */
+      const textarea = useRef(null);
       /** @type { React.RefObject<HTMLDivElement | null> } */
       const thumbnailContainer = useRef(null);
       /**  @type { React.RefObject<{ setValue: (value: number) => void, previewValue: (value: number) => void } | null> } */
@@ -1565,49 +1567,21 @@ module.exports = function (meta) {
 
         const ctrl = new AbortController();
         addEventListener("keydown", e => {
-          if (canvasRef.current.matches(".texting") && isInteracting.current) {
-            switch (e.key) {
-              case (e.ctrlKey || e.shiftKey) && "Enter":
-                editor.current.updateText(t => t + "\n");
-                const rect = editor.current.regionRect;
-                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
-                return;
-              case "Enter": {
-                editor.current.finalizeText();
-                syncStates();
-                isInteracting.current = false;
-                ["--x1", "--x2", "--y1", "--y2"].forEach(prop => overlay.current.style.removeProperty(prop));
-                return;
-              }
-              case "Backspace": {
-                editor.current.updateText(t => t.slice(0, -1));
-                const rect = editor.current.regionRect;
-                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
-                return;
-              }
-              case !e.ctrlKey && e.key.length === 1 && e.key: {
-                editor.current.updateText(t => t + e.key);
-                const rect = editor.current.regionRect;
-                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
-                return;
-              }
-            }
+          if (
+            canvasRef.current.matches(".texting") && isInteracting.current &&
+            (e.ctrlKey || e.shiftKey) && e.key === "Enter"
+          ) {
+            textarea.current.blur();
+            return;
           }
+
+          let matchedCase = true;
           switch (e.key) {
-            case e.ctrlKey && "z":
+            case !(canvasRef.current.matches("texting") && isInteracting.current) && e.ctrlKey && "z":
               if (editor.current.undo()) syncStates();
               return;
 
-            case e.ctrlKey && "y":
+            case !(canvasRef.current.matches("texting") && isInteracting.current) && e.ctrlKey && "y":
               if (editor.current.redo()) syncStates();
               return;
 
@@ -1674,7 +1648,11 @@ module.exports = function (meta) {
               overlay.current.style.setProperty("--r", `${r || 0}px`);
               return;
             }
+            default: {
+              matchedCase = false;
+            }
           }
+          matchedCase && e.stopPropagation();
         }, ctrl);
         addEventListener("keyup", e => {
           if (e.key === "Shift") {
@@ -1687,7 +1665,6 @@ module.exports = function (meta) {
           const rect = canvasRef.current.offsetParent.getBoundingClientRect();
           editor.current.viewportDims = { width: ~~(rect.width), height: ~~(rect.height) };
           editor.current.refreshViewport();
-
           canvasRect.current = canvasRef.current.getBoundingClientRect();
         }, ctrl);
         addEventListener("paste", async (e) => {
@@ -1792,7 +1769,8 @@ module.exports = function (meta) {
             startX: e.clientX,
             startY: e.clientY,
           });
-          isInteracting.current = true;
+
+          if (mode !== 5) isInteracting.current = true;
 
           switch (mode) {
             case !!(e.buttons & 1) && 0: {
@@ -1808,12 +1786,13 @@ module.exports = function (meta) {
               break;
             }
             case !!(e.buttons & 1) && 5: {
+              store.changed = true;
+
               const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
-              canvasRef.current.focus();
               editor.current.insertTextAt(new DOMPoint(startX, startY), strokeStyle.width, font.family, font.weight, strokeStyle.color);
-              editor.current.updateText(t => t);
+              editor.current.updateText();
 
               const rect = editor.current.regionRect;
               overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
@@ -1870,7 +1849,8 @@ module.exports = function (meta) {
             editor.current.translateViewportBy(dx, dy);
 
             switch (mode) {
-              case 0: {
+              case 0:
+              case isInteracting.current && 5: {
                 const rect = editor.current.regionRect;
                 overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
                 overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
@@ -1881,14 +1861,6 @@ module.exports = function (meta) {
               case 1: {
                 const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
                 overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
-                break;
-              }
-              case isInteracting.current && 5: {
-                const rect = editor.current.regionRect;
-                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
                 break;
               }
             }
@@ -1951,7 +1923,7 @@ module.exports = function (meta) {
           });
         },
         onSubmit: (e, store) => {
-          isInteracting.current = false;
+          if (mode !== 5) isInteracting.current = false;
 
           switch (mode) {
             case 0: {
@@ -1974,8 +1946,10 @@ module.exports = function (meta) {
               syncStates();
               break;
             }
-            case 5: {
+            case store.changed && 5: {
               isInteracting.current = true;
+              textarea.current.hidden = false;
+              textarea.current.focus();
               break;
             }
             case store.changed && 4:
@@ -2006,14 +1980,31 @@ module.exports = function (meta) {
         }
       }, []);
 
-      const handleBlur = useCallback(() => {
+      /** @type {(e: React.FocusEvent) => void} */
+      const handleBlur = useCallback(e => {
+        if (e.relatedTarget === canvasRef.current) return;
+
         if (canvasRef.current.matches(".texting") && isInteracting.current) {
           editor.current.finalizeText();
           syncStates();
           isInteracting.current = false;
+          textarea.current.value = "";
+          textarea.current.hidden = true;
           ["--x1", "--x2", "--y1", "--y2"].forEach(prop => overlay.current.style.removeProperty(prop));
         }
-      });
+      }, []);
+
+      /** @type {(e: React.KeyboardEvent) => void} */
+      const handleTextChange = useCallback(e => {
+        if (mode !== 5 || !isInteracting.current) return;
+
+        editor.current.updateText(e.currentTarget.value);
+        const rect = editor.current.regionRect;
+        overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
+        overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
+        overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
+        overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+      }, [mode]);
 
       return jsx(Fragment, {
         children: [
@@ -2024,7 +2015,6 @@ module.exports = function (meta) {
                 className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing", "texting", "drawing"][mode]),
                 tabIndex: -1,
                 ref: canvasRef,
-                onBlur: handleBlur,
                 onWheel: handleWheel,
                 onMouseMove: handleMouseMove,
                 ...pointerHandlers,
@@ -2034,7 +2024,16 @@ module.exports = function (meta) {
                 ref: overlay,
                 children: [
                   jsx("div", { className: "cropper-region" }),
-                  jsx("div", { className: "cropper-border" })
+                  jsx("div", {
+                    className: "cropper-border",
+                    children: mode === 5 && jsx("textarea", {
+                      ref: textarea,
+                      hidden: true,
+                      className: "hiddenVisually",
+                      onBlur: handleBlur,
+                      onInput: handleTextChange
+                    })
+                  })
                 ]
               })
             ]
@@ -2616,7 +2615,8 @@ module.exports = function (meta) {
   display: block;
   anchor-name: --canvas;
   overflow: hidden;
-  outline: none;
+  outline: 1px solid var(--border-normal);
+  outline-offset: -1px;
   touch-action: none;
   background: repeating-conic-gradient(#666 0 25%, #999 0 50%) 0 0 / 20px 20px fixed content-box;
 }                   
@@ -2773,6 +2773,20 @@ module.exports = function (meta) {
   & > :nth-child(3) {
     width: 128px;
   }
+}
+
+.hiddenVisually {
+  all: unset;
+  position: absolute;
+  bottom: 0;
+  left: 50%;
+  opacity: 0;
+  z-index: -1000;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
 }
 
 .font-selector {
