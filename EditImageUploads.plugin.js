@@ -477,7 +477,7 @@ module.exports = function (meta) {
       this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, this.#interactionCache.width);
       const layerState = this.#activeLayer.addStroke({
         color: this.#interactionCache.color,
-        width: this.#interactionCache.width / utils.getScale(this.#activeLayer.state.transform),
+        width: this.#interactionCache.width,
         path2D: this.#interactionCache.path2D,
         globalCompositeOperation: this.#interactionCache.globalCompositeOperation,
         clipPath,
@@ -592,6 +592,10 @@ module.exports = function (meta) {
         ctx, this.#interactionCache.text,
         new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y)
       );
+
+      this.#interactionCache.rect.width = Math.min(this.#interactionCache.rect.width, this.#mainCanvas.width - this.#interactionCache.rect.left);
+      this.#interactionCache.rect.height = Math.min(this.#interactionCache.rect.height, this.#mainCanvas.height - this.#interactionCache.rect.top);
+
       this.layers.length > 1 ? this.render() : this.refreshViewport();
     }
 
@@ -607,6 +611,7 @@ module.exports = function (meta) {
       const clipPath = new Path2D();
       clipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
 
+      this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, this.#interactionCache.width);
       const layerState = this.#activeLayer.addStroke({
         text: this.#interactionCache.text,
         font: ctx.font,
@@ -1049,7 +1054,7 @@ module.exports = function (meta) {
     /** @param {DOMPoint} p @param {DOMRect} rect */
     pointInRect(p, rect) { return p.x >= rect.left && p.x <= rect.right && p.y >= rect.top && p.y <= rect.bottom },
 
-    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMPoint} p3 @param {DOMPoint} p4 Intersection point between two lines */
+    /** Intersection point between two lines @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMPoint} p3 @param {DOMPoint} p4 */
     lineLine(p1, p2, p3, p4) {
       const uA = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
       const uB = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
@@ -1060,7 +1065,7 @@ module.exports = function (meta) {
       return null;
     },
 
-    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]} Intersection points between line and Rect */
+    /** Intersection points between line and Rect @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]} */
     lineRect(p1, p2, rect) {
       const top = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.top), new DOMPoint(rect.right, rect.top));
       const right = utils.lineLine(p1, p2, new DOMPoint(rect.right, rect.top), new DOMPoint(rect.right, rect.bottom));
@@ -1569,7 +1574,7 @@ module.exports = function (meta) {
         addEventListener("keydown", e => {
           if (
             canvasRef.current.matches(".texting") && isInteracting.current &&
-            (e.ctrlKey || e.shiftKey) && e.key === "Enter"
+            !e.ctrlKey && !e.shiftKey && e.key === "Enter"
           ) {
             textarea.current.blur();
             return;
@@ -1577,11 +1582,11 @@ module.exports = function (meta) {
 
           let matchedCase = true;
           switch (e.key) {
-            case !(canvasRef.current.matches("texting") && isInteracting.current) && e.ctrlKey && "z":
+            case !(canvasRef.current.matches(".texting") && isInteracting.current) && e.ctrlKey && "z":
               if (editor.current.undo()) syncStates();
               return;
 
-            case !(canvasRef.current.matches("texting") && isInteracting.current) && e.ctrlKey && "y":
+            case !(canvasRef.current.matches(".texting") && isInteracting.current) && e.ctrlKey && "y":
               if (editor.current.redo()) syncStates();
               return;
 
@@ -1593,8 +1598,8 @@ module.exports = function (meta) {
                 type: 'image/png'
               }).then(blob =>
                 blob.arrayBuffer()
-              ).then(buf => {
-                DiscordNative.clipboard.copyImage(new Uint8Array(buf), "image.png");
+              ).then(buffer => {
+                DiscordNative.clipboard.copyImage(new Uint8Array(buffer), "image.png");
               }).then(() => {
                 UI.showToast("Image copied", { type: "success" })
               }).catch(() => {
@@ -2028,6 +2033,7 @@ module.exports = function (meta) {
                     className: "cropper-border",
                     children: mode === 5 && jsx("textarea", {
                       ref: textarea,
+                      tabIndex: -1,
                       hidden: true,
                       className: "hiddenVisually",
                       onBlur: handleBlur,
