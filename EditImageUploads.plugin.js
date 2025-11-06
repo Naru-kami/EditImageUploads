@@ -11,7 +11,7 @@ module.exports = function (meta) {
 
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI } = BdApi;
   /** @type {typeof import("react")} */
-  const { createElement: jsx, useState, useEffect, useRef, useImperativeHandle, useCallback, useId, Fragment, cloneElement } = React;
+  const { createElement: jsx, useState, useEffect, useRef, useLayoutEffect, useImperativeHandle, useCallback, useId, Fragment, cloneElement } = React;
 
   var internals, ctrl;
 
@@ -1445,7 +1445,7 @@ module.exports = function (meta) {
       const [dims, setDims] = useState({ width: bitmap.width, height: bitmap.height });
 
       const [mode, _setMode] = hooks.useStoredState("mode", null);
-      const [font, setFont] = hooks.useStoredState("font", { family: "gg sans", weight: 500 });
+      const [font, setFont] = hooks.useStoredState("font", () => ({ family: "gg sans", weight: 500 }));
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 25, color: "#000000" }));
 
@@ -2197,17 +2197,10 @@ module.exports = function (meta) {
                           setStrokeStyle(s => ({ ...s, width: value }));
                         }
                       }),
-                      mode === 5 && jsx(internals.nativeUI[internals.keys.SingleSelect], {
-                        options: Array.from(new Set([...document.fonts.values()].map(e => e.family))).map(e => ({ value: e, label: e })),
-                        value: font.family,
-                        className: "select",
-                        onChange: family => setFont(f => ({ ...f, family: family })),
+                      mode === 5 && jsx(Components.FontSelector, {
+                        value: font,
+                        onChange: f => setFont(f)
                       }),
-                      mode === 5 && jsx(internals.nativeUI[internals.keys.SingleSelect], {
-                        options: Array.from({ length: 9 }, (e, i) => document.fonts.check((i + 1) * 100 + " 1rem " + font.family) && { value: (i + 1) * 100, label: (i + 1) * 100 }).filter(Boolean),
-                        value: font.weight,
-                        onChange: weight => setFont(f => ({ ...f, weight: weight })),
-                      })
                     ]
                   }),
                   mode == 0 && jsx(Components.IconButton, {
@@ -2329,6 +2322,83 @@ module.exports = function (meta) {
               }),
             ]
           }),
+        ]
+      })
+    },
+
+    /** @param {{ value: { family: string, weight: number }, onChange: (e: { family: string, weight: number }) => void }} */
+    FontSelector({ onChange, value }) {
+      const [family, _setFamily] = useState(() => value.family);
+      const [weight, setWeight] = useState(() => value.weight);
+
+      const familyOptions = useRef((() => {
+        const defaults = ["sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui", "Arial", "Arial Black", "Tahoma", "Times New Roman", "Verdana", "Georgia", "Garamond", "Helvetica"];
+        const docFonts = Array.from(document.fonts, e => e.family);
+        const merged = [...new Set(defaults.concat(docFonts))];
+        merged.sort((a, b) => a.localeCompare(b));
+        // move ugly discord fonts to the end
+        merged.push(...merged.splice(0, 4));
+        return merged.map(e => ({ value: e, label: e }));
+      })());
+
+      const getWeightsOptions = useCallback((f = family) => {
+        return Array.from({ length: 9 }, (_, i) => {
+          const w = (i + 1) * 100;
+          const loaded = document.fonts.check(w + " 1rem " + f);
+          return loaded ? { value: w, label: w } : null;
+        }).filter(Boolean)
+      }, [family]);
+
+      const [weightOptions, setWeightsOptions] = useState(getWeightsOptions);
+
+      const setFamily = useCallback((newFamily) => {
+        const f = newFamily instanceof Function ? newFamily(family) : newFamily;
+        const wo = getWeightsOptions(f);
+        setWeightsOptions(wo);
+        if (wo.every(w => w.label !== weight)) {
+          const closest = wo.toSorted((a, b) => Math.abs(a.label - weight) - Math.abs(b.label - weight))[0];
+          setWeight(closest.value);
+        }
+        _setFamily(f);
+      }, [])
+
+      useLayoutEffect(() => {
+        Promise.all(Array.from(document.fonts).map(f => f.load())).then(() => {
+          const newWeights = getWeightsOptions();
+          setWeightsOptions(newWeights);
+
+          if (newWeights.every(w => w.label !== weight)) {
+            const closest = newWeights.toSorted((a, b) => Math.abs(a.label - weight) - Math.abs(b.label - weight))[0];
+            setWeight(closest.value);
+          }
+        });
+      }, []);
+
+      return jsx("div", {
+        className: "font-selector",
+        children: [
+          jsx(internals.nativeUI[internals.keys.SingleSelect], {
+            options: familyOptions.current,
+            value: family,
+            className: "select",
+            onChange: f => {
+              setFamily(f);
+              onChange({ family: f, weight });
+            },
+            renderOptionLabel: option => jsx("span", { style: { fontFamily: option.label } }, option.label),
+            renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: option.value } }, option.value),
+          }),
+          jsx(internals.nativeUI[internals.keys.SingleSelect], {
+            options: weightOptions,
+            value: weight,
+            className: "select",
+            onChange: w => {
+              setWeight(w);
+              onChange({ family, weight: w });
+            },
+            renderOptionLabel: option => jsx("span", { style: { fontFamily: family, fontWeight: option.label } }, option.label),
+            renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: family, fontWeight: option.value } }, option.value),
+          })
         ]
       })
     },
@@ -2696,15 +2766,23 @@ module.exports = function (meta) {
   color: var(--interactive-active);
   box-sizing: border-box;
   height: 100%;
-  padding-top: 8px;
+  padding-block: 8px;
   border-top: 1px solid var(--border-normal);
+  border-bottom: 1px solid var(--border-normal);
 
   & > :nth-child(3) {
     width: 128px;
   }
-  & .select {
-    display: inline-block;
-  }
+}
+
+.font-selector {
+  display: grid;
+  gap: 6px;
+  justify-content: stretch;
+}
+
+.select {
+  display: inline-block;
 }
 
 [role=button] {
@@ -2724,6 +2802,7 @@ module.exports = function (meta) {
   color: var(--interactive-active);
   & > label {
     align-content: center;
+    padding-inline-start: 4px;
   }
   & > .number-input ~ div {
     flex-basis: 100%;
@@ -2773,7 +2852,7 @@ module.exports = function (meta) {
 .sidebar {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  grid-template-rows: auto auto 1fr auto auto auto;
+  grid-template-rows: auto auto 1fr min-content auto auto;
   gap: 8px;
   align-items: end;
   justify-content: center;
@@ -2786,8 +2865,6 @@ module.exports = function (meta) {
   flex-direction: column-reverse;
   max-height: calc(40px * 4);
   box-sizing: content-box;
-  padding-top: 8px;
-  border-top: 1px solid var(--border-normal);
   overflow: auto;
   scrollbar-gutter: stable;
   font-size: .8125em;
@@ -2803,8 +2880,8 @@ module.exports = function (meta) {
 
 .thumbnail {
   display: grid;
-  grid-template-columns: 24px 56px 32px;
-  height: 32px;
+  grid-template-columns: 24px 48px 32px;
+  flex: 0 0 32px;
   overflow: hidden;
   gap: 4px;
   align-items: center;
