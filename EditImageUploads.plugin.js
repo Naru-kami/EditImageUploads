@@ -9,8 +9,9 @@
 module.exports = function (meta) {
   "use strict";
 
-  const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI } = BdApi;
-  /** @type {typeof import("react")} */
+  /** @type {{React: typeof import("react")}} */
+  const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI, ContextMenu } = BdApi;
+
   const { createElement: jsx, useState, useEffect, useRef, useLayoutEffect, useImperativeHandle, useCallback, useId, Fragment, cloneElement } = React;
 
   var internals, ctrl;
@@ -29,6 +30,7 @@ module.exports = function (meta) {
       actionIconClass: { filter: m => m.actionBarIcon && m[Symbol.toStringTag] != "Module" },
       sliderClass: { filter: Filters.byKeys("sliderContainer", "slider") },
       scrollbarClass: { filter: Filters.byKeys("thin") },
+      contextMenuClass: { filter: Filters.byKeys("hintContainer") }
     });
 
     Object.assign(internals, {
@@ -117,10 +119,7 @@ module.exports = function (meta) {
     #topCache;
     #interactionCache;
 
-    /** 
-     * @param {HTMLCanvasElement} canvas
-     * @param {ImageBitmap} bitmap 
-     */
+    /** @param {HTMLCanvasElement} canvas @param {ImageBitmap} bitmap */
     constructor(canvas, bitmap) {
       this.#mainCanvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#bottomCache = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -138,7 +137,7 @@ module.exports = function (meta) {
       this.#staleViewportInv = false;
 
       this.#inc_layer_id = 0;
-      const layer = new Layer(this.#inc_layer_id++, bitmap);
+      const layer = new Layer("Main", bitmap);
       this.#state = new utils.StateHistory({
         width: bitmap.width,
         height: bitmap.height,
@@ -220,7 +219,10 @@ module.exports = function (meta) {
 
     /** @param {ImageBitmap | null} bitmap */
     createNewLayer(bitmap) {
-      const newLayer = new Layer(this.#inc_layer_id++, bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height });
+      const newLayer = new Layer(
+        "Layer " + ++this.#inc_layer_id,
+        bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height }
+      );
       this.#state.state = {
         ...this.#state.state,
         layers: [
@@ -255,15 +257,16 @@ module.exports = function (meta) {
       this.fullRender();
     }
 
-    /** @param {1 | -1} delta  */
-    moveLayers(delta) {
-      if (!((this.activeLayerIndex + delta) in this.layers)) return;
+    /** @param {1 | -1} delta */
+    moveLayers(delta, layerIndex = this.activeLayerIndex) {
+      if (!((layerIndex + delta) in this.layers)) return;
 
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-      [updated.layers[this.activeLayerIndex], updated.layers[this.activeLayerIndex + delta]] = [updated.layers[this.activeLayerIndex + delta], updated.layers[this.activeLayerIndex]];
+      [updated.layers[layerIndex], updated.layers[layerIndex + delta]] = [updated.layers[layerIndex + delta], updated.layers[layerIndex]];
       this.#state.state = updated;
 
-      this.activeLayerIndex = this.activeLayerIndex + delta;
+      this.activeLayerIndex = layerIndex + delta === this.activeLayerIndex ? layerIndex :
+        layerIndex === this.activeLayerIndex ? layerIndex + delta : this.activeLayerIndex;
       this.render();
     }
 
@@ -309,16 +312,14 @@ module.exports = function (meta) {
     }
     finalizeLayerPreview() {
       const layerState = this.#activeLayer.finalizePreview();
+      if (!layerState) return;
+
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
       updated.layers[this.activeLayerIndex] = { ...updated.layers[this.activeLayerIndex], state: layerState };
       this.#state.state = updated;
     }
 
-    /** 
-     * @param {DOMPoint} startPoint
-     * @param {number} width
-     * @param {string} color
-     */
+    /** @param {DOMPoint} startPoint @param {number} width @param {string} color */
     startDrawing(startPoint, width, color, globalCompositeOperation = "source-over") {
       const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
       ctx.save();
@@ -557,12 +558,12 @@ module.exports = function (meta) {
       return true;
     }
 
-    /** @param {DOMPoint} point @param {number} fontsize @param {string} fontFamily @param {string} color   */
-    insertTextAt(point, fontsize, fontFamily, fontWeight, color) {
+    /** @param {DOMPoint} point @param {string} font @param {string} color */
+    insertTextAt(point, font, color) {
       const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
       ctx.save();
       const to_inv = point.matrixTransform(this.viewportTransform_inv);
-      ctx.font = `${fontWeight} ${fontsize}px ${fontFamily}`;
+      ctx.font = font;
       ctx.textBaseline = "middle";
       ctx.fillStyle = color;
 
@@ -575,11 +576,9 @@ module.exports = function (meta) {
       const height = textMetrics.fontBoundingBoxDescent + textMetrics.fontBoundingBoxAscent;
 
       this.#interactionCache.rect = new DOMRect(to_inv.x, to_inv.y - height / 2, width, height);
-      this.#interactionCache.width = fontsize;
       this.#interactionCache.color = color;
     }
 
-    /** @param {string?} text */
     updateText(text = this.#interactionCache.text) {
       const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
       const ctx = canvas.getContext("2d");
@@ -588,13 +587,11 @@ module.exports = function (meta) {
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       this.#activeLayer.drawOn(canvas);
+
       [this.#interactionCache.rect.width, this.#interactionCache.rect.height] = utils.renderMultilineText(
         ctx, this.#interactionCache.text,
         new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y)
       );
-
-      this.#interactionCache.rect.width = Math.min(this.#interactionCache.rect.width, this.#mainCanvas.width - this.#interactionCache.rect.left);
-      this.#interactionCache.rect.height = Math.min(this.#interactionCache.rect.height, this.#mainCanvas.height - this.#interactionCache.rect.top);
 
       this.layers.length > 1 ? this.render() : this.refreshViewport();
     }
@@ -611,13 +608,12 @@ module.exports = function (meta) {
       const clipPath = new Path2D();
       clipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
 
-      this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, this.#interactionCache.width);
+      this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, 0);
       const layerState = this.#activeLayer.addStroke({
         text: this.#interactionCache.text,
         font: ctx.font,
         origin: new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y),
         color: this.#interactionCache.color,
-        width: this.#interactionCache.width / utils.getScale(this.#activeLayer.state.transform),
         globalCompositeOperation: "source-over",
         clipPath,
         transform: this.#interactionCache.layerTransform_inv
@@ -747,15 +743,22 @@ module.exports = function (meta) {
     #state;
     #previewTransform;
 
-    /** @param {ImageBitmap | {width: number, height: number}} bitmap @param {string} id */
-    constructor(id, bitmap) {
-      this.id = id;
+    /** @param {ImageBitmap | {width: number, height: number}} bitmap @param {string} name */
+    constructor(name, bitmap) {
+      this.name = name;
+      this.id = Date.now() + Math.random();
       this.#canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#state = {
         transform: new DOMMatrix(),
-        /** @type {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix}[]} */
-        strokes: [],
         isVisible: true,
+        alpha: 1,
+        /**
+         * @type {{
+         *  color: string, width?: number, clipPath: Path2D, globalCompositeOperation: string,
+         *  path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix}[]
+         * }
+         */
+        strokes: [],
       };
       this.#previewTransform = new DOMMatrix();
       if (bitmap instanceof ImageBitmap) {
@@ -783,20 +786,20 @@ module.exports = function (meta) {
       this.#state = state;
     }
 
+    /** @param {DOMMatrix} dM */
     previewTransformBy(dM) { this.#previewTransform.preMultiplySelf(dM) }
+    /** @param {DOMMatrix} M */
     previewTransformTo(M) { this.#previewTransform = M }
 
     finalizePreview() {
+      if (this.#previewTransform.isIdentity) return null;
       const applied = this.#previewTransform.multiplySelf(this.#state.transform);
       this.#state = { ...this.#state, transform: applied };
       this.#previewTransform = new DOMMatrix();
       return this.#state;
     }
 
-    /**
-     * @param {DOMRect} strokeRect
-     * @param {number} strokeWidth 
-     */
+    /** @param {DOMRect} strokeRect @param {number} strokeWidth */
     resizeFitStroke(strokeRect, strokeWidth) {
       const canvasRect = new DOMRect(-this.width / 2, -this.height / 2, this.width, this.height);
 
@@ -811,27 +814,40 @@ module.exports = function (meta) {
       }
     }
 
-    /** @param {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix}} stroke  */
+    /**
+     * @param {{
+     *  color: string, width?: number, clipPath: Path2D, globalCompositeOperation: string,
+     *  path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix
+     * }} stroke
+     */
     addStroke(stroke) {
       this.#state = { ...this.#state, strokes: [...this.#state.strokes, stroke] };
       this.#drawStroke(stroke);
       return this.#state;
     }
 
-    /** @param {{color: string, width: number, clipPath: Path2D, globalCompositeOperation: string, path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix}} stroke  */
+    /** 
+     * @param {{
+     *  color: string, width?: number, clipPath: Path2D, globalCompositeOperation: string,
+     *  path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix
+     * }} stroke
+     */
     #drawStroke(stroke) {
       const ctx = this.#canvas.getContext("2d");
       ctx.save();
+      ctx.globalAlpha = this.#state.alpha;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
-      ctx.lineWidth = stroke.width;
       ctx.strokeStyle = stroke.color;
       ctx.fillStyle = stroke.color;
       ctx.textBaseline = "middle";
       ctx.globalCompositeOperation = stroke.globalCompositeOperation;
       ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2).multiplySelf(stroke.transform));
       ctx.clip(stroke.clipPath);
-      if (stroke.path2D) ctx.stroke(stroke.path2D);
+      if (stroke.path2D) {
+        ctx.lineWidth = stroke.width;
+        ctx.stroke(stroke.path2D);
+      }
       if (stroke.text) {
         ctx.font = stroke.font;
         utils.renderMultilineText(ctx, stroke.text, stroke.origin);
@@ -841,19 +857,21 @@ module.exports = function (meta) {
 
     #drawStrokes(strokes = this.#state.strokes) {
       const ctx = this.#canvas.getContext("2d");
+      ctx.globalAlpha = this.#state.alpha;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       for (const stroke of strokes) {
         ctx.save();
-        ctx.lineWidth = stroke.width;
         ctx.strokeStyle = stroke.color;
         ctx.fillStyle = stroke.color;
         ctx.textBaseline = "middle";
         ctx.globalCompositeOperation = stroke.globalCompositeOperation;
-        ctx.font = `${stroke.width}px sans-serif`;
         ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2).multiplySelf(stroke.transform));
         ctx.clip(stroke.clipPath);
-        if (stroke.path2D) ctx.stroke(stroke.path2D);
+        if (stroke.path2D) {
+          ctx.lineWidth = stroke.width;
+          ctx.stroke(stroke.path2D);
+        }
         if (stroke.text) {
           ctx.font = stroke.font;
           utils.renderMultilineText(ctx, stroke.text, stroke.origin);
@@ -866,6 +884,7 @@ module.exports = function (meta) {
       const ctx = this.#canvas.getContext("2d");
       ctx.clearRect(0, 0, this.width, this.height);
       if (this.#img) {
+        ctx.globalAlpha = this.#state.alpha;
         ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
         ctx.drawImage(this.#img, -this.#img.width / 2, -this.#img.height / 2);
         ctx.resetTransform();
@@ -1029,10 +1048,10 @@ module.exports = function (meta) {
       x = utils.clamp(minValue, x, maxValue);
       if (x <= centerValue) {
         const val = (Math.log(x) - Math.log(minValue)) / (Math.log(centerValue) - Math.log(minValue));
-        return Math.round(val / 2 * 100);
+        return val / 2 * 100;
       } else {
         const val = (Math.log(x) - Math.log(centerValue)) / (Math.log(maxValue) - Math.log(centerValue));
-        return Math.round((1 + val) / 2 * 100);
+        return (1 + val) / 2 * 100;
       }
     },
 
@@ -1054,7 +1073,10 @@ module.exports = function (meta) {
     /** @param {DOMPoint} p @param {DOMRect} rect */
     pointInRect(p, rect) { return p.x >= rect.left && p.x <= rect.right && p.y >= rect.top && p.y <= rect.bottom },
 
-    /** Intersection point between two lines @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMPoint} p3 @param {DOMPoint} p4 */
+    /**
+     * Intersection point between two lines
+     * @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMPoint} p3 @param {DOMPoint} p4
+     */
     lineLine(p1, p2, p3, p4) {
       const uA = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
       const uB = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
@@ -1065,7 +1087,10 @@ module.exports = function (meta) {
       return null;
     },
 
-    /** Intersection points between line and Rect @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]} */
+    /** 
+     * Intersection points between line and Rect
+     * @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]}
+     */
     lineRect(p1, p2, rect) {
       const top = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.top), new DOMPoint(rect.right, rect.top));
       const right = utils.lineLine(p1, p2, new DOMPoint(rect.right, rect.top), new DOMPoint(rect.right, rect.bottom));
@@ -1238,6 +1263,7 @@ module.exports = function (meta) {
         if (!(e.buttons & 5) || pointerId.current != null) return;
 
         e.currentTarget.setPointerCapture(e.pointerId);
+        e.preventDefault();
         pointerId.current = e.pointerId;
         onStart?.(e, smolStore.current);
       }, [onStart]);
@@ -1256,6 +1282,7 @@ module.exports = function (meta) {
       const onPointerUp = useCallback(e => {
         if (pointerId.current !== e.pointerId) return;
 
+        e.preventDefault();
         e.currentTarget.releasePointerCapture(e.pointerId);
         pointerId.current = null;
         rafId.current && cancelAnimationFrame(rafId.current);
@@ -1280,7 +1307,7 @@ module.exports = function (meta) {
      *  wait?: number,
      * }} params
      */
-    useDebouncedWheel({ onStart, onChange, onSubmit, wait = 350 }) {
+    useDebouncedWheel({ onStart, onChange, onSubmit, wait = 250 }) {
       /** @type {React.RefObject<null | number>} */
       const timer = useRef(null);
       const smolStore = useRef({});
@@ -1309,49 +1336,48 @@ module.exports = function (meta) {
   }
 
   var Components = {
+    /** @param {{d: string}} props */
+    Icon({ d }) {
+      return jsx("svg", {
+        className: internals.actionIconClass.actionBarIcon,
+        ["aria-hidden"]: "true",
+        role: "img",
+        xmlns: "http://www.w3.org/2000/svg",
+        width: "16",
+        height: "16",
+        fill: "none",
+        viewBox: "0 0 24 24",
+        children: jsx("path", {
+          fill: "currentColor",
+          d
+        })
+      })
+    },
+
     /**
      * @param {{
-     * onClick?: (e: MouseEvent) => void,
-     * tooltip?: string,
-     * d?: string,
-     * disabled?: boolean,
-     * active?: boolean,
-     * position?: string}} props
+     *  onClick?: (e: MouseEvent) => void, tooltip?: string, disabled?: boolean,
+     *  active?: boolean, position?: string, className?: string, d?: string
+     * }} props
      */
-    IconButton({ onClick, tooltip, d, disabled, active, position = 'top' }) {
+    IconButton({ onClick, tooltip, d, disabled, active, className, position = 'top' }) {
       return jsx(BdApi.Components.ErrorBoundary, {
         children: jsx(BdApi.Components.Tooltip, {
-          text: tooltip ?? '',
-          hideOnClick: true,
+          spacing: 8,
           position,
-          children: e => {
-            let { onMouseEnter, onMouseLeave, onClick: onClick2 } = e;
-            const handleClick = e => { if (!disabled) { onClick?.(e); onClick2?.(e); e.stopPropagation() } };
-            const handleKeyUp = e => (e.key === 'Enter' || e.key === ' ') && handleClick(e);
-
+          color: 'primary',
+          hideOnClick: true,
+          text: tooltip ?? '',
+          children: ({ onContextMenu, ...restProps }) => {
             return internals.keys.FocusRing && jsx(internals.nativeUI[internals.keys.FocusRing], {
               children: jsx("div", {
-                onMouseEnter,
-                onMouseLeave,
-                onClick: handleClick,
-                onKeyUp: handleKeyUp,
-                className: utils.clsx(internals.actionButtonClass.button, disabled && "disabled", active && "active"),
+                ...restProps,
+                onClick: (e) => { if (onClick) { e.stopPropagation(); onClick(e) } },
+                onKeyDown: e => { !e.repeat && (e.key === 'Enter' || e.key === ' ') && onClick?.() },
+                className: utils.clsx(internals.actionButtonClass.button, className, disabled && "disabled", active && "active"),
                 role: "button",
                 tabIndex: 0,
-                children: jsx("svg", {
-                  className: internals.actionIconClass.actionBarIcon,
-                  ["aria-hidden"]: "true",
-                  role: "img",
-                  xmlns: "http://www.w3.org/2000/svg",
-                  width: "16",
-                  height: "16",
-                  fill: "none",
-                  viewBox: "0 0 24 24",
-                  children: jsx("path", {
-                    fill: "currentColor",
-                    d
-                  })
-                })
+                children: jsx(Components.Icon, { d }),
               })
             })
           }
@@ -1369,30 +1395,52 @@ module.exports = function (meta) {
 
       useEffect(() => () => ctrl.current.abort(), []);
 
-      return !fetching ? jsx(Components.IconButton, {
-        onClick: async () => {
-          try {
-            setFetching(true);
-            const response = await fetch(url, { signal: ctrl.current.signal }); // BdApi.Net.fetch will reject blobs
-            const blob = await response.blob();
-            const bitmap = await createImageBitmap(blob);
+      return !fetching ? jsx("span", {
+        children: [
+          jsx("style", null, `
+            .remixIcon {
+              border-radius: var(--radius-sm);
+              outline: 1px solid transparent;
+              outline-offset: -1px;
+              transition-property: background-color, color, outline-color;
+              transition-duration: 50ms;
+              transition-timing-function: ease-in;
+            }
+            .remixIcon:is(:hover, :focus-visible) {
+              background-color: var(--control-background-icon-only-hover);
+              outline-color: var(--control-border-icon-only-hover);
+              color: var(--control-icon-icon-only-hover);
+              transition-duration: 150ms;
+              transition-timing-function: ease-out;
+            }
+          `),
+          jsx(Components.IconButton, {
+            onClick: async () => {
+              try {
+                setFetching(true);
+                const response = await fetch(url, { signal: ctrl.current.signal }); // BdApi.Net.fetch will reject blobs
+                const blob = await response.blob();
+                const bitmap = await createImageBitmap(blob);
 
-            internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
-            utils.openEditor({
-              onSubmit: () => { userActions.current?.upload() },
-              userActions,
-              bitmap
-            });
-            setFetching(false);
-          } catch (e) {
-            setFetching(false);
-            if (e.name !== "AbortError")
-              UI.showToast("Could not fetch image.", { type: "error" });
-          }
-        },
-        position: 'bottom',
-        tooltip: "Edit Image",
-        d: utils.paths.Main
+                internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
+                utils.openEditor({
+                  onSubmit: () => { userActions.current?.upload() },
+                  userActions,
+                  bitmap
+                });
+                setFetching(false);
+              } catch (e) {
+                setFetching(false);
+                if (e.name !== "AbortError")
+                  UI.showToast("Could not fetch image.", { type: "error" });
+              }
+            },
+            className: "remixIcon",
+            position: 'bottom',
+            tooltip: "Edit Image",
+            d: utils.paths.Main
+          })
+        ]
       }) : jsx(BdApi.Components.Spinner, {
         type: BdApi.Components.Spinner.Type.SPINNING_CIRCLE_SIMPLE
       })
@@ -1425,22 +1473,144 @@ module.exports = function (meta) {
       })
     },
 
-    /** @param {{onSelect: () => void, onVisibilityToggle: () => void, active: boolean, visible: boolean}} props */
-    LayerThumbnail({ onSelect, onVisibilityToggle, active, visible, name }) {
-      return internals.keys.FocusRing && jsx(internals.nativeUI[internals.keys.FocusRing], {
-        children: jsx("li", {
-          onClick: onSelect,
-          className: utils.clsx("thumbnail", active && "active"),
-          children: [
-            jsx(Components.IconButton, {
-              tooltip: visible ? "Visible" : "Hidden",
-              d: visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
-              onClick: onVisibilityToggle
+    /**
+     * @param {{
+     *  layers: {id: number, name: string, visible: boolean, active: boolean}[]
+     *  onChange: (callback: (editor: CanvasEditor) => boolean) => void
+     * }} props
+     */
+    LayerThumbnails({ layers, onChange }) {
+      // const [layerStates, _setLayerStates] = useState(s);
+      const idx = useRef(0);
+
+      // /** @type {(newState: typeof layerStates | (oldState: typeof layerStates) => typeof layerStates) => void} */
+      // const setLayerStates = useCallback(value => {
+      //   _setLayerStates(oldState => {
+      //     const newState = value instanceof Function ? value(oldState) : value;
+      //     if (Object.is(oldState, newState)) return oldState;
+
+      //     onStateChange(newState);
+      //     return newState;
+      //   })
+      // }, [onStateChange]);
+
+      const handleContextMenu = useCallback((e) => {
+        ContextMenu.open(e, ContextMenu.buildMenu([
+          {
+            label: "Name",
+            type: "custom",
+            render: () => jsx(Components.TextInput, {
+              label: "Name",
+              value: layers[idx.current].name,
+              onChange: newName => onChange(editor => editor.layers[idx.current].layer.name = newName),
+            })
+          }, {
+            label: "Visible",
+            type: "toggle",
+            checked: layers[idx.current].visible,
+            action: () => onChange(editor => (editor.toggleLayerVisibility(idx.current), true))
+          }, {
+            label: "Opacity",
+            type: "custom",
+            render: () => jsx(Components.NumberSlider, {
+              className: utils.clsx(
+                internals.contextMenuClass?.item,
+                internals.contextMenuClass?.labelContainer,
+                internals.contextMenuClass?.colorDefault
+              ),
+              value: 1,
+              minValue: 0,
+              maxValue: 1,
+              label: "Opacity",
+              decimals: 2,
+              expScaling: false,
+              onChange: newVal => console.log(newVal)
+            })
+          }, {
+            label: "Move Layer Up",
+            disabled: idx.current >= layers.length - 1,
+            action: () => {
+              onChange(editor => {
+                if (idx.current >= editor.layers.length - 1) return false;
+                editor.moveLayers(1, idx.current);
+                return true;
+              });
+            },
+            icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerUp })
+          }, {
+            label: "Move Layer Down",
+            disabled: idx.current <= 0,
+            action: () => {
+              onChange(editor => {
+                if (idx.current <= 0) return false;
+                editor.moveLayers(-1, idx.current);
+                return true;
+              });
+            },
+            icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerDown })
+          }, {
+            label: "Delete Layer",
+            action: () => {
+              onChange(editor => {
+                if (editor.layers.length <= 1) return false;
+                editor.deleteLayer(idx.current);
+                return true;
+              });
+            },
+            icon: () => jsx(Components.Icon, { d: utils.paths.DeleteLayer })
+          }, {
+            label: "Mix-blend-mode",
+            type: "custom",
+            render: () => jsx("div", {
+              children: [
+                jsx("style", null, `@scope {
+                  .select {
+                    display: inline-block;
+                    & > :first-child {
+                      min-height: var(--control-input-height-sm);
+                      padding: 0 8px;
+                    }
+                  }
+                }`),
+                jsx("div", { style: { padding: 8 } }, "Mix Blend Mode"),
+                jsx(internals.nativeUI[internals.keys.SingleSelect], {
+                  options: [
+                    { value: "source-over", label: "normal" },
+                    { value: "destination-out", label: "destination out" }
+                  ],
+                  value: "source-over",
+                  className: "select",
+                  onChange: t => console.log(t)
+                })
+              ]
+            })
+          }
+        ]), { align: "bottom" });
+      }, [onChange, layers]);
+
+      return jsx(BdApi.Components.ErrorBoundary, null, jsx(Fragment, {
+        children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
+          key: state.id,
+          children: jsx("li", {
+            onContextMenu: (e) => { idx.current = i; handleContextMenu(e) },
+            onClick: () => onChange(editor => {
+              if (editor.activeLayerIndex == i) return false;
+              editor.activeLayerIndex = i;
+              return true;
             }),
-            jsx("span", { className: "layer-label" }, name)
-          ]
+            className: utils.clsx("thumbnail", state.active && "active"),
+            children: [
+              jsx(Components.IconButton, {
+                tooltip: state.visible ? "Visible" : "Hidden",
+                d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
+                onClick: () => onChange(editor => (editor.toggleLayerVisibility(i), true)),
+              }),
+              jsx("span", { className: "layer-label" }, state.name)
+            ]
+          })
         })
-      })
+        )
+      }))
     },
 
     /** @param {{bitmap: ImageBitmap, ref: React.RefObject<any>}} props */
@@ -1514,6 +1684,12 @@ module.exports = function (meta) {
           });
         },
         upload() {
+          const channelId = internals.SelectedChannelStore.getCurrentlySelectedChannelId();
+          if (!channelId) {
+            UI.showToast("Currently not in any channel.", { type: "error" });
+            return;
+          }
+
           UI.showToast("Processing...", { type: "warn" });
           editor.current?.toBlob({ type: "image/webp" }).then(blob => {
             internals.uploadDispatcher.addFile({
@@ -1523,7 +1699,7 @@ module.exports = function (meta) {
                 origin: "clipboard",
                 platform: 1
               },
-              channelId: internals.SelectedChannelStore.getCurrentlySelectedChannelId(),
+              channelId,
               showLargeMessageDialog: false,
               draftType: 0,
             })
@@ -1545,12 +1721,17 @@ module.exports = function (meta) {
         setLayers(l => {
           if (
             editor.current.layers.length !== l.length ||
-            l.some((e, i) => e.active !== (i === editor.current.activeLayerIndex)) ||
-            editor.current.layers.some((e, i) => e.state.isVisible !== l[i]?.visible)
+            l.some((e, i) =>
+              e.active !== (i === editor.current.activeLayerIndex) ||
+              e.visible !== editor.current.layers[i].state.isVisible ||
+              e.id !== editor.current.layers[i].layer.id ||
+              e.name !== editor.current.layers[i].layer.name
+            )
           ) {
             return editor.current.layers.map((layer, i) => ({
               visible: layer.state.isVisible,
               active: i === editor.current.activeLayerIndex,
+              name: layer.layer.name,
               id: layer.layer.id
             }));
           }
@@ -1567,15 +1748,19 @@ module.exports = function (meta) {
         setLayers(editor.current.layers.map((layer, i) => ({
           visible: layer.state.isVisible,
           active: i === editor.current.activeLayerIndex,
+          name: layer.layer.name,
           id: layer.layer.id
         })));
 
         const ctrl = new AbortController();
         addEventListener("keydown", e => {
+          if (document.activeElement.tagName === "INPUT") return;
+
           if (
             canvasRef.current.matches(".texting") && isInteracting.current &&
-            !e.ctrlKey && !e.shiftKey && e.key === "Enter"
+            !e.ctrlKey && !e.shiftKey && (e.key === "Enter" || e.key === "Escape")
           ) {
+            e.stopPropagation();
             textarea.current.blur();
             return;
           }
@@ -1584,15 +1769,13 @@ module.exports = function (meta) {
           switch (e.key) {
             case !(canvasRef.current.matches(".texting") && isInteracting.current) && e.ctrlKey && "z":
               if (editor.current.undo()) syncStates();
-              return;
+              break;
 
             case !(canvasRef.current.matches(".texting") && isInteracting.current) && e.ctrlKey && "y":
               if (editor.current.redo()) syncStates();
-              return;
+              break;
 
-            case !e.repeat && e.ctrlKey && "c":
-              if (document.activeElement.tagName === "INPUT" || !DiscordNative?.clipboard.copyImage) return;
-
+            case !e.repeat && e.ctrlKey && DiscordNative?.clipboard.copyImage && "c":
               UI.showToast("Processing...", { type: "warn" });
               editor.current.toBlob({
                 type: 'image/png'
@@ -1605,43 +1788,42 @@ module.exports = function (meta) {
               }).catch(() => {
                 UI.showToast("Failed to copy image", { type: "error" })
               });
-
-              return;
+              break;
 
             case !e.repeat && e.ctrlKey && !e.shiftKey && "b":
               editor.current.resetViewport();
               if (canvasRef.current?.matches(".rotating")) {
                 overlay.current.style.removeProperty("--translate");
               }
-              return;
+              break;
 
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "c":
               setMode(m => m === 0 ? null : 0);
-              return;
+              break;
 
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "r":
               setMode(m => m === 1 ? null : 1);
-              return;
+              break;
 
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "m":
               setMode(m => m === 2 ? null : 2);
-              return;
+              break;
 
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "s":
               setMode(m => m === 3 ? null : 3);
-              return;
+              break;
 
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "d":
               setMode(m => m === 4 ? null : 4);
-              return;
+              break;
 
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "t":
               setMode(m => m === 5 ? null : 5);
-              return;
+              break;
 
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "e":
               setMode(m => m === 6 ? null : 6);
-              return;
+              break;
 
             case !e.repeat && canvasRef.current.matches(".drawing") && "Shift": {
               const lastPoint = editor.current.lastPoint;
@@ -1653,12 +1835,20 @@ module.exports = function (meta) {
               overlay.current.style.setProperty("--r", `${r || 0}px`);
               return;
             }
+
+            case "Escape": {
+              if (isInteracting.current && [".rotating", ".moving", ".scaling"].some(e => canvasRef.current.matches(e))) {
+                editor.current.previewLayerTransformTo(new DOMMatrix());
+                break;
+              }
+            }
+
             default: {
               matchedCase = false;
             }
           }
           matchedCase && e.stopPropagation();
-        }, ctrl);
+        }, { signal: ctrl.signal, capture: true });
         addEventListener("keyup", e => {
           if (e.key === "Shift") {
             overlay.current.style.removeProperty("--line-from");
@@ -1693,6 +1883,9 @@ module.exports = function (meta) {
       }, []);
 
       const handleWheel = hooks.useDebouncedWheel({
+        onStart: () => {
+          if (mode !== 5) isInteracting.current = true;
+        },
         onChange: (e, store) => {
           if (mode === 3 && !e.ctrlKey) {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
@@ -1757,6 +1950,8 @@ module.exports = function (meta) {
           }
         },
         onSubmit: (e, store) => {
+          if (mode !== 5) isInteracting.current = false;
+
           if (mode === 3 && store.changed) {
             editor.current.finalizeLayerPreview();
             syncStates();
@@ -1796,7 +1991,8 @@ module.exports = function (meta) {
               const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
-              editor.current.insertTextAt(new DOMPoint(startX, startY), strokeStyle.width, font.family, font.weight, strokeStyle.color);
+              `${font.weight} ${strokeStyle.width}px ${font.family}`
+              editor.current.insertTextAt(new DOMPoint(startX, startY), `${font.weight} ${strokeStyle.width}px ${font.family}`, strokeStyle.color);
               editor.current.updateText();
 
               const rect = editor.current.regionRect;
@@ -1987,9 +2183,7 @@ module.exports = function (meta) {
 
       /** @type {(e: React.FocusEvent) => void} */
       const handleBlur = useCallback(e => {
-        if (e.relatedTarget === canvasRef.current) return;
-
-        if (canvasRef.current.matches(".texting") && isInteracting.current) {
+        if (isInteracting.current) {
           editor.current.finalizeText();
           syncStates();
           isInteracting.current = false;
@@ -2018,7 +2212,6 @@ module.exports = function (meta) {
             children: [
               jsx("canvas", {
                 className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing", "texting", "drawing"][mode]),
-                tabIndex: -1,
                 ref: canvasRef,
                 onWheel: handleWheel,
                 onMouseMove: handleMouseMove,
@@ -2052,9 +2245,8 @@ module.exports = function (meta) {
                 children: [
                   jsx(Components.NumberSlider, {
                     value: dims.width,
-                    decimals: 0,
                     withSlider: false,
-                    minValue: 0,
+                    minValue: 1,
                     onChange: newWidth => {
                       const { width, height } = editor.current.canvasDims;
                       if (newWidth !== width) {
@@ -2067,9 +2259,8 @@ module.exports = function (meta) {
                   "x",
                   jsx(Components.NumberSlider, {
                     value: dims.height,
-                    decimals: 0,
                     withSlider: false,
-                    minValue: 0,
+                    minValue: 1,
                     onChange: newHeight => {
                       const { width, height } = editor.current.canvasDims;
                       if (newHeight !== height) {
@@ -2255,22 +2446,9 @@ module.exports = function (meta) {
               jsx("ul", {
                 ref: thumbnailContainer,
                 className: utils.clsx("thumbnails", internals.scrollbarClass.thin),
-                children: layers.map(({ visible, active, id }, idx) => {
-                  return jsx(Components.LayerThumbnail, {
-                    key: id,
-                    name: "Layer " + id,
-                    visible,
-                    active,
-                    onVisibilityToggle: () => {
-                      editor.current.toggleLayerVisibility(idx);
-                      syncStates();
-                    },
-                    onSelect: () => {
-                      if (editor.current.activeLayerIndex === idx) return;
-                      editor.current.activeLayerIndex = idx;
-                      syncStates();
-                    }
-                  })
+                children: jsx(Components.LayerThumbnails, {
+                  layers,
+                  onChange: (cb) => { if (cb(editor.current)) syncStates() }
                 })
               }),
               jsx("div", {
@@ -2336,25 +2514,16 @@ module.exports = function (meta) {
       const [family, _setFamily] = useState(() => value.family);
       const [weight, setWeight] = useState(() => value.weight);
 
-      const familyOptions = useRef((() => {
-        const defaults = ["sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui", "Arial", "Arial Black", "Tahoma", "Times New Roman", "Verdana", "Georgia", "Garamond", "Helvetica"];
-        const docFonts = Array.from(document.fonts, e => e.family);
-        const merged = [...new Set(defaults.concat(docFonts))];
-        merged.sort((a, b) => a.localeCompare(b));
-        // move ugly discord fonts to the end
-        merged.push(...merged.splice(0, 4));
-        return merged.map(e => ({ value: e, label: e }));
-      })());
+      const [familyOptions, setFamilyOptions] = useState(() => []);
+      const [weightOptions, setWeightsOptions] = useState(() => []);
 
-      const getWeightsOptions = useCallback((f = family) => {
+      const getWeightsOptions = useCallback((f) => {
         return Array.from({ length: 9 }, (_, i) => {
           const w = (i + 1) * 100;
           const loaded = document.fonts.check(w + " 1rem " + f);
           return loaded ? { value: w, label: w } : null;
         }).filter(Boolean)
-      }, [family]);
-
-      const [weightOptions, setWeightsOptions] = useState(getWeightsOptions);
+      }, []);
 
       const setFamily = useCallback((newFamily) => {
         const f = newFamily instanceof Function ? newFamily(family) : newFamily;
@@ -2369,12 +2538,26 @@ module.exports = function (meta) {
 
       useLayoutEffect(() => {
         Promise.all(Array.from(document.fonts).map(f => f.load())).then(() => {
-          const newWeights = getWeightsOptions();
-          setWeightsOptions(newWeights);
+          setFamilyOptions(() => {
+            const defaults = ["sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui", "Arial", "Arial Black", "Tahoma", "Times New Roman", "Verdana", "Georgia", "Garamond", "Helvetica"];
+            const docFonts = Array.from(document.fonts, e => e.family);
+            const merged = [...new Set(defaults.concat(docFonts))];
+            merged.sort((a, b) => a.localeCompare(b));
+            // move ugly "ABC Ginto" discord fonts to the end
+            merged.push(...merged.splice(0, 4));
+            return merged.filter(f => document.fonts.check("1rem " + f)).map(e => ({ value: e, label: e }));
+          });
 
-          if (newWeights.every(w => w.label !== weight)) {
-            const closest = newWeights.toSorted((a, b) => Math.abs(a.label - weight) - Math.abs(b.label - weight))[0];
-            setWeight(closest.value);
+          if (!document.fonts.check("1rem " + family)) {
+            setFamily("gg sans");
+          } else {
+            const wo = getWeightsOptions(family);
+            setWeightsOptions(wo);
+
+            if (wo.every(w => w.label !== weight)) {
+              const closest = wo.toSorted((a, b) => Math.abs(a.label - weight) - Math.abs(b.label - weight))[0];
+              setWeight(closest.value);
+            }
           }
         });
       }, []);
@@ -2383,15 +2566,19 @@ module.exports = function (meta) {
         className: "font-selector",
         children: [
           jsx(internals.nativeUI[internals.keys.SingleSelect], {
-            options: familyOptions.current,
+            options: familyOptions,
             value: family,
             className: "select",
             onChange: f => {
               setFamily(f);
               onChange({ family: f, weight });
             },
-            renderOptionLabel: option => jsx("span", { style: { fontFamily: option.label } }, option.label),
             renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: option.value } }, option.value),
+            renderOptionLabel: option => jsx("span", {
+              ref: node => { option.value === family && node?.scrollIntoView({ block: "nearest" }) },
+              style: { fontFamily: option.label, scrollMarginBlock: "24px" },
+              children: option.label
+            }),
           }),
           jsx(internals.nativeUI[internals.keys.SingleSelect], {
             options: weightOptions,
@@ -2401,8 +2588,12 @@ module.exports = function (meta) {
               setWeight(w);
               onChange({ family, weight: w });
             },
-            renderOptionLabel: option => jsx("span", { style: { fontFamily: family, fontWeight: option.label } }, option.label),
             renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: family, fontWeight: option.value } }, option.value),
+            renderOptionLabel: option => jsx("span", {
+              ref: node => { option.value === weight && node?.scrollIntoView({ block: "nearest" }) },
+              style: { fontFamily: family, fontWeight: option.label, scrollMarginBlock: "24px" },
+              children: option.label
+            }),
           })
         ]
       })
@@ -2410,22 +2601,14 @@ module.exports = function (meta) {
 
     /**
      * @param {{
-     *  value: number,
-     *  onChange?: (e: number) => void,
-     *  withSlider?: boolean,
-     *  suffix?: string,
-     *  ref?: React.RefObject<any>
-     *  minValue?: number,
-     *  centerValue?: number
-     *  maxValue?: number,
-     *  decimals?: number,
-     *  onSlide?: (e: number) => void,
-     *  label?: string
+     *  value: number, onChange?: (e: number) => void, withSlider?: boolean, suffix?: string, label?: string
+     *  ref?: React.RefObject<any>, minValue?: number, centerValue?: number, maxValue?: number,
+     *  onSlide?: (e: number) => void, decimals?: number, expScaling?: boolean, className?: string
      * }} props
      */
-    NumberSlider({ value, onChange, suffix, ref, minValue, centerValue, maxValue, decimals, onSlide, label, withSlider = true, ...restProps }) {
+    NumberSlider({ value, onChange, className, suffix, ref, minValue, centerValue, maxValue, decimals, onSlide, label, withSlider = true, expScaling = true, ...restProps }) {
       const [textValue, setTextValue] = useState(value + '');
-      const [sliderValue, setSliderValue] = useState(() => utils.logScaling(value, { minValue, centerValue, maxValue }));
+      const [sliderValue, setSliderValue] = useState(() => expScaling && withSlider ? utils.logScaling(value, { minValue, centerValue, maxValue }) : value);
       const id = useId();
       const oldValue = useRef(value);
       const inputRef = useRef(null);
@@ -2437,31 +2620,31 @@ module.exports = function (meta) {
           oldValue.current = v;
 
           if (!withSlider) return;
-          const val = utils.logScaling(v, { minValue, centerValue, maxValue });
+          const val = expScaling ? utils.logScaling(v, { minValue, centerValue, maxValue }) : v;
           setSliderValue(val);
           sliderRef.current?._reactInternals.stateNode.setState({ value: val });
         },
         previewValue: v => {
           inputRef.current.value = v + '';
           if (!withSlider) return;
-          const val = utils.logScaling(v, { minValue, centerValue, maxValue });
+          const val = expScaling ? utils.logScaling(v, { minValue, centerValue, maxValue }) : v;
           sliderRef.current?._reactInternals.stateNode.setState({ value: val });
         }
       }), [minValue, centerValue, maxValue]);
+
+      const handleChange = useCallback(e => {
+        setTextValue(e.target.value)
+      }, []);
 
       useEffect(() => {
         setTextValue(value + '');
         oldValue.current = value;
 
         if (!withSlider) return;
-        const val = utils.logScaling(value, { minValue, centerValue, maxValue });
+        const val = expScaling ? utils.logScaling(value, { minValue, centerValue, maxValue }) : value;
         setSliderValue(val);
         sliderRef.current?._reactInternals.stateNode.setState({ value: val });
       }, [value]);
-
-      const handleChange = useCallback(e => {
-        setTextValue(e.target.value)
-      }, []);
 
       const handleTextCommit = useCallback(() => {
         const newValue = !isNaN(Number(textValue)) && textValue !== "" ? Math.max(minValue ?? Number(textValue), Number(textValue)) : oldValue.current;
@@ -2472,7 +2655,7 @@ module.exports = function (meta) {
         onChange?.(oldValue.current);
 
         if (!withSlider) return;
-        const val = utils.logScaling(oldValue.current, { minValue, centerValue, maxValue })
+        const val = expScaling ? utils.logScaling(oldValue.current, { minValue, centerValue, maxValue }) : oldValue.current;
         setSliderValue(val);
         sliderRef.current?._reactInternals.stateNode.setState({ value: val });
       }, [onChange, textValue]);
@@ -2480,13 +2663,13 @@ module.exports = function (meta) {
       const handleSliderChange = useCallback(newValue => {
         setSliderValue(newValue);
 
-        let val = utils.expScaling(utils.clamp(0, newValue / 100, 1), { minValue, centerValue, maxValue });
+        let val = expScaling ? utils.expScaling(newValue / 100, { minValue, centerValue, maxValue }) : newValue;
         val = Number(val.toFixed(decimals ?? 0));
         onSlide?.(val);
       }, [onSlide, minValue, centerValue, maxValue]);
 
       const handleSliderCommit = useCallback(newValue => {
-        let val = utils.expScaling(utils.clamp(0, newValue / 100, 1), { minValue, centerValue, maxValue });
+        let val = expScaling ? utils.expScaling(newValue / 100, { minValue, centerValue, maxValue }) : newValue;
         val = Number(val.toFixed(decimals ?? 0));
 
         setTextValue(val + '');
@@ -2528,8 +2711,34 @@ module.exports = function (meta) {
 
       return jsx("div", {
         ...restProps,
-        className: "number-input-wrapper",
+        className: className,
         children: [
+          jsx("style", null, `@scope {
+            :scope {
+              display: flex;
+              flex-wrap: wrap;
+              color: var(--interactive-active);
+              padding-inline: ${withSlider ? "8px" : "0px"}; 
+              & > label {
+                align-content: center;
+              }
+              & > .number-input ~ div {
+                flex-basis: 100%;
+                margin-top: 6px;
+              }
+            }
+            .number-input {
+              border: 1px solid var(--border-normal);
+              border-radius: 6px;
+              padding: 4px;
+              margin: 2px;
+              background: var(--background-modifier-active);
+              color: currentColor;
+              width: 2.75em;
+              margin-left: auto;
+              text-align: right;
+            }
+          }`),
           label && jsx("label", {
             htmlFor: id,
             children: label + ": "
@@ -2553,14 +2762,105 @@ module.exports = function (meta) {
             mini: true,
             className: internals.sliderClass?.slider,
             initialValue: sliderValue,
+            minValue: !expScaling ? minValue : undefined,
+            maxValue: !expScaling ? maxValue : undefined,
             onValueRender: (newValue) => {
-              const x = utils.clamp(0, newValue / 100, 1);
-              const val = utils.expScaling(x, { minValue, centerValue, maxValue })
+              const val = expScaling ? utils.expScaling(newValue / 100, { minValue, centerValue, maxValue }) : newValue;
               return Number(val.toFixed(decimals ?? 0)) + (suffix ?? '');
             },
             onValueChange: handleSliderCommit,
             asValueChanges: handleSliderChange,
           }),
+        ]
+      })
+    },
+
+    /** @param {{ value: string, onChange?: (value: string) => void, label?: string }} props */
+    TextInput({ value, onChange, label }) {
+      const [text, setText] = useState(value);
+      const oldValue = useRef(value);
+      const id = useId();
+
+      const handleChange = useCallback((e) => {
+        setText(e.target.value);
+      }, []);
+
+      /** @type {(e: React.KeyboardEvent<HTMLInputElement>) => void} */
+      const handleKeyDown = useCallback(e => {
+        e.stopPropagation();
+
+        if (e.repeat) return;
+        switch (e.key) {
+          case "Enter": {
+            e.currentTarget.blur();
+            break;
+          }
+          case "Escape": {
+            setText(oldValue.current);
+            break;
+          }
+          case " ": {
+            const start = e.currentTarget.selectionStart;
+            const end = e.currentTarget.selectionEnd;
+            setText(t => t.slice(0, start) + " " + t.slice(end));
+            requestAnimationFrame(() => {
+              e.target.selectionStart = e.target.selectionEnd = start + 1;
+            })
+            e.preventDefault();
+            break;
+          }
+        }
+      }, []);
+
+      const handleBlur = useCallback(e => {
+        if (oldValue.current === e.target.value) return;
+
+        if (!e.target.value) {
+          setText(oldValue.current);
+        } else {
+          oldValue.current = e.target.value;
+          onChange?.(e.target.value);
+        }
+      }, [onChange]);
+
+      const handleMouseEnter = useCallback(e => !e.buttons && e.currentTarget.focus(), []);
+      const handleMouseLeave = useCallback(e => e.currentTarget.blur(), []);
+
+      return jsx("div", {
+        children: [
+          jsx("style", null, `@scope {
+            :scope {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 16px;
+              padding: 4px 8px;
+              color: var(--interactive-active);
+            }
+            .text-input {
+              border: 1px solid var(--border-normal);
+              border-radius: 6px;
+              padding: 4px;
+              background: var(--background-modifier-active);
+              flex: 0 0 50%;
+              min-width: 0;
+              color: currentColor;
+            }
+          }`),
+          label && jsx("label", {
+            htmlFor: id,
+            children: label,
+          }),
+          jsx("input", {
+            id,
+            className: "text-input",
+            value: text,
+            onKeyDown: handleKeyDown,
+            onChange: handleChange,
+            onBlur: handleBlur,
+            onMouseEnter: handleMouseEnter,
+            onMouseLeave: handleMouseLeave,
+          })
         ]
       })
     },
@@ -2698,10 +2998,17 @@ module.exports = function (meta) {
   border: 1px solid black;
   outline: 1px dashed currentColor;
   outline-offset: -1px;
-  left: var(--x1, -2px);
-  right: calc(100% - var(--x2));
-  top: var(--y1, -2px);
-  bottom: calc(100% - var(--y2));
+  left: max(-2px, var(--x1, -2px));
+  right: max(-2px, 100% - var(--x2, 0px));
+  top: max(-2px, var(--y1, -2px));
+  bottom: max(-2px, 100% - var(--y2, 0px));
+}
+
+.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border {
+  opacity: min(
+    min(1000 * (var(--x2, 0) - var(--x1, 0)), 100%),
+    min(1000 * (var(--y2, 0) - var(--y1, 0)), 100%)
+  );
 }
 
 .canvas.drawing + .canvas-overlay > .cropper-region {
@@ -2816,33 +3123,6 @@ module.exports = function (meta) {
   padding: 4px;
 }
 
-.number-input-wrapper {
-  display: flex;
-  flex-wrap: wrap;
-  color: var(--interactive-active);
-  & > label {
-    align-content: center;
-    padding-inline-start: 4px;
-  }
-  & > .number-input ~ div {
-    flex-basis: 100%;
-    margin-top: 6px;
-    margin-inline: 6px;
-  }
-}
-
-.number-input {
-  border: 1px solid var(--border-normal);
-  border-radius: 6px;
-  padding: 4px;
-  margin: 2px;
-  background: var(--background-modifier-active);
-  color: currentColor;
-  width: 2.75em;
-  margin-left: auto;
-  text-align: right;
-}
-
 .bd-color-picker-container {
   flex-direction: column;
   gap: 4px;
@@ -2884,9 +3164,9 @@ module.exports = function (meta) {
   display: flex;
   flex-direction: column-reverse;
   max-height: calc(40px * 4);
+  max-width: 128px;
   box-sizing: content-box;
   overflow: auto;
-  scrollbar-gutter: stable;
   font-size: .8125em;
   &::before {
     content: "";
@@ -2900,10 +3180,9 @@ module.exports = function (meta) {
 
 .thumbnail {
   display: grid;
-  grid-template-columns: 24px 48px 32px;
+  grid-template-columns: 24px 1fr 32px;
   flex: 0 0 32px;
   overflow: hidden;
-  gap: 4px;
   align-items: center;
   padding: 4px;
   cursor: pointer;
@@ -2927,6 +3206,8 @@ module.exports = function (meta) {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   overflow: hidden;
+  overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .layer-actions {
