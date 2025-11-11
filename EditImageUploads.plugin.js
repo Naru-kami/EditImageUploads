@@ -110,7 +110,6 @@ module.exports = function (meta) {
     #viewportTransform_inv
     #staleViewportInv;
 
-    #inc_layer_id;
     #state;
     #activeLayerIndex;
 
@@ -127,6 +126,13 @@ module.exports = function (meta) {
       this.#topCache = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#viewportCanvas = canvas;
 
+      const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingQuality = "high";
+      ctx.fillStyle = "#303038";
+      [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(c => {
+        c.getContext("2d").imageSmoothingEnabled = false;
+      })
+
       const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
       this.#viewportTransform_inv = new DOMMatrix()
@@ -136,7 +142,6 @@ module.exports = function (meta) {
         .invertSelf();
       this.#staleViewportInv = false;
 
-      this.#inc_layer_id = 0;
       const layer = new Layer("Main", bitmap);
       this.#state = new utils.StateHistory({
         width: bitmap.width,
@@ -207,20 +212,24 @@ module.exports = function (meta) {
     get activeLayerIndex() { return this.#activeLayerIndex }
     set activeLayerIndex(layerIndex) {
       this.#activeLayerIndex = utils.clamp(0, layerIndex, this.layers.length - 1);
+      this.sandwichLayer();
+    }
+
+    /** @param {number} layerIndex  */
+    sandwichLayer(layerIndex = this.#activeLayerIndex) {
+      if (!(layerIndex in this.layers)) return;
 
       this.#bottomCache.getContext("2d").clearRect(0, 0, this.#bottomCache.width, this.#bottomCache.height);
-      this.#middleCache.getContext("2d").clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
       this.#topCache.getContext("2d").clearRect(0, 0, this.#topCache.width, this.#topCache.height);
 
-      this.layers.slice(0, this.#activeLayerIndex).forEach(layer => layer.layer.drawOn(this.#bottomCache));
-      this.#activeLayer.drawOn(this.#middleCache);
-      this.layers.slice(this.#activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
+      this.layers.slice(0, layerIndex).forEach(layer => layer.layer.drawOn(this.#bottomCache));
+      this.layers.slice(layerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
     }
 
     /** @param {ImageBitmap | null} bitmap */
     createNewLayer(bitmap) {
       const newLayer = new Layer(
-        "Layer " + ++this.#inc_layer_id,
+        "Layer " + (this.layers.length - 1),
         bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height }
       );
       this.#state.state = {
@@ -236,6 +245,9 @@ module.exports = function (meta) {
 
     deleteLayer(layerIndex = this.activeLayerIndex) {
       if (layerIndex in this.layers && this.layers.length > 1) {
+        // refresh reference to mark layerthumbnail as stale -> on undo/redo, repaint thumbnail
+        this.#state.state.layers[layerIndex].layer.state = { ...this.#state.state.layers[layerIndex].layer.state }
+
         const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
         updated.layers.splice(layerIndex, 1);
         this.#state.state = updated;
@@ -252,9 +264,33 @@ module.exports = function (meta) {
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
       updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, isVisible } };
       this.#state.state = updated;
-      this.layers[layerIndex].layer.state.isVisible = isVisible;
+      this.#state.state.layers[layerIndex].layer.state = this.#state.state.layers[layerIndex].state;
 
       this.fullRender();
+    }
+
+    /** @param {number} alpha @param {number} layerIndex */
+    setLayerAlpha(alpha, layerIndex, shouldPushToStack = false) {
+      if (!(layerIndex in this.layers) || alpha === this.layers[layerIndex].state.alpha) return;
+
+      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+      updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, alpha } };
+      shouldPushToStack && (this.#state.state = updated);
+      this.#state.state.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
+
+      this.render(layerIndex);
+    }
+
+    /** @param {string} mixBlendMode @param {number} layerIndex */
+    setLayerBlendMode(mixBlendMode, layerIndex) {
+      if (!(layerIndex in this.layers)) return;
+
+      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+      updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, mixBlendMode } };
+      this.#state.state = updated;
+      this.#state.state.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
+
+      this.render(layerIndex);
     }
 
     /** @param {1 | -1} delta */
@@ -295,20 +331,12 @@ module.exports = function (meta) {
     /** @param {DOMMatrix} M  */
     previewLayerTransformBy(M) {
       this.#activeLayer.previewTransformBy(M);
-      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      this.#activeLayer.drawOn(canvas);
-      this.layers.length > 1 ? this.render() : this.refreshViewport();
+      this.render();
     }
     /** @param {DOMMatrix} M  */
     previewLayerTransformTo(M) {
       this.#activeLayer.previewTransformTo(M);
-      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      this.#activeLayer.drawOn(canvas);
-      this.layers.length > 1 ? this.render() : this.refreshViewport();
+      this.render();
     }
     finalizeLayerPreview() {
       const layerState = this.#activeLayer.finalizePreview();
@@ -319,9 +347,23 @@ module.exports = function (meta) {
       this.#state.state = updated;
     }
 
+    #prepareMiddleCanvas() {
+      const s = this.#activeLayer.state;
+      s.alpha = 1;
+      s.globalCompositeOperation = "source-over";
+      this.#activeLayer.state = s;
+
+      this.#activeLayer.drawOn(this.#middleCache);
+
+      s.alpha = this.layers[this.#activeLayerIndex].state.alpha;
+      s.globalCompositeOperation = this.layers[this.#activeLayerIndex].state.globalCompositeOperation;
+      this.#activeLayer.state = s;
+    }
+
     /** @param {DOMPoint} startPoint @param {number} width @param {string} color */
     startDrawing(startPoint, width, color, globalCompositeOperation = "source-over") {
-      const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
+      this.#prepareMiddleCanvas();
+      const ctx = this.#middleCache.getContext("2d");
       ctx.save();
       ctx.beginPath();
 
@@ -357,10 +399,16 @@ module.exports = function (meta) {
         ctx.fill();
 
         const mainCtx = this.#mainCanvas.getContext("2d");
-        this.layers.length > 1 && mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
-        this.layers.length > 1 && mainCtx.drawImage(this.#middleCache, 0, 0);
-        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0)
+
+        mainCtx.globalAlpha = this.#activeLayer.state.alpha;
+        mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
+        mainCtx.drawImage(this.#middleCache, 0, 0);
+        mainCtx.globalAlpha = 1;
+        mainCtx.globalCompositeOperation = "source-over";
+
+        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
         this.refreshViewport();
 
@@ -374,7 +422,7 @@ module.exports = function (meta) {
 
     /** @param {DOMPoint} point */
     curveTo(point) {
-      const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
+      const ctx = this.#middleCache.getContext("2d");
       const to_inv = point.matrixTransform(this.viewportTransform_inv);
 
       const availRect = new DOMRect(-this.#interactionCache.width / 2, -this.#interactionCache.width / 2, this.#mainCanvas.width + this.#interactionCache.width, this.#mainCanvas.height + this.#interactionCache.width);
@@ -406,9 +454,15 @@ module.exports = function (meta) {
         ctx.stroke();
 
         const mainCtx = this.#mainCanvas.getContext("2d");
-        this.layers.length > 1 && mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
-        this.layers.length > 1 && mainCtx.drawImage(this.#middleCache, 0, 0);
+
+        mainCtx.globalAlpha = this.#activeLayer.state.alpha;
+        mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
+        mainCtx.drawImage(this.#middleCache, 0, 0);
+        mainCtx.globalAlpha = 1;
+        mainCtx.globalCompositeOperation = "source-over";
+
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
         this.refreshViewport();
@@ -426,7 +480,7 @@ module.exports = function (meta) {
 
     /** @param {DOMPoint} point */
     lineTo(point) {
-      const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
+      const ctx = (this.#activeLayerIndex > 0 ? this.#middleCache : this.#mainCanvas).getContext("2d");
       const to_inv = point.matrixTransform(this.viewportTransform_inv);
 
       const availRect = new DOMRect(-this.#interactionCache.width / 2, -this.#interactionCache.width / 2, this.#mainCanvas.width + this.#interactionCache.width, this.#mainCanvas.height + this.#interactionCache.width);
@@ -453,9 +507,15 @@ module.exports = function (meta) {
         ctx.stroke();
 
         const mainCtx = this.#mainCanvas.getContext("2d");
-        this.layers.length > 1 && mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
-        this.layers.length > 1 && mainCtx.drawImage(this.#middleCache, 0, 0);
+
+        mainCtx.globalAlpha = this.#activeLayer.state.alpha;
+        mainCtx.globalCompositeOperation = this.#activeLayer.state.alpha;
+        mainCtx.drawImage(this.#middleCache, 0, 0);
+        mainCtx.globalAlpha = 1;
+        mainCtx.globalCompositeOperation = "source-over";
+
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
         this.refreshViewport();
@@ -489,12 +549,10 @@ module.exports = function (meta) {
       updated.layers[this.activeLayerIndex] = { ...updated.layers[this.activeLayerIndex], state: layerState };
       this.#state.state = updated;
 
-      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
-      const ctx = canvas.getContext("2d");
-      ctx.restore();
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      this.#activeLayer.drawOn(canvas);
-      this.layers.length > 1 ? this.render() : this.refreshViewport();
+      const middleCtx = this.#middleCache.getContext("2d");
+      middleCtx.restore();
+      middleCtx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.render();
     }
 
     /** @param {DOMPoint} startPoint  */
@@ -560,9 +618,9 @@ module.exports = function (meta) {
 
     /** @param {DOMPoint} point @param {string} font @param {string} color */
     insertTextAt(point, font, color) {
-      const ctx = (this.layers.length > 1 ? this.#middleCache : this.#mainCanvas).getContext("2d");
+      this.#prepareMiddleCanvas();
+      const ctx = this.#middleCache.getContext("2d");
       ctx.save();
-      const to_inv = point.matrixTransform(this.viewportTransform_inv);
       ctx.font = font;
       ctx.textBaseline = "middle";
       ctx.fillStyle = color;
@@ -575,30 +633,37 @@ module.exports = function (meta) {
       const width = textMetrics.actualBoundingBoxRight + textMetrics.actualBoundingBoxLeft;
       const height = textMetrics.fontBoundingBoxDescent + textMetrics.fontBoundingBoxAscent;
 
+      const to_inv = point.matrixTransform(this.viewportTransform_inv);
       this.#interactionCache.rect = new DOMRect(to_inv.x, to_inv.y - height / 2, width, height);
       this.#interactionCache.color = color;
     }
 
     updateText(text = this.#interactionCache.text) {
-      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
-      const ctx = canvas.getContext("2d");
+      const ctx = this.#middleCache.getContext("2d");
 
       this.#interactionCache.text = text;
-
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      this.#activeLayer.drawOn(canvas);
-
       [this.#interactionCache.rect.width, this.#interactionCache.rect.height] = utils.renderMultilineText(
         ctx, this.#interactionCache.text,
         new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y)
       );
 
-      this.layers.length > 1 ? this.render() : this.refreshViewport();
+      const mainCtx = this.#mainCanvas.getContext("2d");
+      mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
+
+      mainCtx.globalAlpha = this.#activeLayer.state.alpha;
+      mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
+      mainCtx.drawImage(this.#middleCache, 0, 0);
+      mainCtx.globalAlpha = 1;
+      mainCtx.globalCompositeOperation = "source-over";
+
+      this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
+
+      this.refreshViewport();
     }
 
     finalizeText() {
-      const canvas = this.layers.length > 1 ? this.#middleCache : this.#mainCanvas;
-      const ctx = canvas.getContext("2d");
+      const ctx = this.#middleCache.getContext("2d");
 
       if (this.#interactionCache.text === "") {
         ctx.restore();
@@ -619,12 +684,17 @@ module.exports = function (meta) {
         transform: this.#interactionCache.layerTransform_inv
       });
 
+      this.#interactionCache.text = "";
+      ctx.restore();
+
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
       updated.layers[this.activeLayerIndex] = { ...updated.layers[this.activeLayerIndex], state: layerState };
       this.#state.state = updated;
 
-      this.#interactionCache.text = "";
-      ctx.restore();
+      const middleCtx = this.#middleCache.getContext("2d");
+      middleCtx.restore();
+      middleCtx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.render();
     }
 
     /** @param {number} width @param {number} height  */
@@ -670,7 +740,6 @@ module.exports = function (meta) {
     refreshViewport() {
       const ctx = this.#viewportCanvas.getContext("2d");
 
-      ctx.fillStyle = "#303038";
       ctx.fillRect(0, 0, this.#viewportCanvas.width, this.#viewportCanvas.height);
       ctx.setTransform(new DOMMatrix().translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2).multiplySelf(this.#viewportTransform));
 
@@ -680,34 +749,20 @@ module.exports = function (meta) {
       ctx.resetTransform();
     }
 
-    render() {
+    render(layerIndex = this.#activeLayerIndex) {
       const ctx = this.#mainCanvas.getContext("2d");
       ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
 
-      this.#activeLayerIndex > 0 && ctx.drawImage(this.#bottomCache, 0, 0);
-      ctx.drawImage(this.#middleCache, 0, 0);
-      this.#activeLayerIndex < this.layers.length - 1 && ctx.drawImage(this.#topCache, 0, 0);
+      layerIndex > 0 && ctx.drawImage(this.#bottomCache, 0, 0);
+      this.layers[layerIndex].layer.drawOn(this.#mainCanvas);
+      layerIndex < this.layers.length - 1 && ctx.drawImage(this.#topCache, 0, 0);
 
       this.refreshViewport();
     }
 
     fullRender() {
-      const ctx = this.#mainCanvas.getContext("2d");
-
-      ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      this.#activeLayerIndex > 0 && this.#bottomCache.getContext("2d").clearRect(0, 0, this.#bottomCache.width, this.#bottomCache.height);
-      this.layers.length > 1 && this.#middleCache.getContext("2d").clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
-      this.#activeLayerIndex < this.layers.length - 1 && this.#topCache.getContext("2d").clearRect(0, 0, this.#topCache.width, this.#topCache.height);
-
-      this.layers.slice(0, this.activeLayerIndex).forEach(layer => layer.layer.drawOn(this.#bottomCache));
-      this.#activeLayer.drawOn(this.layers.length > 1 ? this.#middleCache : this.#mainCanvas);
-      this.layers.slice(this.activeLayerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
-
-      this.#activeLayerIndex > 0 && ctx.drawImage(this.#bottomCache, 0, 0);
-      this.layers.length > 1 && ctx.drawImage(this.#middleCache, 0, 0);
-      this.#activeLayerIndex < this.layers.length - 1 && ctx.drawImage(this.#topCache, 0, 0);
-
-      this.refreshViewport();
+      this.sandwichLayer();
+      this.render();
     }
 
     undo() {
@@ -742,25 +797,30 @@ module.exports = function (meta) {
     #canvas;
     #state;
     #previewTransform;
+    #staleThumbnail;
 
     /** @param {ImageBitmap | {width: number, height: number}} bitmap @param {string} name */
     constructor(name, bitmap) {
       this.name = name;
       this.id = Date.now() + Math.random();
       this.#canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+      this.#canvas.getContext("2d").imageSmoothingEnabled = false;
+
       this.#state = {
         transform: new DOMMatrix(),
         isVisible: true,
         alpha: 1,
+        mixBlendMode: "source-over",
         /**
          * @type {{
          *  color: string, width?: number, clipPath: Path2D, globalCompositeOperation: string,
-         *  path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix}[]
-         * }
+         *  path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix
+         * }[]}
          */
         strokes: [],
       };
       this.#previewTransform = new DOMMatrix();
+      this.#staleThumbnail = true;
       if (bitmap instanceof ImageBitmap) {
         this.#img = bitmap;
         this.#drawImage();
@@ -776,13 +836,14 @@ module.exports = function (meta) {
       if (this.#state.strokes.length < state.strokes.length) {
         // adding strokes
         for (let i = this.#state.strokes.length; i < state.strokes.length; i++) {
-          this.#drawStroke(state.strokes[i]);
+          this.drawStroke(state.strokes[i]);
         }
       } else if (this.#state.strokes.length > state.strokes.length) {
         // removing strokes
         this.#drawImage();
         this.#drawStrokes(state.strokes);
       }
+      if (state !== this.#state) { this.#staleThumbnail = true }
       this.#state = state;
     }
 
@@ -796,6 +857,7 @@ module.exports = function (meta) {
       const applied = this.#previewTransform.multiplySelf(this.#state.transform);
       this.#state = { ...this.#state, transform: applied };
       this.#previewTransform = new DOMMatrix();
+      this.#staleThumbnail = true;
       return this.#state;
     }
 
@@ -822,7 +884,8 @@ module.exports = function (meta) {
      */
     addStroke(stroke) {
       this.#state = { ...this.#state, strokes: [...this.#state.strokes, stroke] };
-      this.#drawStroke(stroke);
+      this.drawStroke(stroke);
+      this.#staleThumbnail = true;
       return this.#state;
     }
 
@@ -832,10 +895,9 @@ module.exports = function (meta) {
      *  path2D?: Path2D, text?: string, font?: string, origin?: DOMPoint, transform: DOMMatrix
      * }} stroke
      */
-    #drawStroke(stroke) {
+    drawStroke(stroke) {
       const ctx = this.#canvas.getContext("2d");
       ctx.save();
-      ctx.globalAlpha = this.#state.alpha;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       ctx.strokeStyle = stroke.color;
@@ -857,7 +919,6 @@ module.exports = function (meta) {
 
     #drawStrokes(strokes = this.#state.strokes) {
       const ctx = this.#canvas.getContext("2d");
-      ctx.globalAlpha = this.#state.alpha;
       ctx.lineJoin = "round";
       ctx.lineCap = "round";
       for (const stroke of strokes) {
@@ -884,7 +945,6 @@ module.exports = function (meta) {
       const ctx = this.#canvas.getContext("2d");
       ctx.clearRect(0, 0, this.width, this.height);
       if (this.#img) {
-        ctx.globalAlpha = this.#state.alpha;
         ctx.setTransform(new DOMMatrix().translateSelf(this.width / 2, this.height / 2));
         ctx.drawImage(this.#img, -this.#img.width / 2, -this.#img.height / 2);
         ctx.resetTransform();
@@ -893,28 +953,39 @@ module.exports = function (meta) {
 
     /** @param {OffscreenCanvas} canvas */
     drawOn(canvas) {
-      if (!this.#state.isVisible) return;
+      if (!this.#state.isVisible || this.#state.alpha === 0 || this.#state.strokes.length === 0 && !this.#img) return;
 
       const ctx = canvas.getContext("2d");
+      ctx.save();
+      ctx.globalCompositeOperation = this.#state.mixBlendMode;
+      ctx.globalAlpha = this.#state.alpha;
       ctx.setTransform(new DOMMatrix()
         .translateSelf(canvas.width / 2, canvas.height / 2)
         .multiplySelf(this.#previewTransform)
         .multiplySelf(this.#state.transform)
       );
-      ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2);
-      ctx.resetTransform();
+      ctx.drawImage(this.#canvas, ~~(-this.width / 2), ~~(-this.height / 2));
+      ctx.restore();
     }
 
-    /** @param {OffscreenCanvas} canvas */
-    drawThumbnail(canvas) {
+    /** @param {HTMLCanvasElement} canvas */
+    drawThumbnailOn(canvas, scale = 1) {
+      if (this.#state.strokes.length === 0 && !this.#img || !this.#staleThumbnail) return;
+
       const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      ctx.save();
       ctx.setTransform(new DOMMatrix()
         .translateSelf(canvas.width / 2, canvas.height / 2)
+        .scaleSelf(scale, scale)
         .multiplySelf(this.#previewTransform)
         .multiplySelf(this.#state.transform)
       );
-      ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2, canvas.width, canvas.height);
-      ctx.resetTransform();
+      ctx.drawImage(this.#canvas, ~~(-this.width / 2), ~~(-this.height / 2));
+      ctx.restore();
+
+      this.#staleThumbnail = false;
     }
   }
 
@@ -1211,7 +1282,11 @@ module.exports = function (meta) {
       MoveLayerDown: "M11.449 3.057c-.701.134-.701.134-4.749 1.992C3.093 6.705 2.298 7.101 1.84 7.47c-.888.715-1.085 1.674-.518 2.523.31.464.765.789 1.858 1.325 1.212.595 4.561 2.117 4.751 2.16.137.031.235.026.413-.021a.966.966 0 00.743-.78.988.988 0 00-.21-.809c-.152-.184-.218-.217-2.337-1.186-1.7-.778-3.216-1.509-3.358-1.621-.077-.06-.077-.062 0-.121.167-.128 1.64-.83 4.478-2.132 1.628-.747 3.131-1.43 3.34-1.519.418-.178.802-.289 1-.289s.582.111 1 .289c.209.088 1.712.772 3.34 1.519 2.799 1.283 4.303 2 4.478 2.133.077.058.077.06 0 .119-.147.114-1.681.855-3.358 1.622-2.119.969-2.185 1.002-2.337 1.186-.123.149-.243.462-.243.632 0 .18.124.49.258.647.23.269.607.401.936.329.095-.021 1.04-.436 2.1-.923 3.083-1.415 3.555-1.657 4.07-2.085.811-.675.979-1.66.423-2.478-.276-.405-.718-.728-1.625-1.186-.76-.386-6.232-2.914-7.249-3.35-.903-.387-1.693-.521-2.344-.397m.246 5a1.04 1.04 0 00-.567.459l-.108.184-.02 4.579-.02 4.579-.52-.658c-.696-.881-.878-1.06-1.166-1.144-.704-.204-1.356.332-1.281 1.055.029.281.073.348.985 1.476.795.983 1.557 1.782 1.942 2.033.983.643 1.749.468 2.862-.654.428-.433 1.795-2.075 2.05-2.464.24-.365.172-.885-.157-1.205-.417-.405-1-.39-1.426.036-.115.115-.444.506-.729.867l-.52.658-.02-4.579-.02-4.579-.108-.184a1.005 1.005 0 00-1.177-.459",
       Visibility: "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5M12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5m0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3",
       VisibilityOff: "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7M2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2m4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3z",
-    }
+    },
+
+    mixBlendModes: [
+      "lighter", "copy", "xor", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"
+    ].map(e => ({ value: e, label: e.charAt(0).toUpperCase() + e.slice(1) })),
   }
 
   var hooks = {
@@ -1252,7 +1327,7 @@ module.exports = function (meta) {
      *  onSubmit?: (e: Omit<React.PointerEvent, "currentTarget">, store: Record<string, any>) => void
      * }} props
     */
-    usePointerCapture({ onStart, onChange, onSubmit }) {
+    usePointerCapture({ onStart, onChange, onSubmit, buttons = 5 }) {
       /** @type {React.RefObject<null | number>} */
       const pointerId = useRef(null);
       const rafId = useRef(null);
@@ -1260,7 +1335,7 @@ module.exports = function (meta) {
 
       /** @type {(e: PointerEvent) => void} */
       const onPointerDown = useCallback(e => {
-        if (!(e.buttons & 5) || pointerId.current != null) return;
+        if (!(e.buttons & buttons) || pointerId.current != null) return;
 
         e.currentTarget.setPointerCapture(e.pointerId);
         e.preventDefault();
@@ -1270,7 +1345,7 @@ module.exports = function (meta) {
 
       /** @type {(e: PointerEvent) => void} */
       const onPointerMove = useCallback(e => {
-        if (!(e.buttons & 5) || pointerId.current !== e.pointerId || rafId.current) return;
+        if (!(e.buttons & buttons) || pointerId.current !== e.pointerId || rafId.current) return;
 
         rafId.current = requestAnimationFrame(() => {
           onChange?.(e, smolStore.current);
@@ -1363,7 +1438,7 @@ module.exports = function (meta) {
     IconButton({ onClick, tooltip, d, disabled, active, className, position = 'top' }) {
       return jsx(BdApi.Components.ErrorBoundary, {
         children: jsx(BdApi.Components.Tooltip, {
-          spacing: 8,
+          spacing: 11,
           position,
           color: 'primary',
           hideOnClick: true,
@@ -1475,40 +1550,34 @@ module.exports = function (meta) {
 
     /**
      * @param {{
-     *  layers: {id: number, name: string, visible: boolean, active: boolean}[]
-     *  onChange: (callback: (editor: CanvasEditor) => boolean) => void
+     *  layers: {id: number, name: string, visible: boolean, alpha: number, mixBlendMode: string, active: boolean}[]
+     *  onChange: (callback: (editor: CanvasEditor) => boolean) => void, width: number, height: number, 
+     *  editor: React.RefObject(<CanvasEditor>)
      * }} props
      */
-    LayerThumbnails({ layers, onChange }) {
-      // const [layerStates, _setLayerStates] = useState(s);
-      const idx = useRef(0);
-
-      // /** @type {(newState: typeof layerStates | (oldState: typeof layerStates) => typeof layerStates) => void} */
-      // const setLayerStates = useCallback(value => {
-      //   _setLayerStates(oldState => {
-      //     const newState = value instanceof Function ? value(oldState) : value;
-      //     if (Object.is(oldState, newState)) return oldState;
-
-      //     onStateChange(newState);
-      //     return newState;
-      //   })
-      // }, [onStateChange]);
-
-      const handleContextMenu = useCallback((e) => {
+    LayerThumbnails({ layers, onChange, width, height, editor }) {
+      const handleContextMenu = useCallback((e, i) => {
+        (i !== editor.current.activeLayerIndex) && editor.current.sandwichLayer(i);
         ContextMenu.open(e, ContextMenu.buildMenu([
           {
             label: "Name",
             type: "custom",
-            render: () => jsx(Components.TextInput, {
+            render: ({ isFocused }) => jsx(Components.TextInput, {
+              className: utils.clsx(
+                internals.contextMenuClass?.item,
+                internals.contextMenuClass?.labelContainer,
+                internals.contextMenuClass?.colorDefault,
+                isFocused && internals.contextMenuClass?.focused,
+              ),
               label: "Name",
-              value: layers[idx.current].name,
-              onChange: newName => onChange(editor => editor.layers[idx.current].layer.name = newName),
+              value: layers[i].name,
+              onChange: newName => onChange(editor => editor.layers[i].layer.name = newName),
             })
           }, {
             label: "Visible",
             type: "toggle",
-            checked: layers[idx.current].visible,
-            action: () => onChange(editor => (editor.toggleLayerVisibility(idx.current), true))
+            checked: layers[i].visible,
+            action: () => onChange(editor => (editor.toggleLayerVisibility(i), true))
           }, {
             label: "Opacity",
             type: "custom",
@@ -1516,83 +1585,77 @@ module.exports = function (meta) {
               className: utils.clsx(
                 internals.contextMenuClass?.item,
                 internals.contextMenuClass?.labelContainer,
-                internals.contextMenuClass?.colorDefault
               ),
-              value: 1,
+              value: layers[i].alpha,
               minValue: 0,
               maxValue: 1,
               label: "Opacity",
               decimals: 2,
               expScaling: false,
-              onChange: newVal => console.log(newVal)
+              onChange: alpha => onChange(editor => {
+                if (alpha === editor.layers[i].state.alpha) return false;
+                editor.setLayerAlpha(alpha, i, true);
+                return true;
+              }),
+              onSlide: alpha => onChange(editor => {
+                editor.setLayerAlpha(alpha, i);
+              })
             })
           }, {
             label: "Move Layer Up",
-            disabled: idx.current >= layers.length - 1,
+            disabled: i >= layers.length - 1,
             action: () => {
               onChange(editor => {
-                if (idx.current >= editor.layers.length - 1) return false;
-                editor.moveLayers(1, idx.current);
+                if (i >= editor.layers.length - 1) return false;
+                editor.moveLayers(1, i);
                 return true;
               });
             },
             icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerUp })
           }, {
             label: "Move Layer Down",
-            disabled: idx.current <= 0,
+            disabled: i <= 0,
             action: () => {
               onChange(editor => {
-                if (idx.current <= 0) return false;
-                editor.moveLayers(-1, idx.current);
+                if (i <= 0) return false;
+                editor.moveLayers(-1, i);
                 return true;
               });
             },
             icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerDown })
           }, {
             label: "Delete Layer",
+            disabled: layers.length <= 1,
             action: () => {
               onChange(editor => {
                 if (editor.layers.length <= 1) return false;
-                editor.deleteLayer(idx.current);
+                editor.deleteLayer(i);
                 return true;
               });
             },
             icon: () => jsx(Components.Icon, { d: utils.paths.DeleteLayer })
-          }, {
-            label: "Mix-blend-mode",
-            type: "custom",
-            render: () => jsx("div", {
-              children: [
-                jsx("style", null, `@scope {
-                  .select {
-                    display: inline-block;
-                    & > :first-child {
-                      min-height: var(--control-input-height-sm);
-                      padding: 0 8px;
-                    }
-                  }
-                }`),
-                jsx("div", { style: { padding: 8 } }, "Mix Blend Mode"),
-                jsx(internals.nativeUI[internals.keys.SingleSelect], {
-                  options: [
-                    { value: "source-over", label: "normal" },
-                    { value: "destination-out", label: "destination out" }
-                  ],
-                  value: "source-over",
-                  className: "select",
-                  onChange: t => console.log(t)
-                })
-              ]
-            })
-          }
-        ]), { align: "bottom" });
+          },
+          // {
+          //   label: "Mix-blend-mode",
+          //   type: "custom",
+          //   render: () => jsx(Components.BlendModeSelector, {
+          //     onChange: blendMode => { onChange(editor => editor.setLayerBlendMode(blendMode, i)) },
+          //     initialValue: layers[i].mixBlendMode
+          //   })
+          // }
+        ]), {
+          align: "bottom",
+          position: "left",
+          onClose: () => { onChange(editor => { (i !== editor.activeLayerIndex) && editor.sandwichLayer() }) }
+        });
       }, [onChange, layers]);
 
-      return jsx(BdApi.Components.ErrorBoundary, null, jsx(Fragment, {
+      return jsx(BdApi.Components.ErrorBoundary, null, jsx("ul", {
+        className: utils.clsx("thumbnails", internals.scrollbarClass.thin),
         children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
           key: state.id,
           children: jsx("li", {
-            onContextMenu: (e) => { idx.current = i; handleContextMenu(e) },
+            onContextMenu: (e) => { handleContextMenu(e, i) },
             onClick: () => onChange(editor => {
               if (editor.activeLayerIndex == i) return false;
               editor.activeLayerIndex = i;
@@ -1605,12 +1668,40 @@ module.exports = function (meta) {
                 d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
                 onClick: () => onChange(editor => (editor.toggleLayerVisibility(i), true)),
               }),
-              jsx("span", { className: "layer-label" }, state.name)
+              jsx("span", { className: "layer-label" }, state.name),
+              jsx(Components.Thumbnail, {
+                index: i,
+                editor,
+                width,
+                height,
+              })
             ]
           })
-        })
-        )
+        }))
       }))
+    },
+
+    /** @param {{index: number, editor: React.RefObject<CanvasEditor>, width: number, height: number}} */
+    Thumbnail({ index, editor, width, height }) {
+      /** @type {React.RefObject<HTMLCanvasElement | null>} */
+      const canvas = useRef(null);
+
+      useEffect(() => {
+        const ctx = canvas.current.getContext("2d");
+        ctx.imageSmoothingEnabled = false;
+      }, []);
+
+      useEffect(() => {
+        const s = Math.max(canvas.current.width / width, canvas.current.height / height);
+        editor.current.layers[index].layer.drawThumbnailOn(canvas.current, s);
+      }) // yes, no dependency!
+
+      return jsx("canvas", {
+        width: ~~Math.min(32, 32 * width / height),
+        height: ~~Math.min(32, 32 / width * height),
+        className: "canvas-thumbnail",
+        ref: canvas,
+      })
     },
 
     /** @param {{bitmap: ImageBitmap, ref: React.RefObject<any>}} props */
@@ -1619,7 +1710,7 @@ module.exports = function (meta) {
       const [layers, setLayers] = useState(() => []);
       const [dims, setDims] = useState({ width: bitmap.width, height: bitmap.height });
 
-      const [mode, _setMode] = hooks.useStoredState("mode", null);
+      const [mode, _setMode] = useState(null);
       const [font, setFont] = hooks.useStoredState("font", () => ({ family: "gg sans", weight: 500 }));
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 25, color: "#000000" }));
@@ -1634,8 +1725,6 @@ module.exports = function (meta) {
       const overlay = useRef(null);
       /** @type { React.RefObject<HTMLTextAreaElement | null> } */
       const textarea = useRef(null);
-      /** @type { React.RefObject<HTMLDivElement | null> } */
-      const thumbnailContainer = useRef(null);
       /**  @type { React.RefObject<{ setValue: (value: number) => void, previewValue: (value: number) => void } | null> } */
       const auxRef = useRef(null);
 
@@ -1644,7 +1733,7 @@ module.exports = function (meta) {
 
         _setMode((oldMode) => {
           const newMode = newVal instanceof Function ? newVal(oldMode) : newVal;
-          ["--translate"].forEach(prop => overlay.current.style.removeProperty(prop));
+          ["--translate", "--line-from", "--phi", "r", "--brushsize"].forEach(prop => overlay.current.style.removeProperty(prop));
 
           switch (newMode) {
             case 1: {
@@ -1718,25 +1807,14 @@ module.exports = function (meta) {
             return d;
           return { width, height }
         });
-        setLayers(l => {
-          if (
-            editor.current.layers.length !== l.length ||
-            l.some((e, i) =>
-              e.active !== (i === editor.current.activeLayerIndex) ||
-              e.visible !== editor.current.layers[i].state.isVisible ||
-              e.id !== editor.current.layers[i].layer.id ||
-              e.name !== editor.current.layers[i].layer.name
-            )
-          ) {
-            return editor.current.layers.map((layer, i) => ({
-              visible: layer.state.isVisible,
-              active: i === editor.current.activeLayerIndex,
-              name: layer.layer.name,
-              id: layer.layer.id
-            }));
-          }
-          return l;
-        })
+        setLayers(editor.current.layers.map((layer, i) => ({
+          visible: layer.state.isVisible,
+          alpha: layer.state.alpha,
+          mixBlendMode: layer.state.mixBlendMode,
+          active: i === editor.current.activeLayerIndex,
+          name: layer.layer.name,
+          id: layer.layer.id,
+        })));
       }, []);
 
       useEffect(() => {
@@ -1747,6 +1825,8 @@ module.exports = function (meta) {
         editor.current = new CanvasEditor(canvasRef.current, bitmap);
         setLayers(editor.current.layers.map((layer, i) => ({
           visible: layer.state.isVisible,
+          alpha: layer.state.alpha,
+          mixBlendMode: layer.state.mixBlendMode,
           active: i === editor.current.activeLayerIndex,
           name: layer.layer.name,
           id: layer.layer.id
@@ -1971,6 +2051,7 @@ module.exports = function (meta) {
           });
 
           if (mode !== 5) isInteracting.current = true;
+          if ([1, 2, 3, 4, 6].some(e => e === mode) && (e.buttons & 1)) canvasRef.current.getContext("2d").imageSmoothingEnabled = false;
 
           switch (mode) {
             case !!(e.buttons & 1) && 0: {
@@ -2159,6 +2240,11 @@ module.exports = function (meta) {
               syncStates();
               break;
             }
+          }
+
+          if ([1, 2, 3, 4, 6].some(e => e === mode)) {
+            canvasRef.current.getContext("2d").imageSmoothingEnabled = true;
+            editor.current.refreshViewport();
           }
         }
       });
@@ -2442,14 +2528,12 @@ module.exports = function (meta) {
                     }
                   }),
                 ]
-              }),
-              jsx("ul", {
-                ref: thumbnailContainer,
-                className: utils.clsx("thumbnails", internals.scrollbarClass.thin),
-                children: jsx(Components.LayerThumbnails, {
-                  layers,
-                  onChange: (cb) => { if (cb(editor.current)) syncStates() }
-                })
+              }), jsx(Components.LayerThumbnails, {
+                editor: editor,
+                width: dims.width,
+                height: dims.height,
+                layers,
+                onChange: (cb) => { if (cb(editor.current)) syncStates() }
               }),
               jsx("div", {
                 className: "layer-actions",
@@ -2599,6 +2683,36 @@ module.exports = function (meta) {
       })
     },
 
+    /** @param {{ initialValue: string, onChange?: (e: string) => void }} */
+    BlendModeSelector({ onChange, initialValue }) {
+      const [blendMode, setBlendMode] = useState(initialValue);
+      const mixBlendModes = useRef([{ value: "source-over", label: "Normal" }].concat(utils.mixBlendModes));
+
+      return jsx("div", {
+        children: [
+          jsx("style", null, `@scope {
+            .select {
+              display: inline-block;
+              & > :first-child {
+                min-height: var(--control-input-height-sm);
+                padding: 0 8px;
+              }
+            }
+          }`),
+          jsx("div", { style: { padding: 8 } }, "Mix Blend Mode"),
+          jsx(internals.nativeUI[internals.keys.SingleSelect], {
+            options: mixBlendModes.current,
+            value: blendMode,
+            className: "select",
+            onChange: (mode) => {
+              setBlendMode(mode);
+              onChange?.(mode);
+            }
+          })
+        ]
+      })
+    },
+
     /**
      * @param {{
      *  value: number, onChange?: (e: number) => void, withSlider?: boolean, suffix?: string, label?: string
@@ -2632,10 +2746,6 @@ module.exports = function (meta) {
         }
       }), [minValue, centerValue, maxValue]);
 
-      const handleChange = useCallback(e => {
-        setTextValue(e.target.value)
-      }, []);
-
       useEffect(() => {
         setTextValue(value + '');
         oldValue.current = value;
@@ -2645,6 +2755,10 @@ module.exports = function (meta) {
         setSliderValue(val);
         sliderRef.current?._reactInternals.stateNode.setState({ value: val });
       }, [value]);
+
+      const handleChange = useCallback(e => {
+        setTextValue(e.target.value)
+      }, []);
 
       const handleTextCommit = useCallback(() => {
         const newValue = !isNaN(Number(textValue)) && textValue !== "" ? Math.max(minValue ?? Number(textValue), Number(textValue)) : oldValue.current;
@@ -2671,6 +2785,7 @@ module.exports = function (meta) {
       const handleSliderCommit = useCallback(newValue => {
         let val = expScaling ? utils.expScaling(newValue / 100, { minValue, centerValue, maxValue }) : newValue;
         val = Number(val.toFixed(decimals ?? 0));
+        if (val === oldValue.current) return;
 
         setTextValue(val + '');
         oldValue.current = val;
@@ -2709,6 +2824,22 @@ module.exports = function (meta) {
       const handleMouseEnter = useCallback(e => !e.buttons && e.currentTarget.focus(), []);
       const handleMouseLeave = useCallback(e => e.currentTarget.blur(), []);
 
+      const pointerHanders = hooks.usePointerCapture({
+        buttons: 7,
+        onStart: (e) => {
+          if (!sliderRef.current.state.boundingRect) {
+            // The state for boundingRect will be set internally only !after! the handleMouseDown event fired,
+            // so the first mousedown event doesn't have the boundingRect. _reactInternals.stateNode.setState
+            // will only update the boundingRect after the render cycle, but we need it NOW. 
+            sliderRef.current.state.boundingRect = sliderRef.current.containerRef.current.getBoundingClientRect();
+          }
+          sliderRef.current.handleMouseDown(e);
+          sliderRef.current.moveSmoothly(e);
+        },
+        onChange: (e) => { sliderRef.current.handleMouseMove(e) },
+        onSubmit: (e) => { sliderRef.current.handleMouseUp(e) },
+      })
+
       return jsx("div", {
         ...restProps,
         className: className,
@@ -2721,8 +2852,10 @@ module.exports = function (meta) {
               padding-inline: ${withSlider ? "8px" : "0px"}; 
               & > label {
                 align-content: center;
+                cursor: inherit;
               }
-              & > .number-input ~ div {
+              & > .slider-wrapper {
+                cursor: inherit;
                 flex-basis: 100%;
                 margin-top: 6px;
               }
@@ -2757,26 +2890,30 @@ module.exports = function (meta) {
             onMouseLeave: handleMouseLeave
           }),
           suffix != null && jsx("span", { style: { alignContent: 'center' } }, suffix),
-          withSlider && internals.keys.MenuSliderControl && jsx(internals.nativeUI[internals.keys.MenuSliderControl], {
-            ref: sliderRef,
-            mini: true,
-            className: internals.sliderClass?.slider,
-            initialValue: sliderValue,
-            minValue: !expScaling ? minValue : undefined,
-            maxValue: !expScaling ? maxValue : undefined,
-            onValueRender: (newValue) => {
-              const val = expScaling ? utils.expScaling(newValue / 100, { minValue, centerValue, maxValue }) : newValue;
-              return Number(val.toFixed(decimals ?? 0)) + (suffix ?? '');
-            },
-            onValueChange: handleSliderCommit,
-            asValueChanges: handleSliderChange,
-          }),
+          withSlider && internals.keys.MenuSliderControl && jsx("div", {
+            ...pointerHanders,
+            className: "slider-wrapper",
+            children: jsx(internals.nativeUI[internals.keys.MenuSliderControl], {
+              ref: sliderRef,
+              mini: true,
+              className: internals.sliderClass?.slider,
+              initialValue: sliderValue,
+              minValue: !expScaling ? minValue : undefined,
+              maxValue: !expScaling ? maxValue : undefined,
+              onValueRender: (newValue) => {
+                const val = expScaling ? utils.expScaling(newValue / 100, { minValue, centerValue, maxValue }) : newValue;
+                return Number(val.toFixed(decimals ?? 0)) + (suffix ?? '');
+              },
+              onValueChange: handleSliderCommit,
+              asValueChanges: handleSliderChange,
+            }),
+          })
         ]
       })
     },
 
-    /** @param {{ value: string, onChange?: (value: string) => void, label?: string }} props */
-    TextInput({ value, onChange, label }) {
+    /** @param {{ value: string, onChange?: (value: string) => void, label?: string, className: string }} props */
+    TextInput({ value, onChange, label, className }) {
       const [text, setText] = useState(value);
       const oldValue = useRef(value);
       const id = useId();
@@ -2827,6 +2964,7 @@ module.exports = function (meta) {
       const handleMouseLeave = useCallback(e => e.currentTarget.blur(), []);
 
       return jsx("div", {
+        className,
         children: [
           jsx("style", null, `@scope {
             :scope {
@@ -2836,6 +2974,9 @@ module.exports = function (meta) {
               gap: 16px;
               padding: 4px 8px;
               color: var(--interactive-active);
+            }
+            label {
+              cursor: inherit;
             }
             .text-input {
               border: 1px solid var(--border-normal);
@@ -2925,7 +3066,11 @@ module.exports = function (meta) {
   outline-offset: -1px;
   touch-action: none;
   background: repeating-conic-gradient(#666 0 25%, #999 0 50%) 0 0 / 20px 20px fixed content-box;
-}                   
+}
+  
+.canvas-thumbnail {
+  background: repeating-conic-gradient(#666 0 25%, #999 0 50%) 4px 0 / 8px 8px fixed content-box;
+}
 
 .canvas.cropping {
   cursor: crosshair;
@@ -3181,6 +3326,7 @@ module.exports = function (meta) {
 .thumbnail {
   display: grid;
   grid-template-columns: 24px 1fr 32px;
+  justify-items: center;
   flex: 0 0 32px;
   overflow: hidden;
   align-items: center;
@@ -3207,7 +3353,6 @@ module.exports = function (meta) {
   -webkit-line-clamp: 2;
   overflow: hidden;
   overflow-wrap: anywhere;
-  text-align: center;
 }
 
 .layer-actions {
