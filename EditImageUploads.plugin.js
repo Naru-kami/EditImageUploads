@@ -660,15 +660,9 @@ module.exports = function (meta) {
     insertTextAt(point, font, color) {
       this.#prepareMiddleCanvas();
       const ctx = this.#middleCache.getContext("2d");
-      ctx.save();
       ctx.font = font;
       ctx.textBaseline = "middle";
       ctx.fillStyle = color;
-
-      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      const clipPath = new Path2D();
-      clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
-      ctx.clip(clipPath);
 
       this.#interactionCache.layerTransform_inv = new DOMMatrix()
         .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
@@ -690,10 +684,18 @@ module.exports = function (meta) {
       ctx.font = font;
       this.#interactionCache.text = text;
       this.#activeLayer.drawOn(this.#middleCache);
+
+      ctx.save();
+      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      const clipPath = new Path2D();
+      clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
+      ctx.clip(clipPath);
+
       [this.#interactionCache.rect.width, this.#interactionCache.rect.height] = utils.renderMultilineText(
         ctx, this.#interactionCache.text,
         new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y)
       );
+      ctx.restore();
 
       const mainCtx = this.#mainCanvas.getContext("2d");
       mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
@@ -1694,9 +1696,10 @@ module.exports = function (meta) {
           key: state.id,
           children: jsx("li", {
             onContextMenu: (e) => { handleContextMenu(e, i) },
-            onClick: () => onChange(editor => {
+            onClick: (e) => onChange(editor => {
               if (editor.activeLayerIndex == i) return false;
               editor.activeLayerIndex = i;
+              e.currentTarget.scrollIntoView({ block: "nearest" })
               return true;
             }),
             className: utils.clsx("thumbnail", state.active && "active"),
@@ -1846,6 +1849,14 @@ module.exports = function (meta) {
           overlay.current.style.setProperty("--cy2", 100 * clipRect.bottom + "%");
         }
       }, []);
+
+      const updateRegionRect = useCallback(() => {
+        const rect = editor.current.regionRect;
+        overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
+        overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
+        overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
+        overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+      }, [])
 
       const syncStates = useCallback(() => {
         setCanUndoRedo(editor.current.canUndo << 1 ^ editor.current.canRedo);
@@ -2043,7 +2054,6 @@ module.exports = function (meta) {
             const x = (e.clientX - canvasRect.current.x) / canvasRect.current.width;
             const y = (e.clientY - canvasRect.current.y) / canvasRect.current.height;
             editor.current.scaleViewportBy(delta, x, y);
-
             updateClipRect()
 
             switch (mode) {
@@ -2053,11 +2063,7 @@ module.exports = function (meta) {
                 break;
               }
               case isInteracting.current && 5: {
-                const rect = editor.current.regionRect;
-                overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+                updateRegionRect();
                 break;
               }
               case 4:
@@ -2125,17 +2131,9 @@ module.exports = function (meta) {
               const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
-              `${font.weight} ${strokeStyle.width}px ${font.family}`
               editor.current.insertTextAt(new DOMPoint(startX, startY), `${font.weight} ${strokeStyle.width}px ${font.family}`, strokeStyle.color);
               editor.current.updateText();
-
-              const rect = editor.current.regionRect;
-              overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
-              overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
-              overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
-              overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
-
-              canvasRef.current.releasePointerCapture(e.pointerId);
+              updateRegionRect();
               break;
             }
             case !!(e.buttons & 1) && 4:
@@ -2186,11 +2184,7 @@ module.exports = function (meta) {
             updateClipRect();
 
             if (isInteracting.current && mode === 5) {
-              const rect = editor.current.regionRect;
-              overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
-              overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
-              overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
-              overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+              updateRegionRect()
             }
 
             if (mode === 1) {
@@ -2236,6 +2230,17 @@ module.exports = function (meta) {
                 auxRef.current?.previewValue(cr);
                 break;
               }
+              case 5: {
+                store.changed = true;
+
+                const boxScale = canvasRect.current.width / canvasRef.current.width;
+                const startX = (e.clientX - canvasRect.current.x) / boxScale;
+                const startY = (e.clientY - canvasRect.current.y) / boxScale;
+                editor.current.insertTextAt(new DOMPoint(startX, startY), `${font.weight} ${strokeStyle.width}px ${font.family}`, strokeStyle.color);
+                editor.current.updateText();
+                updateRegionRect();
+                break;
+              }
               case 2: {
                 const dx = (e.clientX - store.startX) / utils.getScale(editor.current.viewportTransform);
                 const dy = (e.clientY - store.startY) / utils.getScale(editor.current.viewportTransform);
@@ -2263,6 +2268,7 @@ module.exports = function (meta) {
           switch (mode) {
             case 7: {
               editor.current.endRegionSelect();
+              canvasRef.current.classList.remove("pointerdown");
               break;
             }
             case 0: {
@@ -2341,11 +2347,7 @@ module.exports = function (meta) {
         if (mode !== 5 || !isInteracting.current) return;
 
         editor.current.updateText(e.currentTarget.value);
-        const rect = editor.current.regionRect;
-        overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
-        overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
-        overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
-        overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+        updateRegionRect();
       }, [mode]);
 
       return jsx(Fragment, {
@@ -2543,11 +2545,7 @@ module.exports = function (meta) {
                             case 5: {
                               editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
                               if (isInteracting.current) {
-                                const rect = editor.current.regionRect;
-                                overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
-                                overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
-                                overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
-                                overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+                                updateRegionRect()
                               }
                               break;
                             }
@@ -2563,11 +2561,7 @@ module.exports = function (meta) {
                             case 5: {
                               editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
                               if (isInteracting.current) {
-                                const rect = editor.current.regionRect;
-                                overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
-                                overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
-                                overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
-                                overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+                                updateRegionRect();
                               }
                               break;
                             }
@@ -3232,10 +3226,10 @@ module.exports = function (meta) {
 .canvas.selecting.pointerdown + .canvas-overlay > .cropper-region,
 .canvas:not(.cropping.pointerdown) + .canvas-overlay > .cropper-region {
   position: absolute;
-  background: rgba(0, 120, 215, 0.25);
-  border: 1px solid black;
-  outline: 1px dotted white;
-  outline-offset: -1px;
+  background: transparent;
+  border: 2px solid black;
+  outline: 2px dotted white;
+  outline-offset: -2px;
   left: max(-2px, var(--cx1, -2px));
   right: max(-2px, 100% - var(--cx2, 0px));
   top: max(-2px, var(--cy1, -2px));
@@ -3366,6 +3360,7 @@ module.exports = function (meta) {
   width: 1px;
   height: 1px;
   overflow: hidden;
+  scrollbar-width: none;
   clip: rect(0, 0, 0, 0);
   clip-path: inset(50%);
 }
