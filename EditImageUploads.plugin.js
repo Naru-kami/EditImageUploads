@@ -1866,7 +1866,7 @@ module.exports = function (meta) {
             return d;
           editor.current.startRegionSelect(new DOMPoint(0, 0));
           editor.current.endRegionSelect();
-          ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(prop => overlay.current.style.removeProperty(prop));
+          ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
           return { width, height }
         });
         setLayers(editor.current.layers.map((layer, i) => ({
@@ -1937,6 +1937,9 @@ module.exports = function (meta) {
               if (canvasRef.current?.matches(".rotating")) {
                 overlay.current.style.removeProperty("--translate");
               }
+              if (canvasRef.current?.matches(".texting")) {
+                updateRegionRect();
+              }
               updateClipRect();
               break;
 
@@ -1968,8 +1971,15 @@ module.exports = function (meta) {
               setMode(m => m === 6 ? null : 6);
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "s":
-              setMode(m => m === 7 ? null : 7);
+            case !e.repeat && !e.shiftKey && "s":
+              if (e.ctrlKey) {
+                if (isInteracting.current) break;
+                editor.current.startRegionSelect(new DOMPoint(0, 0));
+                editor.current.endRegionSelect();
+                ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
+              } else {
+                setMode(m => m === 7 ? null : 7);
+              }
               break;
 
             case !e.repeat && canvasRef.current.matches(".drawing") && "Shift": {
@@ -3227,9 +3237,9 @@ module.exports = function (meta) {
 .canvas:not(.cropping.pointerdown) + .canvas-overlay > .cropper-region {
   position: absolute;
   background: transparent;
-  border: 2px solid black;
-  outline: 2px dotted white;
-  outline-offset: -2px;
+  border: 1px solid black;
+  outline: 1px dashed white;
+  outline-offset: -1px;
   left: max(-2px, var(--cx1, -2px));
   right: max(-2px, 100% - var(--cx2, 0px));
   top: max(-2px, var(--cy1, -2px));
