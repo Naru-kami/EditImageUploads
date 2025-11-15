@@ -12,7 +12,11 @@ module.exports = function (meta) {
   /** @type {{React: typeof import("react")}} */
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI, ContextMenu } = BdApi;
 
-  const { createElement: jsx, useState, useEffect, useRef, useLayoutEffect, useImperativeHandle, useCallback, useId, Fragment, cloneElement } = React;
+  const {
+    createElement: jsx, useState, useEffect, useRef, useLayoutEffect,
+    useImperativeHandle, useCallback, useId, Fragment, cloneElement,
+    useTransition
+  } = React;
 
   var internals, ctrl;
 
@@ -25,6 +29,7 @@ module.exports = function (meta) {
       nativeUI: { filter: m => m.showToast }, // 481060
       Modal: { filter: Filters.bySource(".MODAL_ROOT_LEGACY,") }, // 466377
       Button: { filter: Filters.bySource("BUTTON_LOADING_STARTED_LABEL,") }, // 906003
+      urlConverter: { filter: Filters.bySource(".searchParams.delete(\"width\"),") }, // 296182
 
       actionButtonClass: { filter: Filters.byKeys("dangerous", "button") },
       actionIconClass: { filter: m => m.actionBarIcon && m[Symbol.toStringTag] != "Module" },
@@ -41,6 +46,10 @@ module.exports = function (meta) {
         }),
         ...utils.getKeysInModule(internals.Button, {
           Button: "BUTTON_LOADING_STARTED_LABEL,"
+        }),
+        ...utils.getKeysInModule(internals.urlConverter, {
+          toMediaUrl: ")return null!=",
+          toCdnUrl: ".searchParams.delete(\"width\"),"
         }),
         ...utils.getKeysInModule(internals.nativeUI, {
           FocusRing: "FocusRing was given a focusTarget",
@@ -64,7 +73,7 @@ module.exports = function (meta) {
   function start() {
     init();
 
-    Patcher.after(meta.slug, internals.uploadCard, internals.keys.uploadCard, (_, [args], ret) => {
+    internals.uploadCard && Patcher.after(meta.slug, internals.uploadCard, internals.keys.uploadCard, (_, [args], ret) => {
       if (
         args?.upload?.mimeType?.startsWith("image/") && !args?.upload?.mimeType?.endsWith("gif") &&
         !ret?.props?.actions?.props?.children?.some(e => e?.key === meta.slug)
@@ -79,13 +88,15 @@ module.exports = function (meta) {
     ctrl = new AbortController()
     Webpack.waitForModule(Filters.bySource('children:["IMAGE"==='), ctrl).then(m => { // 73249
       m?.Z && Patcher.after(meta.slug, m.Z, "type", (_, [args], res) => {
-        if (args.item.type !== "IMAGE" || args.item.srcIsAnimated || args.item.animated)
-          return res;
+        if (args.item.type !== "IMAGE" || args.item.srcIsAnimated || args.item.animated) return res;
+
         return cloneElement(res, {
           children: className => {
             const ret = res.props.children(className);
 
-            const url = utils.toImgSrc(args.item.url, args.item.proxyUrl);
+            const mediaUrl = internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url);
+            const url = internals.urlConverter[internals.keys.toCdnUrl](mediaUrl, args.item.contentType, args.item.originalContentType);
+
             url && ret.props.children.unshift(jsx(Components.RemixIcon, { url }))
 
             return ret;
@@ -107,7 +118,7 @@ module.exports = function (meta) {
     #mainCanvas;
     #viewportCanvas;
     #viewportTransform;
-    #viewportTransform_inv
+    #viewportTransform_inv;
     #staleViewportInv;
 
     #state;
@@ -116,6 +127,7 @@ module.exports = function (meta) {
     #bottomCache;
     #middleCache;
     #topCache;
+
     #interactionCache;
 
     /** @param {HTMLCanvasElement} canvas @param {ImageBitmap} bitmap */
@@ -126,9 +138,6 @@ module.exports = function (meta) {
       this.#topCache = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#viewportCanvas = canvas;
 
-      const ctx = canvas.getContext("2d");
-      ctx.imageSmoothingQuality = "high";
-      ctx.fillStyle = "#303038";
       [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(c => {
         c.getContext("2d").imageSmoothingEnabled = false;
       })
@@ -156,6 +165,8 @@ module.exports = function (meta) {
         path2D: new Path2D(),
         lastPoint: new DOMPoint(NaN, NaN),
         rect: new DOMRect(),
+        /** @type {DOMRect | null} */
+        clipRect: null,
         width: 0,
         color: "#000",
         globalCompositeOperation: "source-over",
@@ -191,6 +202,20 @@ module.exports = function (meta) {
         Math.abs(topLeft.y - bottomRight.y) / this.#viewportCanvas.height,
       );
     }
+    get clipRect() {
+      if (!this.#interactionCache.clipRect) return null;
+
+      const T = this.viewportTransform_inv.inverse();
+      const topLeft = new DOMPoint(this.#interactionCache.clipRect.left, this.#interactionCache.clipRect.top).matrixTransform(T);
+      const bottomRight = new DOMPoint(this.#interactionCache.clipRect.right, this.#interactionCache.clipRect.bottom).matrixTransform(T);
+      return new DOMRect(
+        Math.min(topLeft.x, bottomRight.x) / this.#viewportCanvas.width,
+        Math.min(topLeft.y, bottomRight.y) / this.#viewportCanvas.height,
+        Math.abs(topLeft.x - bottomRight.x) / this.#viewportCanvas.width,
+        Math.abs(topLeft.y - bottomRight.y) / this.#viewportCanvas.height,
+      );
+    }
+
     get canUndo() { return this.#state.canUndo }
     get canRedo() { return this.#state.canRedo }
     get previewLayerTransform() { return this.#activeLayer.previewTransform }
@@ -281,17 +306,17 @@ module.exports = function (meta) {
       this.render(layerIndex);
     }
 
-    /** @param {string} mixBlendMode @param {number} layerIndex */
-    setLayerBlendMode(mixBlendMode, layerIndex) {
-      if (!(layerIndex in this.layers)) return;
+    // /** @param {string} mixBlendMode @param {number} layerIndex */
+    // setLayerBlendMode(mixBlendMode, layerIndex) {
+    //   if (!(layerIndex in this.layers)) return;
 
-      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-      updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, mixBlendMode } };
-      this.#state.state = updated;
-      this.#state.state.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
+    //   const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+    //   updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, mixBlendMode } };
+    //   this.#state.state = updated;
+    //   this.#state.state.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
 
-      this.render(layerIndex);
-    }
+    //   this.render(layerIndex);
+    // }
 
     /** @param {1 | -1} delta */
     moveLayers(delta, layerIndex = this.activeLayerIndex) {
@@ -350,13 +375,13 @@ module.exports = function (meta) {
     #prepareMiddleCanvas() {
       const s = this.#activeLayer.state;
       s.alpha = 1;
-      s.globalCompositeOperation = "source-over";
+      // s.globalCompositeOperation = "source-over";
       this.#activeLayer.state = s;
 
       this.#activeLayer.drawOn(this.#middleCache);
 
       s.alpha = this.layers[this.#activeLayerIndex].state.alpha;
-      s.globalCompositeOperation = this.layers[this.#activeLayerIndex].state.globalCompositeOperation;
+      // s.globalCompositeOperation = this.layers[this.#activeLayerIndex].state.globalCompositeOperation;
       this.#activeLayer.state = s;
     }
 
@@ -380,7 +405,13 @@ module.exports = function (meta) {
 
       this.#interactionCache.path2D = new Path2D();
       this.#interactionCache.lastPoint = startPoint.matrixTransform(this.viewportTransform_inv);
-      const isOOB = !utils.pointInRect(this.#interactionCache.lastPoint, new DOMRect(-width / 2, -width / 2, this.#mainCanvas.width + width, this.#mainCanvas.height + width));
+
+      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      const clipPath = new Path2D();
+      clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
+      ctx.clip(clipPath);
+
+      const isOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect, Math.ceil(width / 2));
 
       this.#interactionCache.layerTransform_inv = new DOMMatrix()
         .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
@@ -403,10 +434,10 @@ module.exports = function (meta) {
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
 
         mainCtx.globalAlpha = this.#activeLayer.state.alpha;
-        mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
+        // mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
         mainCtx.drawImage(this.#middleCache, 0, 0);
         mainCtx.globalAlpha = 1;
-        mainCtx.globalCompositeOperation = "source-over";
+        // mainCtx.globalCompositeOperation = "source-over";
 
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
@@ -425,22 +456,22 @@ module.exports = function (meta) {
       const ctx = this.#middleCache.getContext("2d");
       const to_inv = point.matrixTransform(this.viewportTransform_inv);
 
-      const availRect = new DOMRect(-this.#interactionCache.width / 2, -this.#interactionCache.width / 2, this.#mainCanvas.width + this.#interactionCache.width, this.#mainCanvas.height + this.#interactionCache.width);
+      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       // out of bounds
-      const isOOB = !utils.pointInRect(to_inv, availRect);
-      const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect);
+      const isOOB = !utils.pointInRect(to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
+      const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect, Math.ceil(this.#interactionCache.width / 2));
 
       if (isOOB && !prevIsOOB) {
         this.lineTo(point);
         return;
       }
 
-      if (isOOB && prevIsOOB && !utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect).length) {
+      if (isOOB && prevIsOOB && !utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2)).length) {
         this.#interactionCache.lastPoint = to_inv;
         return;
       }
 
-      const [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect);
+      const [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
 
       if (prevIsOOB) {
         this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
@@ -458,10 +489,10 @@ module.exports = function (meta) {
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
 
         mainCtx.globalAlpha = this.#activeLayer.state.alpha;
-        mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
+        // mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
         mainCtx.drawImage(this.#middleCache, 0, 0);
         mainCtx.globalAlpha = 1;
-        mainCtx.globalCompositeOperation = "source-over";
+        // mainCtx.globalCompositeOperation = "source-over";
 
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
@@ -480,22 +511,22 @@ module.exports = function (meta) {
 
     /** @param {DOMPoint} point */
     lineTo(point) {
-      const ctx = (this.#activeLayerIndex > 0 ? this.#middleCache : this.#mainCanvas).getContext("2d");
+      const ctx = this.#middleCache.getContext("2d");
       const to_inv = point.matrixTransform(this.viewportTransform_inv);
 
-      const availRect = new DOMRect(-this.#interactionCache.width / 2, -this.#interactionCache.width / 2, this.#mainCanvas.width + this.#interactionCache.width, this.#mainCanvas.height + this.#interactionCache.width);
+      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       // out of bounds
-      const isOOB = !utils.pointInRect(to_inv, availRect);
-      const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect);
+      const isOOB = !utils.pointInRect(to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
+      const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect, Math.ceil(this.#interactionCache.width / 2));
 
-      const intersections = utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect);
+      const intersections = utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
 
       if (isOOB && prevIsOOB && !intersections.length) {
         this.#interactionCache.lastPoint = to_inv;
         return;
       }
 
-      const [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect);
+      const [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
 
       if (prevIsOOB) {
         this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
@@ -511,10 +542,10 @@ module.exports = function (meta) {
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
 
         mainCtx.globalAlpha = this.#activeLayer.state.alpha;
-        mainCtx.globalCompositeOperation = this.#activeLayer.state.alpha;
+        // mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
         mainCtx.drawImage(this.#middleCache, 0, 0);
         mainCtx.globalAlpha = 1;
-        mainCtx.globalCompositeOperation = "source-over";
+        // mainCtx.globalCompositeOperation = "source-over";
 
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
@@ -532,8 +563,9 @@ module.exports = function (meta) {
     }
 
     endDrawing() {
+      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       const clipPath = new Path2D();
-      clipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
 
       this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, this.#interactionCache.width);
       const layerState = this.#activeLayer.addStroke({
@@ -560,7 +592,7 @@ module.exports = function (meta) {
       const start_T = startPoint.matrixTransform(this.viewportTransform_inv);
       start_T.x = utils.clamp(0, start_T.x, this.#mainCanvas.width);
       start_T.y = utils.clamp(0, start_T.y, this.#mainCanvas.height);
-      this.#interactionCache.rect = new DOMRect(start_T.x, start_T.y, 0, 0);
+      this.#interactionCache.clipRect = new DOMRect(start_T.x, start_T.y, 0, 0);
       this.#interactionCache.width = Number(fixedAspect);
     }
 
@@ -570,33 +602,40 @@ module.exports = function (meta) {
       to_T.x = utils.clamp(0, to_T.x, this.#mainCanvas.width);
       to_T.y = utils.clamp(0, to_T.y, this.#mainCanvas.height);
 
-      this.#interactionCache.rect.width = to_T.x - this.#interactionCache.rect.x;
-      this.#interactionCache.rect.height = to_T.y - this.#interactionCache.rect.y;
+      this.#interactionCache.clipRect.width = to_T.x - this.#interactionCache.clipRect.x;
+      this.#interactionCache.clipRect.height = to_T.y - this.#interactionCache.clipRect.y;
 
       if (this.#interactionCache.width) {
         // fixed Aspect ratio
         const aspect = this.#mainCanvas.width / this.#mainCanvas.height;
 
-        this.#interactionCache.rect.width = utils.maxAbs(this.#interactionCache.rect.width, (Math.sign(this.#interactionCache.rect.width) || 1) * Math.abs(this.#interactionCache.rect.height) * aspect);
-        this.#interactionCache.rect.height = utils.maxAbs(this.#interactionCache.rect.height, (Math.sign(this.#interactionCache.rect.height) || 1) * Math.abs(this.#interactionCache.rect.width) / aspect);
+        this.#interactionCache.clipRect.width = utils.maxAbs(this.#interactionCache.clipRect.width, (Math.sign(this.#interactionCache.clipRect.width) || 1) * Math.abs(this.#interactionCache.clipRect.height) * aspect);
+        this.#interactionCache.clipRect.height = utils.maxAbs(this.#interactionCache.clipRect.height, (Math.sign(this.#interactionCache.clipRect.height) || 1) * Math.abs(this.#interactionCache.clipRect.width) / aspect);
 
-        this.#interactionCache.rect.width = utils.clamp(-this.#interactionCache.rect.x, this.#interactionCache.rect.width, this.#mainCanvas.width - this.#interactionCache.rect.x);
-        this.#interactionCache.rect.height = utils.clamp(-this.#interactionCache.rect.y, this.#interactionCache.rect.height, this.#mainCanvas.height - this.#interactionCache.rect.y);
+        this.#interactionCache.clipRect.width = utils.clamp(-this.#interactionCache.clipRect.x, this.#interactionCache.clipRect.width, this.#mainCanvas.width - this.#interactionCache.clipRect.x);
+        this.#interactionCache.clipRect.height = utils.clamp(-this.#interactionCache.clipRect.y, this.#interactionCache.clipRect.height, this.#mainCanvas.height - this.#interactionCache.clipRect.y);
 
-        this.#interactionCache.rect.width = utils.minAbs(this.#interactionCache.rect.width, (Math.sign(this.#interactionCache.rect.width) || 1) * Math.abs(this.#interactionCache.rect.height) * aspect);
-        this.#interactionCache.rect.height = utils.minAbs(this.#interactionCache.rect.height, (Math.sign(this.#interactionCache.rect.height) || 1) * Math.abs(this.#interactionCache.rect.width) / aspect);
+        this.#interactionCache.clipRect.width = utils.minAbs(this.#interactionCache.clipRect.width, (Math.sign(this.#interactionCache.clipRect.width) || 1) * Math.abs(this.#interactionCache.clipRect.height) * aspect);
+        this.#interactionCache.clipRect.height = utils.minAbs(this.#interactionCache.clipRect.height, (Math.sign(this.#interactionCache.clipRect.height) || 1) * Math.abs(this.#interactionCache.clipRect.width) / aspect);
       }
     }
 
     endRegionSelect() {
-      if (Math.abs(this.#interactionCache.rect.width) < 1 || Math.abs(this.#interactionCache.rect.height) < 1)
+      if (!this.#interactionCache.clipRect || Math.abs(this.#interactionCache.clipRect.width) < 1 || Math.abs(this.#interactionCache.clipRect.height) < 1) {
+        this.#interactionCache.clipRect = null;
+      }
+    }
+
+    cropToRegionRect() {
+      if (!this.#interactionCache.clipRect || Math.abs(this.#interactionCache.clipRect.width) < 1 || Math.abs(this.#interactionCache.clipRect.height) < 1) {
+        this.#interactionCache.clipRect = null;
         return false;
+      }
+      const width = Math.abs(this.#interactionCache.clipRect.width);
+      const height = Math.abs(this.#interactionCache.clipRect.height);
 
-      const width = Math.abs(this.#interactionCache.rect.width);
-      const height = Math.abs(this.#interactionCache.rect.height);
-
-      const ccx = this.#interactionCache.rect.left + width / 2;
-      const ccy = this.#interactionCache.rect.top + height / 2;
+      const ccx = this.#interactionCache.clipRect.left + width / 2;
+      const ccy = this.#interactionCache.clipRect.top + height / 2;
 
       const cx = this.#mainCanvas.width / 2;
       const cy = this.#mainCanvas.height / 2;
@@ -613,6 +652,7 @@ module.exports = function (meta) {
       this.#resizeCanvas(width, height);
       this.fullRender();
 
+      this.#interactionCache.clipRect = null;
       return true;
     }
 
@@ -624,6 +664,11 @@ module.exports = function (meta) {
       ctx.font = font;
       ctx.textBaseline = "middle";
       ctx.fillStyle = color;
+
+      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      const clipPath = new Path2D();
+      clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
+      ctx.clip(clipPath);
 
       this.#interactionCache.layerTransform_inv = new DOMMatrix()
         .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
@@ -638,10 +683,13 @@ module.exports = function (meta) {
       this.#interactionCache.color = color;
     }
 
-    updateText(text = this.#interactionCache.text) {
+    updateText(text = this.#interactionCache.text, font = this.#interactionCache.font) {
       const ctx = this.#middleCache.getContext("2d");
 
+      ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      ctx.font = font;
       this.#interactionCache.text = text;
+      this.#activeLayer.drawOn(this.#middleCache);
       [this.#interactionCache.rect.width, this.#interactionCache.rect.height] = utils.renderMultilineText(
         ctx, this.#interactionCache.text,
         new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y)
@@ -652,10 +700,10 @@ module.exports = function (meta) {
       this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
 
       mainCtx.globalAlpha = this.#activeLayer.state.alpha;
-      mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
+      // mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
       mainCtx.drawImage(this.#middleCache, 0, 0);
       mainCtx.globalAlpha = 1;
-      mainCtx.globalCompositeOperation = "source-over";
+      // mainCtx.globalCompositeOperation = "source-over";
 
       this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
@@ -670,8 +718,9 @@ module.exports = function (meta) {
         return;
       }
 
+      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       const clipPath = new Path2D();
-      clipPath.rect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
 
       this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, 0);
       const layerState = this.#activeLayer.addStroke({
@@ -686,14 +735,12 @@ module.exports = function (meta) {
 
       this.#interactionCache.text = "";
       ctx.restore();
+      ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
 
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
       updated.layers[this.activeLayerIndex] = { ...updated.layers[this.activeLayerIndex], state: layerState };
       this.#state.state = updated;
 
-      const middleCtx = this.#middleCache.getContext("2d");
-      middleCtx.restore();
-      middleCtx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
       this.render();
     }
 
@@ -740,6 +787,8 @@ module.exports = function (meta) {
     refreshViewport() {
       const ctx = this.#viewportCanvas.getContext("2d");
 
+      // ctx.imageSmoothingQuality = "high";
+      ctx.fillStyle = "#303038";
       ctx.fillRect(0, 0, this.#viewportCanvas.width, this.#viewportCanvas.height);
       ctx.setTransform(new DOMMatrix().translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2).multiplySelf(this.#viewportTransform));
 
@@ -771,6 +820,8 @@ module.exports = function (meta) {
       if (!this.#state.undo()) return false;
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
+        const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
+        this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       }
       this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
       this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
@@ -784,6 +835,8 @@ module.exports = function (meta) {
       if (!this.#state.redo()) return false;
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
+        const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
+        this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       }
       this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
       this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
@@ -810,7 +863,7 @@ module.exports = function (meta) {
         transform: new DOMMatrix(),
         isVisible: true,
         alpha: 1,
-        mixBlendMode: "source-over",
+        // mixBlendMode: "source-over",
         /**
          * @type {{
          *  color: string, width?: number, clipPath: Path2D, globalCompositeOperation: string,
@@ -957,7 +1010,7 @@ module.exports = function (meta) {
 
       const ctx = canvas.getContext("2d");
       ctx.save();
-      ctx.globalCompositeOperation = this.#state.mixBlendMode;
+      // ctx.globalCompositeOperation = this.#state.mixBlendMode;
       ctx.globalAlpha = this.#state.alpha;
       ctx.setTransform(new DOMMatrix()
         .translateSelf(canvas.width / 2, canvas.height / 2)
@@ -970,7 +1023,7 @@ module.exports = function (meta) {
 
     /** @param {HTMLCanvasElement} canvas */
     drawThumbnailOn(canvas, scale = 1) {
-      if (this.#state.strokes.length === 0 && !this.#img || !this.#staleThumbnail) return;
+      if (!this.#staleThumbnail) return;
 
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1142,7 +1195,12 @@ module.exports = function (meta) {
     },
 
     /** @param {DOMPoint} p @param {DOMRect} rect */
-    pointInRect(p, rect) { return p.x >= rect.left && p.x <= rect.right && p.y >= rect.top && p.y <= rect.bottom },
+    pointInRect(p, rect, padding = 0) {
+      return p.x >= rect.left - padding &&
+        p.x <= rect.right + padding &&
+        p.y >= rect.top - padding &&
+        p.y <= rect.bottom + padding
+    },
 
     /**
      * Intersection point between two lines
@@ -1162,22 +1220,22 @@ module.exports = function (meta) {
      * Intersection points between line and Rect
      * @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]}
      */
-    lineRect(p1, p2, rect) {
-      const top = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.top), new DOMPoint(rect.right, rect.top));
-      const right = utils.lineLine(p1, p2, new DOMPoint(rect.right, rect.top), new DOMPoint(rect.right, rect.bottom));
-      const bottom = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.bottom), new DOMPoint(rect.right, rect.bottom));
-      const left = utils.lineLine(p1, p2, new DOMPoint(rect.left, rect.top), new DOMPoint(rect.left, rect.bottom));
+    lineRect(p1, p2, rect, padding = 0) {
+      const top = utils.lineLine(p1, p2, new DOMPoint(rect.left - padding, rect.top - padding), new DOMPoint(rect.right + padding, rect.top - padding));
+      const right = utils.lineLine(p1, p2, new DOMPoint(rect.right + padding, rect.top - padding), new DOMPoint(rect.right + padding, rect.bottom + padding));
+      const bottom = utils.lineLine(p1, p2, new DOMPoint(rect.left - padding, rect.bottom + padding), new DOMPoint(rect.right + padding, rect.bottom + padding));
+      const left = utils.lineLine(p1, p2, new DOMPoint(rect.left - padding, rect.top - padding), new DOMPoint(rect.left - padding, rect.bottom + padding));
 
       return [top, right, bottom, left].filter(Boolean);
     },
 
     /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect */
-    clampLineToRect(p1, p2, rect) {
-      const intersects = utils.lineRect(p1, p2, rect);
+    clampLineToRect(p1, p2, rect, padding = 0) {
+      const intersects = utils.lineRect(p1, p2, rect, padding);
 
       switch (intersects.length) {
         case 1: {
-          return utils.pointInRect(p1, rect) ? [p1, intersects[0]] : [intersects[0], p2];
+          return utils.pointInRect(p1, rect, padding) ? [p1, intersects[0]] : [intersects[0], p2];
         }
         case 2: {
           return intersects.sort((a, b) => {
@@ -1233,31 +1291,6 @@ module.exports = function (meta) {
       }));
     },
 
-    toImgSrc(url, proxyUrl) {
-      function toURLSafe(e) {
-        try { return new URL(e) }
-        catch (e) { return null }
-      }
-      function cdn(e) {
-        let t = toURLSafe(e);
-        return null != t && (t.host === "cdn.discordapp.com" || /^.*\.discordapp\.net$/.test(t.hostname))
-      }
-      function g(e) {
-        let l = "https://media.discordapp.net", a = "cdn.discordapp.com", t = toURLSafe(e);
-        return null == t || t.host === l ? e : (t.origin === a ? (t.host = l,
-          t.searchParams.delete("size"),
-          t.searchParams.delete("width"),
-          t.searchParams.delete("height"),
-          t.searchParams.delete("quality")) : (
-          t.searchParams.delete("width"),
-          t.searchParams.delete("height"),
-          t.searchParams.set("quality", "lossless")),
-          t.searchParams.delete("format"),
-          t.toString())
-      }
-      return cdn(url) ? g(url) : (null != proxyUrl && "" !== proxyUrl ? proxyUrl : url)
-    },
-
     paths: {
       Main: "m22.7 14.3l-1 1l-2-2l1-1c.1-.1.2-.2.4-.2c.1 0 .3.1.4.2l1.3 1.3c.1.2.1.5-.1.7M13 19.9V22h2.1l6.1-6.1l-2-2zm-1.79-4.07l-1.96-2.36L6.5 17h6.62l2.54-2.45l-1.7-2.26zM11 19.9v-.85l.05-.05H5V5h14v6.31l2-1.93V5a2 2 0 0 0-2-2H5c-1.1 0-2 .9-2 2v14a2 2 0 0 0 2 2h6z",
       FlipH: "M1.2656 20.1094 8.7188 4.4531C9.1406 3.6094 10.3594 3.8906 10.3594 4.8281L10.3594 20.4375C10.3594 21.375 9.8906 21.7969 8.9531 21.7969L2.2969 21.7969C1.3594 21.7969.8438 20.9531 1.2656 20.1094ZM22.8281 20.1094 15.375 4.4531C14.9531 3.6094 13.7344 3.8906 13.7344 4.8281L13.7344 20.4375C13.7344 21.375 14.2031 21.7969 15.1406 21.7969L21.7969 21.7969C22.7344 21.7969 23.25 20.9531 22.8281 20.1094Z",
@@ -1266,6 +1299,7 @@ module.exports = function (meta) {
       RotL: "M14.25 7.8516 16.1484 9.75C16.5 10.1016 16.5 10.6641 16.1484 11.0157 15.7968 11.3671 15.2343 11.3671 14.8829 11.0157L11.4375 7.5704C11.0156 7.1484 11.0156 6.7266 11.4375 6.3046L14.8829 2.8594C15.2343 2.5078 15.7968 2.5078 16.1484 2.8594 16.5 3.2109 16.5 3.7734 16.1484 4.125L14.25 6.0234 18.3281 6.0234C20.1562 6.0234 21.5625 7.4296 21.5625 9.2579L21.5625 12.0704C21.5625 12.5625 21.1406 12.9844 20.6484 12.9844 20.1562 12.9844 19.7343 12.5625 19.7343 12.0704L19.7343 9.1875C19.7343 8.4844 19.1016 7.8516 18.3984 7.8516ZM7.9687 21.7969 2.25 21.7969C1.6406 21.7969.9375 21.2813 1.3594 20.25L7.5937 5.2969C7.9687 4.2656 9.2344 4.5469 9.2344 5.5781L9.2344 20.3906C9.2344 21.2344 8.8125 21.7969 7.9687 21.7969ZM22.6406 20.3438C23.2031 20.7188 23.1094 21.7969 22.0781 21.7969L11.4375 21.7969C10.6875 21.7969 10.3125 21.2344 10.3125 20.625L10.3125 14.7188C10.3125 14.0625 10.9687 13.4531 11.6719 13.875Z",
       Undo: "M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 11.03 17.15 8 12.5 8",
       Redo: "M18.4 10.6C16.55 8.99 14.15 8 11.5 8c-4.65 0-8.58 3.03-9.96 7.22L3.9 16c1.05-3.19 4.05-5.5 7.6-5.5 1.95 0 3.73.72 5.12 1.88L13 16h9V7z",
+      Select: "M7 21v-2h2v2zM3 5V3h2v2zm4 0V3h2v2zm4 16v-2h2v2zm0-16V3h2v2zm4 0V3h2v2zm0 16v-2h2v2zm4-16V3h2v2zM3 21v-2h2v2zm0-4v-2h2v2zm0-4v-2h2v2zm0-4V7h2v2zm16 12v-2h2v2zm0-4v-2h2v2zm0-4v-2h2v2zm0-4V7h2v2z",
       Crop: "M17 15h2V7c0-1.1-.9-2-2-2H9v2h8zM7 17V1H5v4H1v2h4v10c0 1.1.9 2 2 2h10v4h2v-4h4v-2z",
       Cut: "m16.9 18.3-4.9-4.9-1.645 1.645q.14.2625.1925.56T10.6 16.2q0 1.155-.8225 1.9775T7.8 19t-1.9775-.8225T5 16.2t.8225-1.9775T7.8 13.4q.2975 0 .595.0525t.56.1925L10.6 12 8.955 10.355q-.2625.14-.56.1925T7.8 10.6q-1.155 0-1.9775-.8225T5 7.8t.8225-1.9775T7.8 5t1.9775.8225T10.6 7.8q0 .2975-.0525.595t-.1925.56L19 17.6v.7zm-2.8-7-1.4-1.4 4.2-4.2H19v.7zM7.8 9.2q.5775 0 .9891-.4109T9.2 7.8t-.4109-.9884T7.8 6.4t-.9884.4116T6.4 7.8t.4116.9891T7.8 9.2m4.2 3.15q.14 0 .245-.105t.105-.245-.105-.245-.245-.105-.245.105-.105.245.105.245.245.105M7.8 17.6q.5775 0 .9891-.4109T9.2 16.2t-.4109-.9884T7.8 14.8t-.9884.4116T6.4 16.2t.4116.9891T7.8 17.6ZM1 23v-6h2v4h4v2zm16 0v-2h4v-4h2v6zM1 7V1h6v2H3v4zM21 7V3h-4V1h6v6Z",
       Rotate: "M10.217 19.339C6.62 17.623 4.046 14.136 3.65 10H2c.561 6.776 6.226 12.1 13.145 12.1.253 0 .484-.022.726-.033L11.68 17.865ZM8.855 1.9c-.253 0-.484.022-.726.044L12.32 6.135l1.463-1.463C17.38 6.377 19.954 9.864 20.35 14H22C21.439 7.224 15.774 1.9 8.855 1.9Z",
@@ -1284,9 +1318,9 @@ module.exports = function (meta) {
       VisibilityOff: "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7M2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2m4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3z",
     },
 
-    mixBlendModes: [
-      "lighter", "copy", "xor", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"
-    ].map(e => ({ value: e, label: e.charAt(0).toUpperCase() + e.slice(1) })),
+    // mixBlendModes: [
+    //   "lighter", "copy", "xor", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"
+    // ].map(e => ({ value: e, label: e.charAt(0).toUpperCase() + e.slice(1) })),
   }
 
   var hooks = {
@@ -1464,13 +1498,13 @@ module.exports = function (meta) {
     RemixIcon({ url }) {
       if (!internals.keys.ModalRoot || !internals.keys.ModalContent || !internals.keys.ModalFooter) return;
 
-      const [fetching, setFetching] = useState(false);
+      const [isPending, startTransition] = useTransition(); // Very cool React 19 stuff
       const ctrl = useRef(new AbortController());
       const userActions = useRef(null);
 
       useEffect(() => () => ctrl.current.abort(), []);
 
-      return !fetching ? jsx("span", {
+      return !isPending ? jsx("span", {
         children: [
           jsx("style", null, `
             .remixIcon {
@@ -1490,25 +1524,29 @@ module.exports = function (meta) {
             }
           `),
           jsx(Components.IconButton, {
-            onClick: async () => {
-              try {
-                setFetching(true);
-                const response = await fetch(url, { signal: ctrl.current.signal }); // BdApi.Net.fetch will reject blobs
-                const blob = await response.blob();
-                const bitmap = await createImageBitmap(blob);
+            onClick: () => {
+              startTransition(async () => {
+                try {
+                  const response = await fetch(url, { signal: ctrl.current.signal }); // BdApi.Net.fetch will reject blobs
+                  if (!response.headers.get('Content-Type').startsWith('image')) {
+                    throw new Error("Url is not an image");
+                  }
+                  const blob = await response.blob();
+                  const bitmap = await createImageBitmap(blob);
 
-                internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
-                utils.openEditor({
-                  onSubmit: () => { userActions.current?.upload() },
-                  userActions,
-                  bitmap
-                });
-                setFetching(false);
-              } catch (e) {
-                setFetching(false);
-                if (e.name !== "AbortError")
+                  internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
+                  utils.openEditor({
+                    onSubmit: () => { userActions.current?.upload() },
+                    userActions,
+                    bitmap
+                  });
+                } catch (e) {
+                  if (e.name === "AbortError") return;
+
+                  BdApi.Logger.error(meta.slug, e);
                   UI.showToast("Could not fetch image.", { type: "error" });
-              }
+                }
+              })
             },
             className: "remixIcon",
             position: 'bottom',
@@ -1694,7 +1732,7 @@ module.exports = function (meta) {
       useEffect(() => {
         const s = Math.max(canvas.current.width / width, canvas.current.height / height);
         editor.current.layers[index].layer.drawThumbnailOn(canvas.current, s);
-      }) // yes, no dependency!
+      }) // yes, no dependency! Update the thumbnail on rerenders. Actual drawing will only occur if thumbnail is stale.
 
       return jsx("canvas", {
         width: ~~Math.min(32, 32 * width / height),
@@ -1786,7 +1824,7 @@ module.exports = function (meta) {
                 file: new File([blob], "image.webp", { type: blob.type }),
                 isThumbnail: false,
                 origin: "clipboard",
-                platform: 1
+                platform: 1     // 0: React Native, 1: Web
               },
               channelId,
               showLargeMessageDialog: false,
@@ -1799,12 +1837,25 @@ module.exports = function (meta) {
         }
       }), []);
 
+      const updateClipRect = useCallback(() => {
+        const clipRect = editor.current.clipRect;
+        if (clipRect) {
+          overlay.current.style.setProperty("--cx1", 100 * clipRect.left + "%");
+          overlay.current.style.setProperty("--cx2", 100 * clipRect.right + "%");
+          overlay.current.style.setProperty("--cy1", 100 * clipRect.top + "%");
+          overlay.current.style.setProperty("--cy2", 100 * clipRect.bottom + "%");
+        }
+      }, []);
+
       const syncStates = useCallback(() => {
         setCanUndoRedo(editor.current.canUndo << 1 ^ editor.current.canRedo);
         setDims(d => {
           const { width, height } = editor.current.canvasDims;
           if (d.width === width && d.height === height)
             return d;
+          editor.current.startRegionSelect(new DOMPoint(0, 0));
+          editor.current.endRegionSelect();
+          ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(prop => overlay.current.style.removeProperty(prop));
           return { width, height }
         });
         setLayers(editor.current.layers.map((layer, i) => ({
@@ -1875,6 +1926,7 @@ module.exports = function (meta) {
               if (canvasRef.current?.matches(".rotating")) {
                 overlay.current.style.removeProperty("--translate");
               }
+              updateClipRect();
               break;
 
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "c":
@@ -1889,7 +1941,7 @@ module.exports = function (meta) {
               setMode(m => m === 2 ? null : 2);
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "s":
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "z":
               setMode(m => m === 3 ? null : 3);
               break;
 
@@ -1905,15 +1957,17 @@ module.exports = function (meta) {
               setMode(m => m === 6 ? null : 6);
               break;
 
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "s":
+              setMode(m => m === 7 ? null : 7);
+              break;
+
             case !e.repeat && canvasRef.current.matches(".drawing") && "Shift": {
               const lastPoint = editor.current.lastPoint;
-              if (!lastPoint || isInteracting.current) return;
+              if (!lastPoint || isInteracting.current) break;
               overlay.current.style.setProperty("--line-from", `${lastPoint.x}px ${lastPoint.y}px`);
-              const phi = utils.atan2(e.clientX - canvasRect.current.x - lastPoint.x, e.clientY - canvasRect.current.y - lastPoint.y);
-              const r = Math.hypot(e.clientY - canvasRect.current.y - lastPoint.y, e.clientX - canvasRect.current.x - lastPoint.x);
-              overlay.current.style.setProperty("--phi", `${phi || 0}deg`);
-              overlay.current.style.setProperty("--r", `${r || 0}px`);
-              return;
+              overlay.current.style.setProperty("--phi", "0deg");
+              overlay.current.style.setProperty("--r", "0px");
+              break;
             }
 
             case "Escape": {
@@ -1921,6 +1975,7 @@ module.exports = function (meta) {
                 editor.current.previewLayerTransformTo(new DOMMatrix());
                 break;
               }
+              // Intentional fall-through
             }
 
             default: {
@@ -1940,6 +1995,7 @@ module.exports = function (meta) {
           const rect = canvasRef.current.offsetParent.getBoundingClientRect();
           editor.current.viewportDims = { width: ~~(rect.width), height: ~~(rect.height) };
           editor.current.refreshViewport();
+          updateClipRect();
           canvasRect.current = canvasRef.current.getBoundingClientRect();
         }, ctrl);
         addEventListener("paste", async (e) => {
@@ -1988,14 +2044,9 @@ module.exports = function (meta) {
             const y = (e.clientY - canvasRect.current.y) / canvasRect.current.height;
             editor.current.scaleViewportBy(delta, x, y);
 
+            updateClipRect()
+
             switch (mode) {
-              case 0: {
-                const rect = editor.current.regionRect;
-                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
-              }
               case 1: {
                 const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
                 overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
@@ -2003,10 +2054,10 @@ module.exports = function (meta) {
               }
               case isInteracting.current && 5: {
                 const rect = editor.current.regionRect;
-                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+                overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
                 break;
               }
               case 4:
@@ -2051,15 +2102,17 @@ module.exports = function (meta) {
           });
 
           if (mode !== 5) isInteracting.current = true;
-          if ([1, 2, 3, 4, 6].some(e => e === mode) && (e.buttons & 1)) canvasRef.current.getContext("2d").imageSmoothingEnabled = false;
+          // if ([1, 2, 3, 4, 6].some(e => e === mode) && (e.buttons & 1)) canvasRef.current.getContext("2d").imageSmoothingEnabled = false;
 
           switch (mode) {
+            case !!(e.buttons & 1) && 7:
             case !!(e.buttons & 1) && 0: {
               canvasRef.current.classList.add("pointerdown");
               const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
-              editor.current.startRegionSelect(new DOMPoint(startX, startY), fixedAspect);
+              editor.current.startRegionSelect(new DOMPoint(startX, startY), mode === 0 ? fixedAspect : false);
+              ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
               break;
             }
             case !!(e.buttons & 1) && 1: {
@@ -2077,10 +2130,10 @@ module.exports = function (meta) {
               editor.current.updateText();
 
               const rect = editor.current.regionRect;
-              overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-              overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-              overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-              overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+              overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
+              overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
+              overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
+              overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
 
               canvasRef.current.releasePointerCapture(e.pointerId);
               break;
@@ -2130,36 +2183,36 @@ module.exports = function (meta) {
             const dy = (e.clientY - store.startY) / canvasRect.current.height * canvasRef.current.height;
             editor.current.translateViewportBy(dx, dy);
 
-            switch (mode) {
-              case 0:
-              case isInteracting.current && 5: {
-                const rect = editor.current.regionRect;
-                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
-                break;
-              }
-              case 1: {
-                const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
-                overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
-                break;
-              }
+            updateClipRect();
+
+            if (isInteracting.current && mode === 5) {
+              const rect = editor.current.regionRect;
+              overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
+              overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
+              overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
+              overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+            }
+
+            if (mode === 1) {
+              const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
+              overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
             }
           } else {
             store.changed = true;
             switch (mode) {
+              case 7:
               case 0: {
                 const boxScale = canvasRect.current.width / canvasRef.current.width;
                 const startX = (e.clientX - canvasRect.current.x) / boxScale;
                 const startY = (e.clientY - canvasRect.current.y) / boxScale;
                 editor.current.regionSelect(new DOMPoint(startX, startY));
 
-                const rect = editor.current.regionRect;
-                overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+                const rect = editor.current.clipRect;
+                if (!rect) break;
+                overlay.current.style.setProperty("--cx1", 100 * rect.left + "%");
+                overlay.current.style.setProperty("--cx2", 100 * rect.right + "%");
+                overlay.current.style.setProperty("--cy1", 100 * rect.top + "%");
+                overlay.current.style.setProperty("--cy2", 100 * rect.bottom + "%");
                 break;
               }
               case 1: {
@@ -2208,14 +2261,18 @@ module.exports = function (meta) {
           if (mode !== 5) isInteracting.current = false;
 
           switch (mode) {
+            case 7: {
+              editor.current.endRegionSelect();
+              break;
+            }
             case 0: {
+              editor.current.endRegionSelect();
               canvasRef.current.classList.remove("pointerdown");
-              ["--x1", "--x2", "--y1", "--y2"].forEach(a => overlay.current.style.removeProperty(a));
-              if (store.changed && editor.current.endRegionSelect()) {
+              ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
+              if (store.changed && editor.current.cropToRegionRect()) {
                 syncStates();
                 editor.current.resetViewport();
               };
-
               break;
             }
             case store.changed && 1:
@@ -2242,10 +2299,10 @@ module.exports = function (meta) {
             }
           }
 
-          if ([1, 2, 3, 4, 6].some(e => e === mode)) {
-            canvasRef.current.getContext("2d").imageSmoothingEnabled = true;
-            editor.current.refreshViewport();
-          }
+          // if ([1, 2, 3, 4, 6].some(e => e === mode)) {
+          //   canvasRef.current.getContext("2d").imageSmoothingEnabled = true;
+          //   editor.current.refreshViewport();
+          // }
         }
       });
 
@@ -2275,7 +2332,7 @@ module.exports = function (meta) {
           isInteracting.current = false;
           textarea.current.value = "";
           textarea.current.hidden = true;
-          ["--x1", "--x2", "--y1", "--y2"].forEach(prop => overlay.current.style.removeProperty(prop));
+          ["--rx1", "--rx2", "--ry1", "--ry2"].forEach(prop => overlay.current.style.removeProperty(prop));
         }
       }, []);
 
@@ -2285,10 +2342,10 @@ module.exports = function (meta) {
 
         editor.current.updateText(e.currentTarget.value);
         const rect = editor.current.regionRect;
-        overlay.current.style.setProperty("--x1", 100 * rect.left + "%");
-        overlay.current.style.setProperty("--x2", 100 * rect.right + "%");
-        overlay.current.style.setProperty("--y1", 100 * rect.top + "%");
-        overlay.current.style.setProperty("--y2", 100 * rect.bottom + "%");
+        overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
+        overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
+        overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
+        overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
       }, [mode]);
 
       return jsx(Fragment, {
@@ -2297,7 +2354,7 @@ module.exports = function (meta) {
             className: "canvas-wrapper",
             children: [
               jsx("canvas", {
-                className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing", "texting", "drawing"][mode]),
+                className: utils.clsx("canvas", ["cropping", "rotating", "moving", "scaling", "drawing", "texting", "drawing", "selecting"][mode]),
                 ref: canvasRef,
                 onWheel: handleWheel,
                 onMouseMove: handleMouseMove,
@@ -2379,7 +2436,12 @@ module.exports = function (meta) {
                     active: mode === 5,
                     onClick: () => setMode(m => m === 5 ? null : 5)
                   }),
-                  jsx("div"),
+                  jsx(Components.IconButton, {
+                    tooltip: "Select (S)",
+                    d: utils.paths.Select,
+                    active: mode === 7,
+                    onClick: () => setMode(m => m === 7 ? null : 7)
+                  }),
                   jsx(Components.IconButton, {
                     tooltip: "Move (M)",
                     d: utils.paths.Pan,
@@ -2393,7 +2455,7 @@ module.exports = function (meta) {
                     onClick: () => setMode(m => m === 1 ? null : 1)
                   }),
                   jsx(Components.IconButton, {
-                    tooltip: "Scale (S)",
+                    tooltip: "Zoom (Z)",
                     d: utils.paths.Scale,
                     active: mode === 3,
                     onClick: () => setMode(m => m === 3 ? null : 3)
@@ -2470,12 +2532,46 @@ module.exports = function (meta) {
                         maxValue: 400,
                         value: strokeStyle.width,
                         onSlide: value => {
-                          const boxScale = canvasRect.current.width / canvasRef.current.width;
-                          const cs = utils.getScale(editor.current.viewportTransform);
-                          overlay.current.style.setProperty("--brushsize", (value * cs * boxScale).toFixed(4));
+                          switch (mode) {
+                            case 4:
+                            case 6: {
+                              const boxScale = canvasRect.current.width / canvasRef.current.width;
+                              const cs = utils.getScale(editor.current.viewportTransform);
+                              overlay.current.style.setProperty("--brushsize", (value * cs * boxScale).toFixed(4));
+                              break;
+                            }
+                            case 5: {
+                              editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
+                              if (isInteracting.current) {
+                                const rect = editor.current.regionRect;
+                                overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
+                                overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
+                                overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
+                                overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+                              }
+                              break;
+                            }
+                          }
                         },
                         onChange: value => {
-                          overlay.current.style.removeProperty("--brushsize");
+                          switch (mode) {
+                            case 4:
+                            case 6: {
+                              overlay.current.style.removeProperty("--brushsize");
+                              break;
+                            }
+                            case 5: {
+                              editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
+                              if (isInteracting.current) {
+                                const rect = editor.current.regionRect;
+                                overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
+                                overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
+                                overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
+                                overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+                              }
+                              break;
+                            }
+                          }
                           setStrokeStyle(s => ({ ...s, width: value }));
                         }
                       }),
@@ -2507,7 +2603,7 @@ module.exports = function (meta) {
                   }),
                   mode == 3 && jsx(Components.NumberSlider, {
                     ref: auxRef,
-                    label: "Scale",
+                    label: "Zoom ",
                     suffix: "x",
                     decimals: 2,
                     minValue: 0.01,
@@ -2683,35 +2779,35 @@ module.exports = function (meta) {
       })
     },
 
-    /** @param {{ initialValue: string, onChange?: (e: string) => void }} */
-    BlendModeSelector({ onChange, initialValue }) {
-      const [blendMode, setBlendMode] = useState(initialValue);
-      const mixBlendModes = useRef([{ value: "source-over", label: "Normal" }].concat(utils.mixBlendModes));
+    // /** @param {{ initialValue: string, onChange?: (e: string) => void }} */
+    // BlendModeSelector({ onChange, initialValue }) {
+    //   const [blendMode, setBlendMode] = useState(initialValue);
+    //   const mixBlendModes = useRef([{ value: "source-over", label: "Normal" }].concat(utils.mixBlendModes));
 
-      return jsx("div", {
-        children: [
-          jsx("style", null, `@scope {
-            .select {
-              display: inline-block;
-              & > :first-child {
-                min-height: var(--control-input-height-sm);
-                padding: 0 8px;
-              }
-            }
-          }`),
-          jsx("div", { style: { padding: 8 } }, "Mix Blend Mode"),
-          jsx(internals.nativeUI[internals.keys.SingleSelect], {
-            options: mixBlendModes.current,
-            value: blendMode,
-            className: "select",
-            onChange: (mode) => {
-              setBlendMode(mode);
-              onChange?.(mode);
-            }
-          })
-        ]
-      })
-    },
+    //   return jsx("div", {
+    //     children: [
+    //       jsx("style", null, `@scope {
+    //         .select {
+    //           display: inline-block;
+    //           & > :first-child {
+    //             min-height: var(--control-input-height-sm);
+    //             padding: 0 8px;
+    //           }
+    //         }
+    //       }`),
+    //       jsx("div", { style: { padding: 8 } }, "Mix Blend Mode"),
+    //       jsx(internals.nativeUI[internals.keys.SingleSelect], {
+    //         options: mixBlendModes.current,
+    //         value: blendMode,
+    //         className: "select",
+    //         onChange: (mode) => {
+    //           setBlendMode(mode);
+    //           onChange?.(mode);
+    //         }
+    //       })
+    //     ]
+    //   })
+    // },
 
     /**
      * @param {{
@@ -3048,7 +3144,6 @@ module.exports = function (meta) {
 .canvas-wrapper {
   height: 100%;
   overflow: hidden;
-  position: relative;
   display: grid;
   place-items: center;
   position: relative;
@@ -3069,10 +3164,10 @@ module.exports = function (meta) {
 }
   
 .canvas-thumbnail {
-  background: repeating-conic-gradient(#666 0 25%, #999 0 50%) 4px 0 / 8px 8px fixed content-box;
+  background: repeating-conic-gradient(#666 0 25%, #999 0 50%) 2px 2px / 6px 6px fixed content-box;
 }
 
-.canvas.cropping {
+.canvas:is(.cropping, .drawing, .selecting) {
   cursor: crosshair;
 }
 
@@ -3085,10 +3180,6 @@ module.exports = function (meta) {
 
 .canvas.moving {
   cursor: move;
-}
-
-.canvas.drawing {
-  cursor: crosshair;
 }
 
 .canvas.texting {
@@ -3123,82 +3214,114 @@ module.exports = function (meta) {
   position: absolute;
   pointer-events: none;
   overflow: hidden;
-  inset: anchor(--canvas inside)
+  inset: anchor(--canvas inside);
+  container-name: overlay;
 }
 
 .canvas.cropping.pointerdown + .canvas-overlay > .cropper-region {
-  width: 100%;
-  height: 100%;
-  background: rgba(0, 0, 0, 0.7);
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
   clip-path: polygon(
     0% 0%, 100% 0%, 100% 100%, 0 100%,
-    var(--x1, 50%) var(--y2, 50%), var(--x2, 50%) var(--y2, 50%), var(--x2, 50%) var(--y1, 50%), var(--x1, 50%) var(--y1, 50%),
-    var(--x1, 50%) var(--y2, 50%), 0 100%
+    var(--cx1, 50%) var(--cy2, 50%), var(--cx2, 50%) var(--cy2, 50%), var(--cx2, 50%) var(--cy1, 50%), var(--cx1, 50%) var(--cy1, 50%),
+    var(--cx1, 50%) var(--cy2, 50%), 0 100%
   );
 }
 
-.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border,
+.canvas.selecting.pointerdown + .canvas-overlay > .cropper-region,
+.canvas:not(.cropping.pointerdown) + .canvas-overlay > .cropper-region {
+  position: absolute;
+  background: rgba(0, 120, 215, 0.25);
+  border: 1px solid black;
+  outline: 1px dotted white;
+  outline-offset: -1px;
+  left: max(-2px, var(--cx1, -2px));
+  right: max(-2px, 100% - var(--cx2, 0px));
+  top: max(-2px, var(--cy1, -2px));
+  bottom: max(-2px, 100% - var(--cy2, 0px));
+}
+
+.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border {
+  position: absolute;
+  border: 1px solid black;
+  outline: 1px dashed white;
+  outline-offset: -1px;
+  left: max(-2px, var(--cx1, -2px));
+  right: max(-2px, 100% - var(--cx2, 0px));
+  top: max(-2px, var(--cy1, -2px));
+  bottom: max(-2px, 100% - var(--cy2, 0px));
+}
+
 .canvas.texting + .canvas-overlay > .cropper-border {
   position: absolute;
   border: 1px solid black;
-  outline: 1px dashed currentColor;
+  outline: 1px dashed white;
   outline-offset: -1px;
-  left: max(-2px, var(--x1, -2px));
-  right: max(-2px, 100% - var(--x2, 0px));
-  top: max(-2px, var(--y1, -2px));
-  bottom: max(-2px, 100% - var(--y2, 0px));
+  left: max(-2px, var(--rx1, -2px));
+  right: max(-2px, 100% - var(--rx2, 0px));
+  top: max(-2px, var(--ry1, -2px));
+  bottom: max(-2px, 100% - var(--ry2, 0px));
 }
 
 .canvas.cropping.pointerdown + .canvas-overlay > .cropper-border {
   opacity: min(
-    min(1000 * (var(--x2, 0) - var(--x1, 0)), 100%),
-    min(1000 * (var(--y2, 0) - var(--y1, 0)), 100%)
+    min(1000 * (var(--rx2, 0) - var(--rx1, 0)), 100%),
+    min(1000 * (var(--ry2, 0) - var(--ry1, 0)), 100%)
   );
 }
 
-.canvas.drawing + .canvas-overlay > .cropper-region {
-  position: absolute;
-  left: 0;
-  top: 0;
-  transform-origin: top left;
-  translate: var(--line-from, -1000px -1000px);
-  width: var(--r, 0px);
-  rotate: var(--phi, 0rad);
-  height: 1px;
-  background: white;
-  outline: 1px solid grey;
-  
-  &::before,
-  &::after {
-    content: '';
+@container overlay style(--line-from) {
+  .canvas.drawing + .canvas-overlay > .cropper-border {
     position: absolute;
-    outline: 2px solid grey;
-    outline-offset: 6px;
-    border-radius: 100vmax;
-    width: 2px;
-    height: 2px;
-    translate: 0 -1px;
-  }
-  &::after {
-    right: -1px;
-  }
-  &::before {
-    left: -1px;
+    left: 0;
+    top: 0;
+    transform-origin: top left;
+    translate: var(--line-from, -1000px -1000px);
+    width: var(--r, 0px);
+    rotate: var(--phi, 0rad);
+    height: 1px;
+    background: white;
+    outline: 1px solid grey;
+    
+    &::before,
+    &::after {
+      content: '';
+      position: absolute;
+      outline: 2px solid grey;
+      outline-offset: 6px;
+      border-radius: 100vmax;
+      width: 2px;
+      height: 2px;
+      translate: 0 -1px;
+    }
+    &::after {
+      right: -1px;
+    }
+    &::before {
+      left: -1px;
+    }
   }
 }
 
-
-.canvas.drawing + .canvas-overlay > .cropper-border {
-  position: absolute;
-  inset: 0;
-  margin: auto;
-  opacity: calc(var(--brushsize, 0) / var(--brushsize, 1));
-  width: calc(1px * var(--brushsize, 0) - 1px);
-  aspect-ratio: 1 / 1;
-  border: 1px solid black;
-  outline: 1px dashed white;
-  outline-offset: -1px;
-  border-radius: 100vmax;
+@container overlay style(--brushsize) {
+  .canvas.drawing + .canvas-overlay > .cropper-border {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    translate: -50% -50%;
+    opacity: calc(var(--brushsize, 0) / var(--brushsize, 1));
+    width: calc(1px * var(--brushsize, 0) - 1px);
+    height: calc(1px * var(--brushsize, 0) - 1px);
+    border: 1px solid black;
+    background: transparent;
+    outline: 1px dashed white;
+    outline-offset: -1px;
+    border-radius: 100vmax;
+    &::before, &::after {
+      content: none;
+    }
+  }
 }
 
 .canvas-actions {
