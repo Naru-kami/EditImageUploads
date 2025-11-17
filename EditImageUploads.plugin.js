@@ -13,9 +13,8 @@ module.exports = function (meta) {
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI, ContextMenu } = BdApi;
 
   const {
-    createElement: jsx, useState, useEffect, useRef, useLayoutEffect,
-    useImperativeHandle, useCallback, useId, Fragment, cloneElement,
-    useTransition
+    createElement: jsx, useState, useEffect, useRef, useLayoutEffect, useId,
+    useImperativeHandle, useCallback, Fragment, cloneElement, useTransition
   } = React;
 
   var internals, ctrl;
@@ -143,7 +142,12 @@ module.exports = function (meta) {
       [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(c => {
         c.getContext("2d").imageSmoothingEnabled = false;
       })
-      canvas.getContext("2d").imageSmoothingQuality = "medium";
+      const smoothing = BdApi.Data.load(meta.slug, "smoothing") ?? "medium";
+      if (smoothing) {
+        canvas.getContext("2d").imageSmoothingQuality = smoothing;
+      } else {
+        canvas.getContext("2d").imageSmoothingEnabled = false;
+      }
 
       const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
@@ -469,7 +473,6 @@ module.exports = function (meta) {
 
       if (prevIsOOB) {
         this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
-        // ctx.moveTo(clampedFrom.x, clampedFrom.y);
       }
 
       if (this.#activeLayer.state.isVisible) {
@@ -727,7 +730,7 @@ module.exports = function (meta) {
       this.fullRender();
     }
 
-    /** @param {ImageEncodeOptions?} options */
+    /** @type {typeof OffscreenCanvas.prototype.convertToBlob} */
     toBlob(options) { return this.#mainCanvas.convertToBlob(options) }
 
     refreshViewport() {
@@ -1193,6 +1196,7 @@ module.exports = function (meta) {
       }
     },
 
+    /** @param {{onSubmit: () => void, bitmap: ImageBitmap, userActions: React.RefObject<any>}} */
     openEditor({ onSubmit, bitmap, userActions }) {
       const id = internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, {
         children: jsx(internals.Modal[internals.keys.ModalRoot], {
@@ -1220,6 +1224,12 @@ module.exports = function (meta) {
                     internals.nativeUI[internals.keys.closeModal](id);
                   }
                 }),
+                jsx("div", { style: { flex: "1 0 0%" } }),
+                jsx(Components.Settings, {
+                  onChange: (smoothing) => {
+                    userActions.current.setSmoothing(smoothing);
+                  }
+                })
               ]
             }),
             jsx(internals.Modal[internals.keys.ModalContent], {
@@ -1259,6 +1269,7 @@ module.exports = function (meta) {
       MoveLayerDown: "M11.449 3.057c-.701.134-.701.134-4.749 1.992C3.093 6.705 2.298 7.101 1.84 7.47c-.888.715-1.085 1.674-.518 2.523.31.464.765.789 1.858 1.325 1.212.595 4.561 2.117 4.751 2.16.137.031.235.026.413-.021a.966.966 0 00.743-.78.988.988 0 00-.21-.809c-.152-.184-.218-.217-2.337-1.186-1.7-.778-3.216-1.509-3.358-1.621-.077-.06-.077-.062 0-.121.167-.128 1.64-.83 4.478-2.132 1.628-.747 3.131-1.43 3.34-1.519.418-.178.802-.289 1-.289s.582.111 1 .289c.209.088 1.712.772 3.34 1.519 2.799 1.283 4.303 2 4.478 2.133.077.058.077.06 0 .119-.147.114-1.681.855-3.358 1.622-2.119.969-2.185 1.002-2.337 1.186-.123.149-.243.462-.243.632 0 .18.124.49.258.647.23.269.607.401.936.329.095-.021 1.04-.436 2.1-.923 3.083-1.415 3.555-1.657 4.07-2.085.811-.675.979-1.66.423-2.478-.276-.405-.718-.728-1.625-1.186-.76-.386-6.232-2.914-7.249-3.35-.903-.387-1.693-.521-2.344-.397m.246 5a1.04 1.04 0 00-.567.459l-.108.184-.02 4.579-.02 4.579-.52-.658c-.696-.881-.878-1.06-1.166-1.144-.704-.204-1.356.332-1.281 1.055.029.281.073.348.985 1.476.795.983 1.557 1.782 1.942 2.033.983.643 1.749.468 2.862-.654.428-.433 1.795-2.075 2.05-2.464.24-.365.172-.885-.157-1.205-.417-.405-1-.39-1.426.036-.115.115-.444.506-.729.867l-.52.658-.02-4.579-.02-4.579-.108-.184a1.005 1.005 0 00-1.177-.459",
       Visibility: "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5M12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5m0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3",
       VisibilityOff: "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7M2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2m4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3z",
+      Settings: "M12 15.6c1.98 0 3.6-1.62 3.6-3.6S13.98 8.4 12 8.4 8.4 10.02 8.4 12s1.62 3.6 3.6 3.6m9.15-1.08c.19.14.24.39.12.61l-1.92 3.32c-.12.22-.37.3-.59.22l-2.39-.96c-.49.38-1.03.7-1.62.94l-.36 2.54c-.03.24-.23.41-.47.41H10.08c-.24 0-.43-.17-.48-.41l-.36-2.54c-.59-.24-1.12-.56-1.62-.94l-2.39.96c-.22.07-.47 0-.59-.22L2.72 15.13c-.11-.2-.06-.47.12-.61l2.03-1.58c-.05-.3-.07-.63-.07-.94s.04-.64.09-.94L2.86 9.48c-.2-.14-.24-.4-.12-.61L4.65 5.55c.12-.22.37-.3.59-.22l2.39.96c.49-.37 1.03-.7 1.62-.94l.36-2.54c.04-.24.23-.41.47-.41h3.84c.24 0 .44.17.48.41l.36 2.54c.59.24 1.12.56 1.62.94l2.39-.96c.22-.07.47 0 .59.22l1.92 3.32c.11.2.06.47-.12.61l-2.03 1.58c.05.3.07.62.07.94 0 .33-.02.64-.06.94Z",
     },
   }
 
@@ -1532,7 +1543,7 @@ module.exports = function (meta) {
      * @param {{
      *  layers: {id: number, name: string, visible: boolean, alpha: number, active: boolean}[]
      *  onChange: (callback: (editor: CanvasEditor) => boolean) => void, width: number, height: number, 
-     *  editor: React.RefObject(<CanvasEditor>)
+     *  editor: React.RefObject<CanvasEditor>
      * }} props
      */
     LayerThumbnails({ layers, onChange, width, height, editor }) {
@@ -1618,7 +1629,7 @@ module.exports = function (meta) {
         ]), {
           align: "bottom",
           position: "left",
-          onClose: () => { onChange(editor => { (i !== editor.activeLayerIndex) && editor.sandwichLayer() }) }
+          onClose: () => { (i !== editor.current.activeLayerIndex) && editor.current.sandwichLayer() }
         });
       }, [onChange, layers]);
 
@@ -1683,7 +1694,7 @@ module.exports = function (meta) {
       const [layers, setLayers] = useState(() => []);
       const [dims, setDims] = useState({ width: bitmap.width, height: bitmap.height });
 
-      const [mode, _setMode] = useState(null);
+      const [mode, _setMode] = useState(4);
       const [font, setFont] = hooks.useStoredState("font", () => ({ family: "gg sans", weight: 500 }));
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 25, color: "#000000" }));
@@ -1722,13 +1733,13 @@ module.exports = function (meta) {
       useImperativeHandle(ref, () => ({
         replace({ draftType, upload }) {
           UI.showToast("Processing...", { type: "warn" });
-          editor.current?.toBlob({ type: "image/webp" }).then(blob => {
+          editor.current?.toBlob({ type: BdApi.Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
             internals.uploadDispatcher.setFile({
               channelId: upload.channelId,
               id: upload.id,
               draftType,
               file: {
-                file: new File([blob], upload.item.file.name.match(/.*\./i)[0] + "webp", { type: blob.type }),
+                file: new File([blob], upload.item.file.name.match(/.*\./i)[0] + (blob.type === "image/webp" ? "webp" : blob.type === "image/png" ? "png" : "jpg"), { type: blob.type }),
                 isThumbnail: upload.isThumbnail,
                 origin: upload.origin,
                 platform: upload.item.platform,
@@ -1753,10 +1764,10 @@ module.exports = function (meta) {
           }
 
           UI.showToast("Processing...", { type: "warn" });
-          editor.current?.toBlob({ type: "image/webp" }).then(blob => {
+          editor.current?.toBlob({ type: BdApi.Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
             internals.uploadDispatcher.addFile({
               file: {
-                file: new File([blob], "image.webp", { type: blob.type }),
+                file: new File([blob], "image." + (blob.type === "image/webp" ? "webp" : blob.type === "image/png" ? "png" : "jpg"), { type: blob.type }),
                 isThumbnail: false,
                 origin: "clipboard",
                 platform: 1     // 0: React Native, 1: Web
@@ -1769,6 +1780,16 @@ module.exports = function (meta) {
           }).catch(() => {
             UI.showToast("Failed to process image.", { type: "error" });
           });
+        },
+        setSmoothing(smoothing) {
+          const ctx = canvasRef.current.getContext("2d");
+          if (smoothing) {
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = smoothing;
+          } else {
+            ctx.imageSmoothingEnabled = false;
+          }
+          editor.current.refreshViewport();
         }
       }), []);
 
@@ -1951,6 +1972,14 @@ module.exports = function (meta) {
         addEventListener("resize", () => {
           const rect = canvasRef.current.offsetParent.getBoundingClientRect();
           editor.current.viewportDims = { width: ~~(rect.width), height: ~~(rect.height) };
+
+          const smoothing = BdApi.Data.load(meta.slug, "smoothing") ?? "medium";
+          if (smoothing) {
+            canvasRef.current.getContext("2d").imageSmoothingQuality = smoothing;
+          } else {
+            canvasRef.current.getContext("2d").imageSmoothingEnabled = false;
+          }
+
           editor.current.refreshViewport();
           updateClipRect();
           canvasRect.current = canvasRef.current.getBoundingClientRect();
@@ -2623,6 +2652,89 @@ module.exports = function (meta) {
       })
     },
 
+    /** @param {{onChange?: (e: {exportType: string, smoothing: string | false}) => void}} */
+    Settings({ onChange }) {
+      const [exportType, setExportType] = hooks.useStoredState("exportType", "image/webp");
+      const [smoothing, setSmoothing] = hooks.useStoredState("smoothing", "medium");
+
+      const exportOptions = useRef([{ label: "jpg", value: "image/jpeg" }, { label: "png", value: "image/png" }, { label: "webp", value: "image/webp" }]);
+      const smoothingOptions = useRef([{ label: "Off", value: false }, { label: "Low", value: "low" }, { label: "Medium", value: "medium" }, { label: "High", value: "high" }])
+
+      const handleClick = useCallback((e) => {
+        ContextMenu.open(e, ContextMenu.buildMenu([
+          {
+            label: "Export",
+            type: "custom",
+            render: () => jsx(Components.MenuItemSelect, {
+              text: "Export as",
+              options: exportOptions.current,
+              initialValue: exportType,
+              onChange: e => {
+                setExportType(e);
+              }
+            })
+          }, {
+            label: "Export",
+            type: "custom",
+            render: () => jsx(Components.MenuItemSelect, {
+              text: "Image smoothing: ",
+              options: smoothingOptions.current,
+              initialValue: smoothing,
+              onChange: s => {
+                setSmoothing(s);
+                onChange?.(s)
+              }
+            })
+          }
+        ]), {
+          align: "bottom",
+          position: "right"
+        })
+      }, [smoothing, exportType]);
+
+      return jsx(Components.IconButton, {
+        tooltip: "Settings",
+        d: utils.paths.Settings,
+        onClick: handleClick,
+      });
+    },
+
+    /**
+     * @template T
+     * @param {{
+     *   initialValue: T,
+     *   options: {label: "string", value: T}[],
+     *   onChange?: (newValue: T) => void,
+     *   text?: string
+     * }}
+     */
+    MenuItemSelect({ options, initialValue, onChange, text }) {
+      const [value, setValue] = useState(initialValue);
+
+      return jsx("div", {
+        className: utils.clsx(
+          internals.contextMenuClass?.item,
+          internals.contextMenuClass?.labelContainer,
+        ),
+        children: [
+          jsx("style", null, `@scope {
+            :scope { display: block; }
+            .select { display: inline-block; }
+          }`),
+          text,
+          jsx(internals.nativeUI[internals.keys.SingleSelect], {
+            options: options,
+            value: value,
+            className: "select",
+            onChange: v => {
+              setValue(v);
+              onChange?.(v);
+            }
+          })
+        ]
+      })
+    },
+
     /** @param {{ value: { family: string, weight: number }, onChange: (e: { family: string, weight: number }) => void }} */
     FontSelector({ onChange, value }) {
       const [family, _setFamily] = useState(() => value.family);
@@ -2828,9 +2940,9 @@ module.exports = function (meta) {
         buttons: 7,
         onStart: (e) => {
           if (!sliderRef.current.state.boundingRect) {
-            // The state for boundingRect will be set internally only !after! the handleMouseDown event fired,
+            // The state for boundingRect will be set internally only *after* the handleMouseDown event fired,
             // so the first mousedown event doesn't have the boundingRect. _reactInternals.stateNode.setState
-            // will only update the boundingRect after the render cycle, but we need it NOW. 
+            // will only update the boundingRect after the render cycle, so we hijack the current state.
             sliderRef.current.state.boundingRect = sliderRef.current.containerRef.current.getBoundingClientRect();
           }
           sliderRef.current.handleMouseDown(e);
@@ -3029,6 +3141,7 @@ module.exports = function (meta) {
 
 .modal-footer {
   gap: 12px;
+  align-items: center;
 }
 
 .canvas-dims {
