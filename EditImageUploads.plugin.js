@@ -449,62 +449,6 @@ module.exports = function (meta) {
     }
 
     /** @param {DOMPoint} point */
-    curveTo(point) {
-      const ctx = this.#middleCache.getContext("2d");
-      const to_inv = point.matrixTransform(this.viewportTransform_inv);
-
-      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-      // out of bounds
-      const isOOB = !utils.pointInRect(to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
-      const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect, Math.ceil(this.#interactionCache.width / 2));
-
-      if (isOOB && !prevIsOOB) {
-        this.lineTo(point);
-        return;
-      }
-
-      if (isOOB && prevIsOOB && !utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2)).length) {
-        this.#interactionCache.lastPoint = to_inv;
-        return;
-      }
-
-      const [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
-
-      if (prevIsOOB) {
-        this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
-        ctx.moveTo(clampedFrom.x, clampedFrom.y);
-      }
-
-      const midpoint = new DOMPoint((clampedTo.x + clampedFrom.x) / 2, (clampedTo.y + clampedFrom.y) / 2);
-
-      if (this.#activeLayer.state.isVisible) {
-        ctx.quadraticCurveTo(clampedFrom.x, clampedFrom.y, midpoint.x, midpoint.y);
-        ctx.stroke();
-
-        const mainCtx = this.#mainCanvas.getContext("2d");
-        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
-
-        mainCtx.globalAlpha = this.#activeLayer.state.alpha;
-        mainCtx.drawImage(this.#middleCache, 0, 0);
-        mainCtx.globalAlpha = 1;
-
-        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
-
-        this.refreshViewport();
-      }
-
-      const rawMidpoint = midpoint.matrixTransform(this.#interactionCache.layerTransform_inv);
-      this.#interactionCache.path2D.quadraticCurveTo(clampedFrom.x, clampedFrom.y, midpoint.x, midpoint.y);
-      this.#interactionCache.lastPoint = to_inv;
-
-      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawMidpoint.x, rawMidpoint.x - this.#interactionCache.rect.right, 0);
-      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.y - rawMidpoint.y, rawMidpoint.y - this.#interactionCache.rect.bottom, 0);
-      this.#interactionCache.rect.x = Math.min(rawMidpoint.x, this.#interactionCache.rect.x);
-      this.#interactionCache.rect.y = Math.min(rawMidpoint.y, this.#interactionCache.rect.y);
-    }
-
-    /** @param {DOMPoint} point */
     lineTo(point) {
       const ctx = this.#middleCache.getContext("2d");
       const to_inv = point.matrixTransform(this.viewportTransform_inv);
