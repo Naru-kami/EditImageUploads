@@ -73,6 +73,8 @@ module.exports = function (meta) {
   function start() {
     init();
 
+    if (!internals.keys.ModalRoot || !internals.keys.ModalContent || !internals.keys.ModalFooter) return;
+
     internals.uploadCard && Patcher.after(meta.slug, internals.uploadCard, internals.keys.uploadCard, (_, [args], ret) => {
       if (
         args?.upload?.mimeType?.startsWith("image/") && !args?.upload?.mimeType?.endsWith("gif") &&
@@ -141,6 +143,7 @@ module.exports = function (meta) {
       [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(c => {
         c.getContext("2d").imageSmoothingEnabled = false;
       })
+      canvas.getContext("2d").imageSmoothingQuality = "medium";
 
       const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
@@ -306,18 +309,6 @@ module.exports = function (meta) {
       this.render(layerIndex);
     }
 
-    // /** @param {string} mixBlendMode @param {number} layerIndex */
-    // setLayerBlendMode(mixBlendMode, layerIndex) {
-    //   if (!(layerIndex in this.layers)) return;
-
-    //   const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-    //   updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, mixBlendMode } };
-    //   this.#state.state = updated;
-    //   this.#state.state.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
-
-    //   this.render(layerIndex);
-    // }
-
     /** @param {1 | -1} delta */
     moveLayers(delta, layerIndex = this.activeLayerIndex) {
       if (!((layerIndex + delta) in this.layers)) return;
@@ -375,13 +366,11 @@ module.exports = function (meta) {
     #prepareMiddleCanvas() {
       const s = this.#activeLayer.state;
       s.alpha = 1;
-      // s.globalCompositeOperation = "source-over";
       this.#activeLayer.state = s;
 
       this.#activeLayer.drawOn(this.#middleCache);
 
       s.alpha = this.layers[this.#activeLayerIndex].state.alpha;
-      // s.globalCompositeOperation = this.layers[this.#activeLayerIndex].state.globalCompositeOperation;
       this.#activeLayer.state = s;
     }
 
@@ -426,20 +415,28 @@ module.exports = function (meta) {
       this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
 
       if (this.#activeLayer.state.isVisible) {
+        ctx.beginPath();
         ctx.arc(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y, width / 2, 0, 2 * Math.PI);
         ctx.fill();
 
+        const p1 = new DOMPoint(
+          Math.floor(this.#interactionCache.lastPoint.x - this.#interactionCache.width / 2) - 0.5,
+          Math.floor(this.#interactionCache.lastPoint.y - this.#interactionCache.width / 2) - 0.5
+        );
+        const p2 = new DOMPoint(
+          Math.ceil(this.#interactionCache.lastPoint.x + this.#interactionCache.width / 2) + 0.5,
+          Math.ceil(this.#interactionCache.lastPoint.y + this.#interactionCache.width / 2) + 0.5
+        )
+
         const mainCtx = this.#mainCanvas.getContext("2d");
-        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
+        mainCtx.clearRect(p1.x + 0.5, p1.y + 0.5, p2.x - p1.x - 1, p2.y - p1.y - 1);
+        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
 
         mainCtx.globalAlpha = this.#activeLayer.state.alpha;
-        // mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
-        mainCtx.drawImage(this.#middleCache, 0, 0);
+        mainCtx.drawImage(this.#middleCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
         mainCtx.globalAlpha = 1;
-        // mainCtx.globalCompositeOperation = "source-over";
 
-        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
+        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
 
         this.refreshViewport();
 
@@ -489,10 +486,8 @@ module.exports = function (meta) {
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
 
         mainCtx.globalAlpha = this.#activeLayer.state.alpha;
-        // mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
         mainCtx.drawImage(this.#middleCache, 0, 0);
         mainCtx.globalAlpha = 1;
-        // mainCtx.globalCompositeOperation = "source-over";
 
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
@@ -530,24 +525,31 @@ module.exports = function (meta) {
 
       if (prevIsOOB) {
         this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
-        ctx.moveTo(clampedFrom.x, clampedFrom.y);
+        // ctx.moveTo(clampedFrom.x, clampedFrom.y);
       }
 
       if (this.#activeLayer.state.isVisible) {
+        ctx.beginPath();
+        ctx.moveTo(clampedFrom.x, clampedFrom.y);
         ctx.lineTo(clampedTo.x, clampedTo.y);
         ctx.stroke();
 
+        const p1 = new DOMPoint(
+          Math.floor(Math.min(clampedFrom.x, clampedTo.x) - this.#interactionCache.width / 2) - 0.5,
+          Math.floor(Math.min(clampedFrom.y, clampedTo.y) - this.#interactionCache.width / 2) - 0.5
+        );
+        const p2 = new DOMPoint(
+          Math.ceil(Math.max(clampedFrom.x, clampedTo.x) + this.#interactionCache.width / 2) + 0.5,
+          Math.ceil(Math.max(clampedFrom.y, clampedTo.y) + this.#interactionCache.width / 2) + 0.5
+        )
+
         const mainCtx = this.#mainCanvas.getContext("2d");
-        mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
-        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
-
+        mainCtx.clearRect(p1.x + 0.5, p1.y + 0.5, p2.x - p1.x - 1, p2.y - p1.y - 1);
+        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
         mainCtx.globalAlpha = this.#activeLayer.state.alpha;
-        // mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
-        mainCtx.drawImage(this.#middleCache, 0, 0);
+        mainCtx.drawImage(this.#middleCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
         mainCtx.globalAlpha = 1;
-        // mainCtx.globalCompositeOperation = "source-over";
-
-        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
+        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
 
         this.refreshViewport();
       }
@@ -702,10 +704,8 @@ module.exports = function (meta) {
       this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
 
       mainCtx.globalAlpha = this.#activeLayer.state.alpha;
-      // mainCtx.globalCompositeOperation = this.#activeLayer.state.globalCompositeOperation;
       mainCtx.drawImage(this.#middleCache, 0, 0);
       mainCtx.globalAlpha = 1;
-      // mainCtx.globalCompositeOperation = "source-over";
 
       this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
@@ -789,7 +789,6 @@ module.exports = function (meta) {
     refreshViewport() {
       const ctx = this.#viewportCanvas.getContext("2d");
 
-      // ctx.imageSmoothingQuality = "high";
       ctx.fillStyle = "#303038";
       ctx.fillRect(0, 0, this.#viewportCanvas.width, this.#viewportCanvas.height);
       ctx.setTransform(new DOMMatrix().translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2).multiplySelf(this.#viewportTransform));
@@ -865,7 +864,6 @@ module.exports = function (meta) {
         transform: new DOMMatrix(),
         isVisible: true,
         alpha: 1,
-        // mixBlendMode: "source-over",
         /**
          * @type {{
          *  color: string, width?: number, clipPath: Path2D, globalCompositeOperation: string,
@@ -1012,7 +1010,6 @@ module.exports = function (meta) {
 
       const ctx = canvas.getContext("2d");
       ctx.save();
-      // ctx.globalCompositeOperation = this.#state.mixBlendMode;
       ctx.globalAlpha = this.#state.alpha;
       ctx.setTransform(new DOMMatrix()
         .translateSelf(canvas.width / 2, canvas.height / 2)
@@ -1319,10 +1316,6 @@ module.exports = function (meta) {
       Visibility: "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5M12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5m0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3",
       VisibilityOff: "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7M2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2m4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3z",
     },
-
-    // mixBlendModes: [
-    //   "lighter", "copy", "xor", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"
-    // ].map(e => ({ value: e, label: e.charAt(0).toUpperCase() + e.slice(1) })),
   }
 
   var hooks = {
@@ -1369,7 +1362,7 @@ module.exports = function (meta) {
       const rafId = useRef(null);
       const smolStore = useRef({});
 
-      /** @type {(e: PointerEvent) => void} */
+      /** @type {(e: React.PointerEvent<HTMLElement>) => void} */
       const onPointerDown = useCallback(e => {
         if (!(e.buttons & buttons) || pointerId.current != null) return;
 
@@ -1379,17 +1372,18 @@ module.exports = function (meta) {
         onStart?.(e, smolStore.current);
       }, [onStart]);
 
-      /** @type {(e: PointerEvent) => void} */
+      /** @type {(e: React.PointerEvent<HTMLElement>) => void} */
       const onPointerMove = useCallback(e => {
         if (!(e.buttons & buttons) || pointerId.current !== e.pointerId || rafId.current) return;
 
+        rafId.current && cancelAnimationFrame(rafId.current);
         rafId.current = requestAnimationFrame(() => {
           onChange?.(e, smolStore.current);
           rafId.current = null;
         })
       }, [onChange]);
 
-      /** @type {(e: PointerEvent) => void} */
+      /** @type {(e: React.PointerEvent<HTMLElement>) => void} */
       const onPointerUp = useCallback(e => {
         if (pointerId.current !== e.pointerId) return;
 
@@ -1498,8 +1492,6 @@ module.exports = function (meta) {
 
     /** @param {{url: string}} props */
     RemixIcon({ url }) {
-      if (!internals.keys.ModalRoot || !internals.keys.ModalContent || !internals.keys.ModalFooter) return;
-
       const [isPending, startTransition] = useTransition(); // Very cool React 19 stuff
       const ctrl = useRef(new AbortController());
       const userActions = useRef(null);
@@ -1562,35 +1554,39 @@ module.exports = function (meta) {
     },
 
     UploadIcon({ args }) {
-      if (!internals.keys.ModalRoot || !internals.keys.ModalContent) return;
-      // forwardRef for replace()
+      const [isPending, startTransition] = useTransition();
       const userActions = useRef(null);
 
-      return jsx(Components.IconButton, {
+      return !isPending ? jsx(Components.IconButton, {
         onClick: () => {
-          createImageBitmap(args.upload.item.file).then(bitmap => {
-            utils.openEditor({
-              onSubmit: () => {
-                userActions.current?.replace({
-                  draftType: args.draftType,
-                  upload: args.upload,
-                })
-              },
-              userActions,
-              bitmap,
-            });
-          }).catch(() => {
-            UI.showToast("Could not load image", { type: "error" });
-          });
+          startTransition(async () => {
+            try {
+              const bitmap = await createImageBitmap(args.upload.item.file);
+              utils.openEditor({
+                onSubmit: () => {
+                  userActions.current?.replace({
+                    draftType: args.draftType,
+                    upload: args.upload,
+                  })
+                },
+                userActions,
+                bitmap,
+              });
+            } catch {
+              UI.showToast("Could not load image", { type: "error" });
+            }
+          })
         },
         tooltip: "Edit Image",
         d: utils.paths.Main
+      }) : jsx(BdApi.Components.Spinner, {
+        type: BdApi.Components.Spinner.Type.SPINNING_CIRCLE_SIMPLE
       })
     },
 
     /**
      * @param {{
-     *  layers: {id: number, name: string, visible: boolean, alpha: number, mixBlendMode: string, active: boolean}[]
+     *  layers: {id: number, name: string, visible: boolean, alpha: number, active: boolean}[]
      *  onChange: (callback: (editor: CanvasEditor) => boolean) => void, width: number, height: number, 
      *  editor: React.RefObject(<CanvasEditor>)
      * }} props
@@ -1674,15 +1670,7 @@ module.exports = function (meta) {
               });
             },
             icon: () => jsx(Components.Icon, { d: utils.paths.DeleteLayer })
-          },
-          // {
-          //   label: "Mix-blend-mode",
-          //   type: "custom",
-          //   render: () => jsx(Components.BlendModeSelector, {
-          //     onChange: blendMode => { onChange(editor => editor.setLayerBlendMode(blendMode, i)) },
-          //     initialValue: layers[i].mixBlendMode
-          //   })
-          // }
+          }
         ]), {
           align: "bottom",
           position: "left",
@@ -1872,7 +1860,6 @@ module.exports = function (meta) {
         setLayers(editor.current.layers.map((layer, i) => ({
           visible: layer.state.isVisible,
           alpha: layer.state.alpha,
-          mixBlendMode: layer.state.mixBlendMode,
           active: i === editor.current.activeLayerIndex,
           name: layer.layer.name,
           id: layer.layer.id,
@@ -1888,7 +1875,6 @@ module.exports = function (meta) {
         setLayers(editor.current.layers.map((layer, i) => ({
           visible: layer.state.isVisible,
           alpha: layer.state.alpha,
-          mixBlendMode: layer.state.mixBlendMode,
           active: i === editor.current.activeLayerIndex,
           name: layer.layer.name,
           id: layer.layer.id
@@ -1992,6 +1978,12 @@ module.exports = function (meta) {
             }
 
             case "Escape": {
+              if (!isInteracting.current && editor.current.clipRect) {
+                editor.current.startRegionSelect(new DOMPoint(0, 0));
+                editor.current.endRegionSelect();
+                ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
+                break;
+              }
               if (isInteracting.current && [".rotating", ".moving", ".scaling"].some(e => canvasRef.current.matches(e))) {
                 editor.current.previewLayerTransformTo(new DOMMatrix());
                 break;
@@ -2118,7 +2110,6 @@ module.exports = function (meta) {
           });
 
           if (mode !== 5) isInteracting.current = true;
-          // if ([1, 2, 3, 4, 6].some(e => e === mode) && (e.buttons & 1)) canvasRef.current.getContext("2d").imageSmoothingEnabled = false;
 
           switch (mode) {
             case !!(e.buttons & 1) && 7:
@@ -2262,7 +2253,7 @@ module.exports = function (meta) {
                 const boxScale = canvasRect.current.width / canvasRef.current.width;
                 const startX = (e.clientX - canvasRect.current.x) / boxScale;
                 const startY = (e.clientY - canvasRect.current.y) / boxScale;
-                editor.current.curveTo(new DOMPoint(startX, startY));
+                editor.current.lineTo(new DOMPoint(startX, startY));
                 break;
               }
             }
@@ -2314,11 +2305,6 @@ module.exports = function (meta) {
               break;
             }
           }
-
-          // if ([1, 2, 3, 4, 6].some(e => e === mode)) {
-          //   canvasRef.current.getContext("2d").imageSmoothingEnabled = true;
-          //   editor.current.refreshViewport();
-          // }
         }
       });
 
@@ -2782,36 +2768,6 @@ module.exports = function (meta) {
         ]
       })
     },
-
-    // /** @param {{ initialValue: string, onChange?: (e: string) => void }} */
-    // BlendModeSelector({ onChange, initialValue }) {
-    //   const [blendMode, setBlendMode] = useState(initialValue);
-    //   const mixBlendModes = useRef([{ value: "source-over", label: "Normal" }].concat(utils.mixBlendModes));
-
-    //   return jsx("div", {
-    //     children: [
-    //       jsx("style", null, `@scope {
-    //         .select {
-    //           display: inline-block;
-    //           & > :first-child {
-    //             min-height: var(--control-input-height-sm);
-    //             padding: 0 8px;
-    //           }
-    //         }
-    //       }`),
-    //       jsx("div", { style: { padding: 8 } }, "Mix Blend Mode"),
-    //       jsx(internals.nativeUI[internals.keys.SingleSelect], {
-    //         options: mixBlendModes.current,
-    //         value: blendMode,
-    //         className: "select",
-    //         onChange: (mode) => {
-    //           setBlendMode(mode);
-    //           onChange?.(mode);
-    //         }
-    //       })
-    //     ]
-    //   })
-    // },
 
     /**
      * @param {{
