@@ -1303,12 +1303,6 @@ module.exports = function (meta) {
                   onClick: () => {
                     internals.nativeUI[internals.keys.closeModal](id);
                   }
-                }),
-                jsx("div", { style: { flex: "1 0 0%" } }),
-                jsx(Components.Settings, {
-                  onChange: (smoothing) => {
-                    userActions.current.setSmoothing(smoothing);
-                  }
                 })
               ]
             }),
@@ -1881,16 +1875,6 @@ module.exports = function (meta) {
           }).catch(() => {
             UI.showToast("Failed to process image.", { type: "error" });
           });
-        },
-        setSmoothing(smoothing) {
-          const ctx = canvasRef.current.getContext("2d");
-          if (smoothing) {
-            ctx.imageSmoothingEnabled = true;
-            ctx.imageSmoothingQuality = smoothing;
-          } else {
-            ctx.imageSmoothingEnabled = false;
-          }
-          editor.current.refreshViewport();
         }
       }), []);
 
@@ -2736,18 +2720,35 @@ module.exports = function (meta) {
                   }),
                 ]
               }),
-              jsx(Components.IconButton, {
-                tooltip: "Undo (Ctrl + Z)",
-                d: utils.paths.Undo,
-                onClick: () => { if (editor.current.undo()) syncStates() },
-                disabled: !(canUndoRedo & 2)
-              }),
-              jsx(Components.IconButton, {
-                tooltip: "Redo (Ctrl + Y)",
-                d: utils.paths.Redo,
-                onClick: () => { if (editor.current.redo()) syncStates() },
-                disabled: !(canUndoRedo & 1)
-              }),
+              jsx("div", {
+                className: "undo-redo-actions",
+                children: [
+                  jsx(Components.IconButton, {
+                    tooltip: "Undo (Ctrl + Z)",
+                    d: utils.paths.Undo,
+                    onClick: () => { if (editor.current.undo()) syncStates() },
+                    disabled: !(canUndoRedo & 2)
+                  }),
+                  jsx(Components.IconButton, {
+                    tooltip: "Redo (Ctrl + Y)",
+                    d: utils.paths.Redo,
+                    onClick: () => { if (editor.current.redo()) syncStates() },
+                    disabled: !(canUndoRedo & 1)
+                  }),
+                  jsx(Components.Settings, {
+                    onChange: (smoothing) => {
+                      const ctx = canvasRef.current.getContext("2d");
+                      if (smoothing) {
+                        ctx.imageSmoothingEnabled = true;
+                        ctx.imageSmoothingQuality = smoothing;
+                      } else {
+                        ctx.imageSmoothingEnabled = false;
+                      }
+                      editor.current.refreshViewport();
+                    }
+                  })
+                ]
+              })
             ]
           }),
         ]
@@ -2790,7 +2791,7 @@ module.exports = function (meta) {
           }
         ]), {
           align: "bottom",
-          position: "right"
+          position: "left"
         })
       }, [smoothing, exportType]);
 
@@ -3539,12 +3540,13 @@ module.exports = function (meta) {
 
 .sidebar {
   display: grid;
-  grid-template-columns: 1fr 1fr;
   grid-template-rows: auto auto 1fr min-content auto auto;
   gap: 8px;
   align-items: end;
   justify-content: center;
   overflow: auto;
+  scrollbar-gutter: stable;
+  margin-right: -8px;
 }
 
 .thumbnails {
@@ -3625,6 +3627,12 @@ module.exports = function (meta) {
   grid-column: 1 / -1;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-normal);
+}
+
+.undo-redo-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
 }`);
