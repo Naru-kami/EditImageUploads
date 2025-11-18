@@ -315,14 +315,15 @@ module.exports = function (meta) {
 
     /** @param {1 | -1} delta */
     moveLayers(delta, layerIndex = this.activeLayerIndex) {
-      if (!((layerIndex + delta) in this.layers)) return;
+      if (!((layerIndex + delta) in this.layers) || delta === 0) return;
+
+      const activeLayer = this.#activeLayer;
 
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-      [updated.layers[layerIndex], updated.layers[layerIndex + delta]] = [updated.layers[layerIndex + delta], updated.layers[layerIndex]];
+      updated.layers.splice(layerIndex + delta, 0, updated.layers.splice(layerIndex, 1)[0]);
       this.#state.state = updated;
 
-      this.activeLayerIndex = layerIndex + delta === this.activeLayerIndex ? layerIndex :
-        layerIndex === this.activeLayerIndex ? layerIndex + delta : this.activeLayerIndex;
+      this.activeLayerIndex = this.#state.state.layers.findIndex(layer => layer.layer === activeLayer);
       this.render();
     }
 
@@ -424,16 +425,16 @@ module.exports = function (meta) {
         ctx.fill();
 
         const p1 = new DOMPoint(
-          Math.floor(this.#interactionCache.lastPoint.x - this.#interactionCache.width / 2) - 0.5,
-          Math.floor(this.#interactionCache.lastPoint.y - this.#interactionCache.width / 2) - 0.5
+          Math.floor(this.#interactionCache.lastPoint.x - this.#interactionCache.width / 2),
+          Math.floor(this.#interactionCache.lastPoint.y - this.#interactionCache.width / 2)
         );
         const p2 = new DOMPoint(
-          Math.ceil(this.#interactionCache.lastPoint.x + this.#interactionCache.width / 2) + 0.5,
-          Math.ceil(this.#interactionCache.lastPoint.y + this.#interactionCache.width / 2) + 0.5
+          Math.ceil(this.#interactionCache.lastPoint.x + this.#interactionCache.width / 2),
+          Math.ceil(this.#interactionCache.lastPoint.y + this.#interactionCache.width / 2)
         )
 
         const mainCtx = this.#mainCanvas.getContext("2d");
-        mainCtx.clearRect(p1.x + 0.5, p1.y + 0.5, p2.x - p1.x - 1, p2.y - p1.y - 1);
+        mainCtx.clearRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
 
         mainCtx.globalAlpha = this.#activeLayer.state.alpha;
@@ -482,16 +483,16 @@ module.exports = function (meta) {
         ctx.stroke();
 
         const p1 = new DOMPoint(
-          Math.floor(Math.min(clampedFrom.x, clampedTo.x) - this.#interactionCache.width / 2) - 0.5,
-          Math.floor(Math.min(clampedFrom.y, clampedTo.y) - this.#interactionCache.width / 2) - 0.5
+          Math.floor(Math.min(clampedFrom.x, clampedTo.x) - this.#interactionCache.width / 2),
+          Math.floor(Math.min(clampedFrom.y, clampedTo.y) - this.#interactionCache.width / 2)
         );
         const p2 = new DOMPoint(
-          Math.ceil(Math.max(clampedFrom.x, clampedTo.x) + this.#interactionCache.width / 2) + 0.5,
-          Math.ceil(Math.max(clampedFrom.y, clampedTo.y) + this.#interactionCache.width / 2) + 0.5
+          Math.ceil(Math.max(clampedFrom.x, clampedTo.x) + this.#interactionCache.width / 2),
+          Math.ceil(Math.max(clampedFrom.y, clampedTo.y) + this.#interactionCache.width / 2)
         )
 
         const mainCtx = this.#mainCanvas.getContext("2d");
-        mainCtx.clearRect(p1.x + 0.5, p1.y + 0.5, p2.x - p1.x - 1, p2.y - p1.y - 1);
+        mainCtx.clearRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
         mainCtx.globalAlpha = this.#activeLayer.state.alpha;
         mainCtx.drawImage(this.#middleCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
@@ -1638,6 +1639,27 @@ module.exports = function (meta) {
         children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
           key: state.id,
           children: jsx("li", {
+            draggable: true,
+            onDragStart: (e) => {
+              e.currentTarget.classList.add("dragging");
+              e.dataTransfer.clearData();
+              e.dataTransfer.setData("text/plain", String(i));
+              e.dataTransfer.effectAllowed = "move";
+            },
+            onDragEnd: (e) => {
+              e.currentTarget.classList.remove("dragging");
+            },
+            onDragEnter: (e) => {
+              e.currentTarget.classList.add("droptarget")
+            },
+            onDragLeave: (e) => {
+              !e.currentTarget.contains(e.relatedTarget) && e.currentTarget.classList.remove("droptarget");
+            },
+            onDrop: e => {
+              e.currentTarget.classList.remove("droptarget");
+              const idx = Number(e.dataTransfer.getData("text/plain"));
+              onChange(editor => (editor.moveLayers(i - idx, idx), i !== idx))
+            },
             onContextMenu: (e) => { handleContextMenu(e, i) },
             onClick: (e) => onChange(editor => {
               if (editor.activeLayerIndex == i) return false;
@@ -2587,7 +2609,8 @@ module.exports = function (meta) {
                     }
                   }),
                 ]
-              }), jsx(Components.LayerThumbnails, {
+              }),
+              jsx(Components.LayerThumbnails, {
                 editor: editor,
                 width: dims.width,
                 height: dims.height,
@@ -3458,7 +3481,7 @@ module.exports = function (meta) {
     content: "";
     position: absolute;
     inset: anchor(--active-thumbnail inside);
-    background: #fff1;
+    background: #ffffff20;
     pointer-events: none;
     transition: inset 200ms ease-out;
   }
@@ -3466,6 +3489,7 @@ module.exports = function (meta) {
 
 .thumbnail {
   display: grid;
+  position: relative;
   grid-template-columns: 24px 1fr 32px;
   justify-items: center;
   flex: 0 0 32px;
@@ -3475,7 +3499,6 @@ module.exports = function (meta) {
   cursor: pointer;
   color: var(--interactive-normal);
   transition: background-color 200ms ease;
-  animation: fade-in 250ms;
 
   & > [role=button] {
     padding: 0;
@@ -3486,6 +3509,28 @@ module.exports = function (meta) {
   &:hover {
     background: #fff1;
   }
+}
+
+.thumbnail.droptarget:has(~ .dragging)::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  z-index: 1;
+  height: 2px;
+  width: 100%;
+  border-radius: 4px;
+  background-color: var(--brand-500);
+}
+
+.thumbnail.dragging ~ .thumbnail.droptarget::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  z-index: 1;
+  height: 2px;
+  width: 100%;
+  border-radius: 4px;
+  background-color: var(--brand-500);
 }
 
 .layer-label {
