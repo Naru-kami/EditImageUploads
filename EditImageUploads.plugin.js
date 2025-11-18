@@ -313,7 +313,7 @@ module.exports = function (meta) {
       this.render(layerIndex);
     }
 
-    /** @param {1 | -1} delta */
+    /** @param {number} delta */
     moveLayers(delta, layerIndex = this.activeLayerIndex) {
       if (!((layerIndex + delta) in this.layers) || delta === 0) return;
 
@@ -517,7 +517,7 @@ module.exports = function (meta) {
       const clipPath = new Path2D();
       clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
 
-      this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, this.#interactionCache.width);
+      this.#activeLayer.resizeFitStroke(this.#interactionCache.rect);
       const layerState = this.#activeLayer.addStroke({
         color: this.#interactionCache.color,
         width: this.#interactionCache.width,
@@ -672,7 +672,11 @@ module.exports = function (meta) {
       const clipPath = new Path2D();
       clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
 
-      this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, 0);
+      const intersect = utils.rectRect(availRect, this.#interactionCache.rect);
+      const rawOrigin1 = new DOMPoint(intersect.left, intersect.top).matrixTransform(this.#interactionCache.layerTransform_inv);
+      const rawOrigin2 = new DOMPoint(intersect.right, intersect.bottom).matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#activeLayer.resizeFitStroke(new DOMRect(rawOrigin1.x, rawOrigin1.y, rawOrigin2.x - rawOrigin1.x, rawOrigin2.y - rawOrigin1.y));
+
       const layerState = this.#activeLayer.addStroke({
         text: this.#interactionCache.text,
         font: ctx.font,
@@ -862,16 +866,16 @@ module.exports = function (meta) {
       return this.#state;
     }
 
-    /** @param {DOMRect} strokeRect @param {number} strokeWidth */
-    resizeFitStroke(strokeRect, strokeWidth) {
+    /** @param {DOMRect} strokeRect */
+    resizeFitStroke(strokeRect) {
       const canvasRect = new DOMRect(-this.width / 2, -this.height / 2, this.width, this.height);
 
-      const dx = Math.max(0, canvasRect.left - (strokeRect.left - strokeWidth / 2), (strokeRect.right + strokeWidth / 2) - canvasRect.right);
-      const dy = Math.max(0, canvasRect.top - (strokeRect.top - strokeWidth / 2), (strokeRect.bottom + strokeWidth / 2) - canvasRect.bottom);
+      const dx = Math.max(0, canvasRect.left - strokeRect.left, strokeRect.right - canvasRect.right);
+      const dy = Math.max(0, canvasRect.top - strokeRect.top, strokeRect.bottom - canvasRect.bottom);
 
       if (dx || dy) {
-        this.#canvas.width += ~~(2 * dx);
-        this.#canvas.height += ~~(2 * dy);
+        this.#canvas.width += 2 * Math.ceil(dx);
+        this.#canvas.height += 2 * Math.ceil(dy);
         this.#drawImage();
         this.#drawStrokes();
       }
@@ -964,7 +968,7 @@ module.exports = function (meta) {
         .multiplySelf(this.#previewTransform)
         .multiplySelf(this.#state.transform)
       );
-      ctx.drawImage(this.#canvas, ~~(-this.width / 2), ~~(-this.height / 2));
+      ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2);
       ctx.restore();
     }
 
@@ -982,7 +986,7 @@ module.exports = function (meta) {
         .multiplySelf(this.#previewTransform)
         .multiplySelf(this.#state.transform)
       );
-      ctx.drawImage(this.#canvas, ~~(-this.width / 2), ~~(-this.height / 2));
+      ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2);
       ctx.restore();
 
       this.#staleThumbnail = false;
@@ -1195,6 +1199,16 @@ module.exports = function (meta) {
           return [p1, p2];
         }
       }
+    },
+
+    /** @param {DOMRect} rect1 @param {DOMRect} rect2 */
+    rectRect(rect1, rect2) {
+      return new DOMRect(
+        Math.max(rect1.left, rect2.left),
+        Math.max(rect1.top, rect2.top),
+        Math.min(rect1.right, rect2.right) - Math.max(rect1.left, rect2.left),
+        Math.min(rect1.bottom, rect2.bottom) - Math.max(rect1.top, rect2.top),
+      )
     },
 
     /** @param {{onSubmit: () => void, bitmap: ImageBitmap, userActions: React.RefObject<any>}} */
