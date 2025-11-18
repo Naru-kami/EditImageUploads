@@ -1954,7 +1954,7 @@ module.exports = function (meta) {
               if (editor.current.redo()) syncStates();
               break;
 
-            case !e.repeat && e.ctrlKey && DiscordNative?.clipboard.copyImage && "c":
+            case !(canvasRef.current.matches(".texting") && isInteracting.current) && !e.repeat && e.ctrlKey && DiscordNative?.clipboard.copyImage && "c":
               UI.showToast("Processing...", { type: "warn" });
               editor.current.toBlob({
                 type: 'image/png'
@@ -1992,10 +1992,11 @@ module.exports = function (meta) {
               setMode(m => m === 2 ? null : 2);
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "z":
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "s":
               setMode(m => m === 3 ? null : 3);
               break;
 
+            case !e.repeat && !e.ctrlKey && !e.shiftKey && "b":
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "d":
               setMode(m => m === 4 ? null : 4);
               break;
@@ -2008,7 +2009,7 @@ module.exports = function (meta) {
               setMode(m => m === 6 ? null : 6);
               break;
 
-            case !e.repeat && !e.shiftKey && "s":
+            case !e.repeat && !e.shiftKey && "p":
               if (e.ctrlKey) {
                 if (isInteracting.current) break;
                 editor.current.startRegionSelect(new DOMPoint(0, 0));
@@ -2476,7 +2477,7 @@ module.exports = function (meta) {
                 className: "canvas-actions",
                 children: [
                   jsx(Components.IconButton, {
-                    tooltip: "Draw (D)",
+                    tooltip: "Draw (D/B)",
                     d: utils.paths.Draw,
                     active: mode === 4,
                     onClick: () => setMode(m => m === 4 ? null : 4)
@@ -2494,7 +2495,7 @@ module.exports = function (meta) {
                     onClick: () => setMode(m => m === 5 ? null : 5)
                   }),
                   jsx(Components.IconButton, {
-                    tooltip: "Select (S)",
+                    tooltip: "Clip (P)",
                     d: utils.paths.Select,
                     active: mode === 7,
                     onClick: () => setMode(m => m === 7 ? null : 7)
@@ -2512,7 +2513,7 @@ module.exports = function (meta) {
                     onClick: () => setMode(m => m === 1 ? null : 1)
                   }),
                   jsx(Components.IconButton, {
-                    tooltip: "Zoom (Z)",
+                    tooltip: "Scale (S)",
                     d: utils.paths.Scale,
                     active: mode === 3,
                     onClick: () => setMode(m => m === 3 ? null : 3)
