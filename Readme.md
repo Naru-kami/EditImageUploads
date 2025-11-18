@@ -2,13 +2,13 @@ Adds an option to edit images before sending.
 Also adds an option to edit sent images and upload into the currently selected channel.
 
 Supporting modes:
-- <kbd>D</kbd> Drawing
+- <kbd>D</kbd>/<kbd>B</kbd> Drawing
 - <kbd>E</kbd> Eraser
 - <kbd>T</kbd> Insert Text
-- <kbd>S</kbd> Region Select. Allows clipping of drawn, erased and text content to selected region.
+- <kbd>P</kbd> Clip Region. Allows clipping of drawn, erased and text content to selected region.
 - <kbd>M</kbd> Move current layer
 - <kbd>R</kbd> Rotate current layer
-- <kbd>Z</kbd> Zoom current layer
+- <kbd>S</kbd> Scale current layer
 - <kbd>C</kbd> Crop the canvas to selected region.
 
 Useful keybinds controls:
@@ -17,7 +17,7 @@ Useful keybinds controls:
 - <kbd>Ctrl</kbd> + <kbd>B</kbd>: Reset Viewport
 - <kbd>Ctrl</kbd> + <kbd>C</kbd>: Copy current canvas content to clipboard
 - <kbd>Ctrl</kbd> + <kbd>V</kbd>: Paste an image onto a new layer.
-- <kbd>Ctrl</kbd> + <kbd>S</kbd>: Remove current clipping region (selection tool).
+- <kbd>Ctrl</kbd> + <kbd>P</kbd>: Remove current clipping region (clip tool).
 - <kbd>Shift</kbd> in drawing mode: Draw straight line from the last point.
 
 Regaring text insertion:
