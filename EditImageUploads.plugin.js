@@ -775,6 +775,8 @@ module.exports = function (meta) {
       this.#middleCache.height = height;
       this.#topCache.width = width;
       this.#topCache.height = height;
+
+      this.layers.forEach(({ layer }) => { layer.staleThumbnail = true });
     }
 
     /** @param {1 | -1} x @param {1 | -1} y */
@@ -868,7 +870,6 @@ module.exports = function (meta) {
     #canvas;
     #state;
     #previewTransform;
-    #staleThumbnail;
 
     /** @param {ImageBitmap | {width: number, height: number}} bitmap @param {string} name */
     constructor(name, bitmap) {
@@ -890,7 +891,7 @@ module.exports = function (meta) {
         strokes: [],
       };
       this.#previewTransform = new DOMMatrix();
-      this.#staleThumbnail = true;
+      this.staleThumbnail = true;
       if (bitmap instanceof ImageBitmap) {
         this.#img = bitmap;
         this.#drawImage();
@@ -913,7 +914,7 @@ module.exports = function (meta) {
         this.#drawImage();
         this.#drawStrokes(state.strokes);
       }
-      if (state !== this.#state) { this.#staleThumbnail = true }
+      if (state !== this.#state) { this.staleThumbnail = true }
       this.#state = state;
     }
 
@@ -927,7 +928,7 @@ module.exports = function (meta) {
       const applied = this.#previewTransform.multiplySelf(this.#state.transform);
       this.#state = { ...this.#state, transform: applied };
       this.#previewTransform = new DOMMatrix();
-      this.#staleThumbnail = true;
+      this.staleThumbnail = true;
       return this.#state;
     }
 
@@ -955,7 +956,7 @@ module.exports = function (meta) {
     addStroke(stroke) {
       this.#state = { ...this.#state, strokes: [...this.#state.strokes, stroke] };
       this.drawStroke(stroke);
-      this.#staleThumbnail = true;
+      this.staleThumbnail = true;
       return this.#state;
     }
 
@@ -1039,7 +1040,7 @@ module.exports = function (meta) {
 
     /** @param {HTMLCanvasElement} canvas */
     drawThumbnailOn(canvas, scale = 1) {
-      if (!this.#staleThumbnail) return;
+      if (!this.staleThumbnail) return;
 
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1054,7 +1055,7 @@ module.exports = function (meta) {
       ctx.drawImage(this.#canvas, -this.width / 2, -this.height / 2);
       ctx.restore();
 
-      this.#staleThumbnail = false;
+      this.staleThumbnail = false;
     }
   }
 
