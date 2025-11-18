@@ -171,6 +171,7 @@ module.exports = function (meta) {
         layerTransform_inv: new DOMMatrix(),
         path2D: new Path2D(),
         lastPoint: new DOMPoint(NaN, NaN),
+        lastMidPoint: new DOMPoint(NaN, NaN),
         rect: new DOMRect(),
         /** @type {DOMRect | null} */
         clipRect: null,
@@ -399,6 +400,7 @@ module.exports = function (meta) {
 
       this.#interactionCache.path2D = new Path2D();
       this.#interactionCache.lastPoint = startPoint.matrixTransform(this.viewportTransform_inv);
+      this.#interactionCache.lastMidPoint = startPoint.matrixTransform(this.viewportTransform_inv);
 
       const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       const clipPath = new Path2D();
@@ -444,13 +446,76 @@ module.exports = function (meta) {
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
 
         this.refreshViewport();
-
-        ctx.beginPath();
-        ctx.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       }
 
       this.#interactionCache.path2D.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       this.#interactionCache.path2D.lineTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
+    }
+
+    /** @param {DOMPoint} point */
+    curveTo(point) {
+      const ctx = this.#middleCache.getContext("2d");
+      const to_inv = point.matrixTransform(this.viewportTransform_inv);
+
+      const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
+      // out of bounds
+      const isOOB = !utils.pointInRect(to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
+      const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect, Math.ceil(this.#interactionCache.width / 2));
+
+      if (isOOB && prevIsOOB && !utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2)).length) {
+        this.#interactionCache.lastPoint = to_inv;
+        this.#interactionCache.lastMidPoint = to_inv;
+        return;
+      }
+
+      let [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
+
+      if (prevIsOOB) {
+        this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
+      }
+
+      let midpoint = new DOMPoint((clampedTo.x + clampedFrom.x) / 2, (clampedTo.y + clampedFrom.y) / 2);
+
+      if (isOOB && !prevIsOOB) {
+        clampedFrom = midpoint;
+        midpoint = clampedTo;
+      }
+
+      if (this.#activeLayer.state.isVisible) {
+        ctx.beginPath();
+        ctx.moveTo(this.#interactionCache.lastMidPoint.x, this.#interactionCache.lastMidPoint.y);
+        ctx.quadraticCurveTo(clampedFrom.x, clampedFrom.y, midpoint.x, midpoint.y);
+        ctx.stroke();
+
+        const p1 = new DOMPoint(
+          Math.floor(Math.min(this.#interactionCache.lastMidPoint.x, clampedFrom.x, midpoint.x) - this.#interactionCache.width / 2),
+          Math.floor(Math.min(this.#interactionCache.lastMidPoint.y, clampedFrom.y, midpoint.y) - this.#interactionCache.width / 2)
+        )
+        const p2 = new DOMPoint(
+          Math.ceil(Math.max(this.#interactionCache.lastMidPoint.x, clampedFrom.x, midpoint.x) + this.#interactionCache.width / 2),
+          Math.ceil(Math.max(this.#interactionCache.lastMidPoint.y, clampedFrom.y, midpoint.y) + this.#interactionCache.width / 2)
+        )
+
+        const mainCtx = this.#mainCanvas.getContext("2d");
+        mainCtx.clearRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+        this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+        mainCtx.globalAlpha = this.#activeLayer.state.alpha;
+        mainCtx.drawImage(this.#middleCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+        mainCtx.globalAlpha = 1;
+        this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
+
+        this.refreshViewport();
+      }
+
+      this.#interactionCache.lastMidPoint = midpoint;
+      const rawMidpoint = midpoint.matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#interactionCache.path2D.quadraticCurveTo(clampedFrom.x, clampedFrom.y, midpoint.x, midpoint.y);
+      this.#interactionCache.lastPoint = to_inv;
+
+      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawMidpoint.x, rawMidpoint.x - this.#interactionCache.rect.right, 0);
+      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.y - rawMidpoint.y, rawMidpoint.y - this.#interactionCache.rect.bottom, 0);
+      this.#interactionCache.rect.x = Math.min(rawMidpoint.x, this.#interactionCache.rect.x);
+      this.#interactionCache.rect.y = Math.min(rawMidpoint.y, this.#interactionCache.rect.y);
     }
 
     /** @param {DOMPoint} point */
@@ -2262,7 +2327,7 @@ module.exports = function (meta) {
                 const boxScale = canvasRect.current.width / canvasRef.current.width;
                 const startX = (e.clientX - canvasRect.current.x) / boxScale;
                 const startY = (e.clientY - canvasRect.current.y) / boxScale;
-                editor.current.lineTo(new DOMPoint(startX, startY));
+                editor.current.curveTo(new DOMPoint(startX, startY));
                 break;
               }
             }
