@@ -281,9 +281,6 @@ module.exports = function (meta) {
 
     deleteLayer(layerIndex = this.activeLayerIndex) {
       if (layerIndex in this.layers && this.layers.length > 1) {
-        // refresh reference to mark layerthumbnail as stale -> on undo/redo, repaint thumbnail
-        this.#state.state.layers[layerIndex].layer.state = { ...this.#state.state.layers[layerIndex].layer.state }
-
         const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
         updated.layers.splice(layerIndex, 1);
         this.#state.state = updated;
@@ -315,6 +312,40 @@ module.exports = function (meta) {
       this.#state.state.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
 
       this.render(layerIndex);
+    }
+
+    /** @param {(contents: OffscreenCanvas) => Promise<void>} callback  */
+    copyLayerContents(callback, layerIndex = this.#activeLayerIndex) {
+      if (!(layerIndex in this.layers)) return;
+
+      const ctx = this.#middleCache.getContext("2d");
+      ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.layers[layerIndex].layer.drawOn(this.#middleCache);
+      callback(this.#middleCache).then(() => {
+        ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      });
+    }
+
+    duplicateLayer(layerIndex = this.#activeLayerIndex) {
+      if (!(layerIndex in this.layers)) return;
+
+      const targetLayer = this.layers[layerIndex].layer;
+      const bitmap = targetLayer.img;
+      const newLayer = new Layer(
+        targetLayer.name,
+        bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height }
+      );
+      newLayer.state = { ...targetLayer.state, strokes: targetLayer.state.strokes.map(s => ({ ...s })) };
+
+      this.#state.state = {
+        ...this.#state.state,
+        layers: [
+          ...this.#state.state.layers,
+          { layer: newLayer, state: newLayer.state }
+        ]
+      };
+      this.activeLayerIndex = this.layers.length - 1;
+      this.render();
     }
 
     /** @param {number} delta */
@@ -904,6 +935,7 @@ module.exports = function (meta) {
       }
     }
 
+    get img() { return this.#img }
     get width() { return this.#canvas.width }
     get height() { return this.#canvas.height }
     get state() { return this.#state }
@@ -1045,8 +1077,8 @@ module.exports = function (meta) {
     }
 
     /** @param {HTMLCanvasElement} canvas */
-    drawThumbnailOn(canvas, scale = 1) {
-      if (!this.staleThumbnail) return;
+    drawThumbnailOn(canvas, scale = 1, forced = false) {
+      if (!this.staleThumbnail && !forced) return;
 
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1345,6 +1377,8 @@ module.exports = function (meta) {
       LockOpen: "M6 20h12V10H6zm6-3q.825 0 1.413-.587T14 15t-.587-1.412T12 13t-1.412.588T10 15t.588 1.413T12 17m-6 3V10zm0 2q-.825 0-1.412-.587T4 20V10q0-.825.588-1.412T6 8h7V6q0-2.075 1.463-3.537T18 1q1.775 0 3.1 1.075t1.75 2.7q.125.425-.162.825T22 6q-.425 0-.7-.175t-.4-.575q-.275-.95-1.062-1.6T18 3q-1.25 0-2.125.875T15 6v2h3q.825 0 1.413.588T20 10v10q0 .825-.587 1.413T18 22z",
       Lock: "M12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2m5 3c.55 0 1-.45 1-1V11c0-.55-.45-1-1-1H7c-.55 0-1 .45-1 1v8c0 .55.45 1 1 1H17M9 8h6V6c0-1.66-1.34-3-3-3S9 4.34 9 6Zm9 0c1.1 0 2 .9 2 2V20c0 1.1-.9 2-2 2H6c-1.1 0-2-.9-2-2V10c0-1.1.9-2 2-2H7V6c0-2.76 2.24-5 5-5s5 2.24 5 5V8h1",
       AddLayer: "M18.94 12.002 11.976 8.143 5.059 11.965l6.964 3.89Zm2.544-.877a1 1 0 01.002 1.749l-8.978 5a1 1 0 01-.973-.001l-9.022-5.04a1 1 0 01.003-1.749l8.978-4.96a1 1 0 01.968.001l9.022 5zM12 22a1 1 0 00.485-.126l9-5-.971-1.748L12 19.856l-8.515-4.73-.971 1.748 9 5A1 1 0 0012 22m8-22h-2v3h-3v2h3v3h2V5h3V3h-3z",
+      DuplicateLayer: "M14.7 16.1H11.2V14.7h3.5V11.2h1.4v3.5h3.5v1.4H16.1v3.5H14.7ZM21 9.8H9.8V21H21Zm0-1.4a1.4 1.4 90 011.4 1.4V21A1.4 1.4 90 0121 22.4H9.8A1.4 1.4 90 018.4 21V9.8A1.4 1.4 90 019.8 8.4H21m-16.8 7H7v1.4H4.2A1.4 1.4 90 012.8 15.4V4.2A1.4 1.4 90 014.2 2.8H15.4a1.4 1.4 90 011.4 1.4V7H15.4V4.2H4.2Z",
+      CopyLayer: "M21.73 12H19A3 3 0 0116 9V6.27a3 3 0 01.88.61l4.25 4.24a3 3 0 01.6.88ZM6 18V10a4 4 0 014-4h4V9a5 5 0 005 5h3v4a4 4 0 01-4 4H10A4 4 0 016 18ZM3 16h.5a.5.5 0 00.5-.5V10a6 6 0 016-6h5.5a.5.5 0 00.5-.5V3A1 1 0 0015 2H10A8 8 0 002 10v5a1 1 0 001 1Z",
       DeleteLayer: "M5.06 11.965l6.964 3.89 6.917-3.853-6.964-3.859Zm-2.547.868a1 1 0 01.003-1.749l8.978-4.96a1 1 0 01.968.001l9.022 5a1 1 0 01.002 1.749l-8.978 5a1 1 0 01-.973-.001l-9.022-5.04M15 5h8V3H15ZM12 19.856l8.514-4.73.971 1.748-9 5a1 1 0 01-.971 0l-9-5 .971-1.748Z",
       MoveLayerUp: "M11.604 3.061c-.687.193-1.306.752-2.604 2.353-.913 1.126-.958 1.193-.987 1.476-.076.733.611 1.281 1.311 1.049.27-.09.45-.27 1.139-1.143l.517-.654.02 4.582.02 4.582.121.197c.402.653 1.316.653 1.718 0l.121-.197.02-4.582.02-4.582.517.654c.689.873.869 1.053 1.139 1.143.7.232 1.387-.316 1.311-1.049-.029-.282-.073-.348-.985-1.477-1.15-1.421-1.883-2.107-2.471-2.311-.276-.096-.67-.113-.927-.041M7.8 10.549c-.033.013-.96.436-2.06.941-2.632 1.207-3.468 1.632-3.9 1.98-.888.715-1.085 1.674-.518 2.523.306.458.764.787 1.817 1.306.724.356 6.326 2.934 7.001 3.222 1.498.637 2.223.637 3.72-.001.684-.291 6.283-2.868 7.001-3.221 1.054-.519 1.511-.848 1.817-1.306.567-.849.37-1.808-.518-2.523-.429-.346-1.247-.762-3.92-1.993-1.863-.858-2.04-.932-2.283-.948-.492-.032-.888.242-1.024.71-.111.38.036.814.355 1.053.073.053.87.436 1.772.849.902.413 1.946.893 2.32 1.067.686.32 1.5.75 1.5.794 0 .04-.551.341-1.12.612-1.087.519-6.512 3.001-6.891 3.154-.733.295-1.005.295-1.738 0-.215-.087-1.732-.773-3.371-1.525-2.858-1.311-4.412-2.052-4.578-2.182-.077-.06-.077-.062 0-.12.154-.118 1.635-.83 3.498-1.682 1.045-.478 1.959-.914 2.032-.967.761-.568.342-1.779-.612-1.768-.132.001-.267.013-.3.025",
       MoveLayerDown: "M11.449 3.057c-.701.134-.701.134-4.749 1.992C3.093 6.705 2.298 7.101 1.84 7.47c-.888.715-1.085 1.674-.518 2.523.31.464.765.789 1.858 1.325 1.212.595 4.561 2.117 4.751 2.16.137.031.235.026.413-.021a.966.966 0 00.743-.78.988.988 0 00-.21-.809c-.152-.184-.218-.217-2.337-1.186-1.7-.778-3.216-1.509-3.358-1.621-.077-.06-.077-.062 0-.121.167-.128 1.64-.83 4.478-2.132 1.628-.747 3.131-1.43 3.34-1.519.418-.178.802-.289 1-.289s.582.111 1 .289c.209.088 1.712.772 3.34 1.519 2.799 1.283 4.303 2 4.478 2.133.077.058.077.06 0 .119-.147.114-1.681.855-3.358 1.622-2.119.969-2.185 1.002-2.337 1.186-.123.149-.243.462-.243.632 0 .18.124.49.258.647.23.269.607.401.936.329.095-.021 1.04-.436 2.1-.923 3.083-1.415 3.555-1.657 4.07-2.085.811-.675.979-1.66.423-2.478-.276-.405-.718-.728-1.625-1.186-.76-.386-6.232-2.914-7.249-3.35-.903-.387-1.693-.521-2.344-.397m.246 5a1.04 1.04 0 00-.567.459l-.108.184-.02 4.579-.02 4.579-.52-.658c-.696-.881-.878-1.06-1.166-1.144-.704-.204-1.356.332-1.281 1.055.029.281.073.348.985 1.476.795.983 1.557 1.782 1.942 2.033.983.643 1.749.468 2.862-.654.428-.433 1.795-2.075 2.05-2.464.24-.365.172-.885-.157-1.205-.417-.405-1-.39-1.426.036-.115.115-.444.506-.729.867l-.52.658-.02-4.579-.02-4.579-.108-.184a1.005 1.005 0 00-1.177-.459",
@@ -1674,6 +1708,31 @@ module.exports = function (meta) {
               })
             })
           }, {
+            label: "Copy Layer Contents",
+            action: () => {
+              editor.current.copyLayerContents(async (canvas) => {
+                UI.showToast("Processing...", { type: "warn" });
+                return canvas.convertToBlob({
+                  type: 'image/png'
+                }).then(blob =>
+                  blob.arrayBuffer()
+                ).then(buffer => {
+                  DiscordNative.clipboard.copyImage(new Uint8Array(buffer), "image.png");
+                }).then(() => {
+                  UI.showToast("Layer copied", { type: "success" })
+                }).catch(() => {
+                  UI.showToast("Failed to copy image", { type: "error" })
+                })
+              })
+            },
+            icon: () => jsx(Components.Icon, { d: utils.paths.CopyLayer })
+          }, {
+            label: "Duplicate Layer",
+            action: () => {
+              onChange(editor => (editor.duplicateLayer(i), true));
+            },
+            icon: () => jsx(Components.Icon, { d: utils.paths.DuplicateLayer })
+          }, {
             label: "Move Layer Up",
             disabled: i >= layers.length - 1,
             action: () => {
@@ -1775,12 +1834,16 @@ module.exports = function (meta) {
       useEffect(() => {
         const ctx = canvas.current.getContext("2d");
         ctx.imageSmoothingEnabled = false;
+
+        // on mount, render initial thumbnail.
+        const s = Math.max(canvas.current.width / width, canvas.current.height / height);
+        editor.current.layers[index].layer.drawThumbnailOn(canvas.current, s, true);
       }, []);
 
       useEffect(() => {
         const s = Math.max(canvas.current.width / width, canvas.current.height / height);
         editor.current.layers[index].layer.drawThumbnailOn(canvas.current, s);
-      }) // yes, no dependency! Update the thumbnail on rerenders. Actual drawing will only occur if thumbnail is stale.
+      }) // yes, no dependency! Update the thumbnail on rerenders. However, repainting will only occur if thumbnail is stale!
 
       return jsx("canvas", {
         width: ~~Math.min(32, 32 * width / height),
@@ -3646,6 +3709,7 @@ module.exports = function (meta) {
   -webkit-line-clamp: 2;
   overflow: hidden;
   overflow-wrap: anywhere;
+  text-align: center;
 }
 
 .layer-actions {
