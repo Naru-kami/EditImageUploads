@@ -1,6 +1,8 @@
 Adds an option to edit images before sending.
 Also adds an option to edit sent images and upload into the currently selected channel.
 
+If you find yourself having performance issues, try lowering or turning off the image smoothing in the setting (bottom right in the modal).
+
 Supporting modes:
 - <kbd>D</kbd>/<kbd>B</kbd> Drawing
 - <kbd>E</kbd> Eraser
@@ -17,7 +19,7 @@ Useful keybinds controls:
 - <kbd>Ctrl</kbd> + <kbd>B</kbd>: Reset Viewport
 - <kbd>Ctrl</kbd> + <kbd>C</kbd>: Copy current canvas content to clipboard
 - <kbd>Ctrl</kbd> + <kbd>V</kbd>: Paste an image onto a new layer.
-- <kbd>Ctrl</kbd> + <kbd>P</kbd>: Remove current clipping region (clip tool).
+- <kbd>Ctrl</kbd> + <kbd>P</kbd> or <kbd>Esc</kbd>: Remove current clipping region (clip tool).
 - <kbd>Shift</kbd> in drawing mode: Draw straight line from the last point.
 
 Regaring text insertion:
