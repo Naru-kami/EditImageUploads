@@ -149,7 +149,7 @@ module.exports = function (meta) {
         canvas.getContext("2d").imageSmoothingEnabled = false;
       }
 
-      const initialScale = Math.min(canvas.width / bitmap.width * 0.95, canvas.height / bitmap.height * 0.95);
+      const initialScale = Math.min(canvas.width / bitmap.width * 0.98, canvas.height / bitmap.height * 0.98);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
       this.#viewportTransform_inv = new DOMMatrix()
         .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
@@ -172,7 +172,8 @@ module.exports = function (meta) {
         path2D: new Path2D(),
         lastPoint: new DOMPoint(NaN, NaN),
         lastMidPoint: new DOMPoint(NaN, NaN),
-        rect: new DOMRect(),
+        /** @type {DOMRect | null} */
+        rect: null,
         /** @type {DOMRect | null} */
         clipRect: null,
         width: 0,
@@ -200,6 +201,8 @@ module.exports = function (meta) {
       return Number.isNaN(this.#interactionCache.lastPoint.x) || Number.isNaN(this.#interactionCache.lastPoint.y) ? null : this.#interactionCache.lastPoint.matrixTransform(this.viewportTransform_inv.inverse());
     }
     get regionRect() {
+      if (!this.#interactionCache.rect) return null;
+
       const T = this.viewportTransform_inv.inverse();
       const topLeft = new DOMPoint(this.#interactionCache.rect.left, this.#interactionCache.rect.top).matrixTransform(T);
       const bottomRight = new DOMPoint(this.#interactionCache.rect.right, this.#interactionCache.rect.bottom).matrixTransform(T);
@@ -344,7 +347,7 @@ module.exports = function (meta) {
     }
 
     resetViewport() {
-      const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
+      const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.98, this.#viewportCanvas.height / this.#mainCanvas.height * 0.98);
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       this.refreshViewport();
       this.#staleViewportInv = true;
@@ -414,12 +417,12 @@ module.exports = function (meta) {
         .multiplySelf(this.layerTransform).invertSelf();
 
       if (isOOB) {
-        this.#interactionCache.rect = new DOMRect(0, 0, 0, 0);
+        this.#interactionCache.rect = new DOMRect();
         return;
       }
 
       const rawPoint = this.#interactionCache.lastPoint.matrixTransform(this.#interactionCache.layerTransform_inv);
-      this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y, 0, 0);
+      this.#interactionCache.rect = new DOMRect(rawPoint.x, rawPoint.y);
 
       if (this.#activeLayer.state.isVisible) {
         ctx.beginPath();
@@ -583,6 +586,7 @@ module.exports = function (meta) {
       clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
 
       this.#activeLayer.resizeFitStroke(this.#interactionCache.rect);
+      this.#interactionCache.rect = null;
       const layerState = this.#activeLayer.addStroke({
         color: this.#interactionCache.color,
         width: this.#interactionCache.width,
@@ -730,6 +734,7 @@ module.exports = function (meta) {
 
       if (this.#interactionCache.text === "") {
         ctx.restore();
+        this.#interactionCache.rect = null;
         return;
       }
 
@@ -753,6 +758,7 @@ module.exports = function (meta) {
       });
 
       this.#interactionCache.text = "";
+      this.#interactionCache.rect = null;
       ctx.restore();
       ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
 
@@ -1530,7 +1536,7 @@ module.exports = function (meta) {
 
       return !isPending ? jsx("span", {
         children: [
-          jsx("style", null, `
+          jsx("style", null, `@scope {
             .remixIcon {
               border-radius: var(--radius-sm);
               outline: 1px solid transparent;
@@ -1546,7 +1552,7 @@ module.exports = function (meta) {
               transition-duration: 150ms;
               transition-timing-function: ease-out;
             }
-          `),
+          }`),
           jsx(Components.IconButton, {
             onClick: () => {
               startTransition(async () => {
@@ -1803,7 +1809,7 @@ module.exports = function (meta) {
       const editor = useRef(null);
       /** @type { React.RefObject<HTMLDivElement | null> } */
       const overlay = useRef(null);
-      /** @type { React.RefObject<HTMLTextAreaElement | null> } */
+      /** @type { React.RefObject<{ focus: () => void }> } */
       const textarea = useRef(null);
       /**  @type { React.RefObject<{ setValue: (value: number) => void, previewValue: (value: number) => void } | null> } */
       const auxRef = useRef(null);
@@ -1881,16 +1887,18 @@ module.exports = function (meta) {
 
       const updateClipRect = useCallback(() => {
         const clipRect = editor.current.clipRect;
-        if (clipRect) {
-          overlay.current.style.setProperty("--cx1", 100 * clipRect.left + "%");
-          overlay.current.style.setProperty("--cx2", 100 * clipRect.right + "%");
-          overlay.current.style.setProperty("--cy1", 100 * clipRect.top + "%");
-          overlay.current.style.setProperty("--cy2", 100 * clipRect.bottom + "%");
-        }
+        if (!clipRect) return;
+
+        overlay.current.style.setProperty("--cx1", 100 * clipRect.left + "%");
+        overlay.current.style.setProperty("--cx2", 100 * clipRect.right + "%");
+        overlay.current.style.setProperty("--cy1", 100 * clipRect.top + "%");
+        overlay.current.style.setProperty("--cy2", 100 * clipRect.bottom + "%");
       }, []);
 
       const updateRegionRect = useCallback(() => {
         const rect = editor.current.regionRect;
+        if (!rect) return;
+
         overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
         overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
         overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
@@ -1935,26 +1943,17 @@ module.exports = function (meta) {
         addEventListener("keydown", e => {
           if (document.activeElement.tagName === "INPUT") return;
 
-          if (
-            canvasRef.current.matches(".texting") && isInteracting.current &&
-            !e.ctrlKey && !e.shiftKey && (e.key === "Enter" || e.key === "Escape")
-          ) {
-            e.stopPropagation();
-            textarea.current.blur();
-            return;
-          }
-
           let matchedCase = true;
           switch (e.key) {
-            case !(canvasRef.current.matches(".texting") && isInteracting.current) && e.ctrlKey && "z":
-              if (editor.current.undo()) syncStates();
+            case !isInteracting.current && e.ctrlKey && "z":
+              if (editor.current.undo()) { e.preventDefault(); syncStates() };
               break;
 
-            case !(canvasRef.current.matches(".texting") && isInteracting.current) && e.ctrlKey && "y":
-              if (editor.current.redo()) syncStates();
+            case !isInteracting.current && e.ctrlKey && "y":
+              if (editor.current.redo()) { e.preventDefault(); syncStates() };
               break;
 
-            case !(canvasRef.current.matches(".texting") && isInteracting.current) && !e.repeat && e.ctrlKey && DiscordNative?.clipboard.copyImage && "c":
+            case !isInteracting.current && !e.repeat && e.ctrlKey && DiscordNative?.clipboard.copyImage && "c":
               UI.showToast("Processing...", { type: "warn" });
               editor.current.toBlob({
                 type: 'image/png'
@@ -2036,8 +2035,7 @@ module.exports = function (meta) {
                 ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
                 break;
               }
-              if (isInteracting.current && [".rotating", ".moving", ".scaling"].some(e => canvasRef.current.matches(e))) {
-                editor.current.previewLayerTransformTo(new DOMMatrix());
+              if (isInteracting.current && !canvasRef.current.matches(".texting")) {
                 break;
               }
               // Intentional fall-through
@@ -2354,7 +2352,6 @@ module.exports = function (meta) {
             }
             case store.changed && 5: {
               isInteracting.current = true;
-              textarea.current.hidden = false;
               textarea.current.focus();
               break;
             }
@@ -2386,26 +2383,6 @@ module.exports = function (meta) {
         }
       }, []);
 
-      /** @type {(e: React.FocusEvent) => void} */
-      const handleBlur = useCallback(e => {
-        if (isInteracting.current) {
-          editor.current.finalizeText();
-          syncStates();
-          isInteracting.current = false;
-          textarea.current.value = "";
-          textarea.current.hidden = true;
-          ["--rx1", "--rx2", "--ry1", "--ry2"].forEach(prop => overlay.current.style.removeProperty(prop));
-        }
-      }, []);
-
-      /** @type {(e: React.KeyboardEvent) => void} */
-      const handleTextChange = useCallback(e => {
-        if (mode !== 5 || !isInteracting.current) return;
-
-        editor.current.updateText(e.currentTarget.value);
-        updateRegionRect();
-      }, [mode]);
-
       return jsx(Fragment, {
         children: [
           jsx("div", {
@@ -2425,13 +2402,18 @@ module.exports = function (meta) {
                   jsx("div", { className: "cropper-region" }),
                   jsx("div", {
                     className: "cropper-border",
-                    children: mode === 5 && jsx("textarea", {
+                    children: mode === 5 && jsx(Components.TextAreaHidden, {
                       ref: textarea,
-                      tabIndex: -1,
-                      hidden: true,
-                      className: "hiddenVisually",
-                      onBlur: handleBlur,
-                      onInput: handleTextChange
+                      onSubmit: () => {
+                        editor.current.finalizeText();
+                        syncStates();
+                        isInteracting.current = false;
+                        ["--rx1", "--rx2", "--ry1", "--ry2"].forEach(prop => overlay.current.style.removeProperty(prop));
+                      },
+                      onChange: value => {
+                        editor.current.updateText(value);
+                        updateRegionRect();
+                      }
                     })
                   })
                 ]
@@ -3222,6 +3204,48 @@ module.exports = function (meta) {
         ]
       })
     },
+
+    /** @param {{ onChange?: (value: string) => void, onSubmit?: () => void, ref?: React.RefObject<any> }} */
+    TextAreaHidden({ onChange, onSubmit, ref }) {
+      /** @type {React.RefObject<HTMLTextAreaElement | null>} */
+      const textarea = useRef(null);
+
+      useImperativeHandle(ref, () => ({
+        focus: () => {
+          if (!textarea.current) return;
+          textarea.current.hidden = false;
+          textarea.current.focus();
+        }
+      }))
+
+      const handleChange = useCallback(e => {
+        onChange?.(e.target.value);
+      }, [onChange])
+
+      /** @type {(e: React.FocusEvent) => void} */
+      const handleBlur = useCallback(() => {
+        textarea.current.hidden = true;
+        onSubmit?.();
+        textarea.current.value = "";
+      }, [onSubmit]);
+
+      const handleKeyDown = useCallback(e => {
+        if (!e.ctrlKey && !e.shiftKey && (e.key === "Enter" || e.key === "Escape")) {
+          textarea.current.blur();
+          e.stopPropagation();
+        }
+      }, [])
+
+      return jsx("textarea", {
+        ref: textarea,
+        tabIndex: -1,
+        hidden: true,
+        className: "hiddenVisually",
+        onBlur: handleBlur,
+        onInput: handleChange,
+        onKeyDown: handleKeyDown
+      })
+    }
   }
 
   function generateCSS() {
@@ -3632,8 +3656,8 @@ module.exports = function (meta) {
 }
 
 .undo-redo-actions {
-  display: flex;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
   align-items: center;
 }
 
