@@ -2059,7 +2059,6 @@ module.exports = function (meta) {
               break;
 
             case !e.repeat && !e.ctrlKey && !e.shiftKey && "b":
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "d":
               setMode(m => m === 4 ? null : 4);
               break;
 
@@ -2522,7 +2521,7 @@ module.exports = function (meta) {
                 className: "canvas-actions",
                 children: [
                   jsx(Components.IconButton, {
-                    tooltip: "Draw (D/B)",
+                    tooltip: "Draw (B)",
                     d: utils.paths.Draw,
                     active: mode === 4,
                     onClick: () => setMode(m => m === 4 ? null : 4)
