@@ -314,16 +314,16 @@ module.exports = function (meta) {
       this.render(layerIndex);
     }
 
-    /** @param {(contents: OffscreenCanvas) => Promise<void>} callback  */
+    /** @param {(blob: Blob) => void} callback  */
     copyLayerContents(callback, layerIndex = this.#activeLayerIndex) {
       if (!(layerIndex in this.layers)) return;
 
       const ctx = this.#middleCache.getContext("2d");
       ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
       this.layers[layerIndex].layer.drawOn(this.#middleCache);
-      callback(this.#middleCache).then(() => {
-        ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
-      });
+      this.#middleCache.convertToBlob({ type: 'image/png' })
+        .then(callback)
+        .then(() => { ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height) });
     }
 
     async duplicateLayer(layerIndex = this.#activeLayerIndex) {
@@ -1656,116 +1656,126 @@ module.exports = function (meta) {
     /**
      * @param {{
      *  layers: {id: number, name: string, visible: boolean, alpha: number, active: boolean}[]
-     *  onChange: (callback: (editor: CanvasEditor) => Promise<boolean>) => void, width: number, height: number, 
+     *  onChange: (callback: (editor: CanvasEditor) => boolean) => void, width: number, height: number, 
      *  editor: React.RefObject<CanvasEditor>
      * }} props
      */
     LayerThumbnails({ layers, onChange, width, height, editor }) {
       const handleContextMenu = useCallback((e, i) => {
         (i !== editor.current.activeLayerIndex) && editor.current.sandwichLayer(i);
-        ContextMenu.open(e, ContextMenu.buildMenu([
-          {
-            label: "Name",
-            type: "custom",
-            render: ({ isFocused }) => jsx(Components.TextInput, {
-              className: utils.clsx(
-                internals.contextMenuClass?.item,
-                internals.contextMenuClass?.labelContainer,
-                internals.contextMenuClass?.colorDefault,
-                isFocused && internals.contextMenuClass?.focused,
-              ),
+        ContextMenu.open(e, ContextMenu.buildMenu([{
+          type: "group",
+          items: [
+            {
               label: "Name",
-              value: layers[i].name,
-              onChange: newName => onChange(editor => editor.layers[i].layer.name = newName),
-            })
-          }, {
-            label: "Visible",
-            type: "toggle",
-            checked: layers[i].visible,
-            action: () => onChange(editor => (editor.toggleLayerVisibility(i), true))
-          }, {
-            label: "Opacity",
-            type: "custom",
-            render: () => jsx(Components.NumberSlider, {
-              className: utils.clsx(
-                internals.contextMenuClass?.item,
-                internals.contextMenuClass?.labelContainer,
-              ),
-              value: layers[i].alpha,
-              minValue: 0,
-              maxValue: 1,
-              label: "Opacity",
-              decimals: 2,
-              expScaling: false,
-              onChange: alpha => onChange(editor => {
-                if (alpha === editor.layers[i].state.alpha) return false;
-                editor.setLayerAlpha(alpha, i, true);
-                return true;
-              }),
-              onSlide: alpha => onChange(editor => {
-                editor.setLayerAlpha(alpha, i);
+              type: "custom",
+              render: () => jsx(Components.TextInput, {
+                className: utils.clsx(
+                  internals.contextMenuClass?.item,
+                  internals.contextMenuClass?.labelContainer
+                ),
+                label: "Name",
+                value: layers[i].name,
+                onChange: newName => onChange(editor => editor.layers[i].layer.name = newName),
               })
-            })
-          }, {
-            label: "Copy Layer Contents",
-            action: () => {
-              editor.current.copyLayerContents(async (canvas) => {
-                UI.showToast("Processing...", { type: "warn" });
-                return canvas.convertToBlob({
-                  type: 'image/png'
-                }).then(blob =>
-                  blob.arrayBuffer()
-                ).then(buffer => {
-                  DiscordNative.clipboard.copyImage(new Uint8Array(buffer), "image.png");
-                }).then(() => {
-                  UI.showToast("Layer copied", { type: "success" })
-                }).catch(() => {
-                  UI.showToast("Failed to copy image", { type: "error" })
+            }, {
+              label: "Visible",
+              type: "toggle",
+              checked: layers[i].visible,
+              action: () => onChange(editor => (editor.toggleLayerVisibility(i), true))
+            }, {
+              label: "Opacity",
+              type: "custom",
+              render: () => jsx(Components.NumberSlider, {
+                className: utils.clsx(
+                  internals.contextMenuClass?.item,
+                  internals.contextMenuClass?.labelContainer,
+                ),
+                value: layers[i].alpha,
+                minValue: 0,
+                maxValue: 1,
+                label: "Opacity",
+                decimals: 2,
+                expScaling: false,
+                onChange: alpha => onChange(editor => {
+                  if (alpha === editor.layers[i].state.alpha) return false;
+                  editor.setLayerAlpha(alpha, i, true);
+                  return true;
+                }),
+                onSlide: alpha => onChange(editor => {
+                  editor.setLayerAlpha(alpha, i);
                 })
               })
-            },
-            icon: () => jsx(Components.Icon, { d: utils.paths.CopyLayer })
-          }, {
-            label: "Duplicate Layer",
-            action: () => {
-              onChange(async editor => (await editor.duplicateLayer(i), true));
-            },
-            icon: () => jsx(Components.Icon, { d: utils.paths.DuplicateLayer })
-          }, {
-            label: "Move Layer Up",
-            disabled: i >= layers.length - 1,
-            action: () => {
-              onChange(editor => {
-                if (i >= editor.layers.length - 1) return false;
-                editor.moveLayers(1, i);
-                return true;
-              });
-            },
-            icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerUp })
-          }, {
-            label: "Move Layer Down",
-            disabled: i <= 0,
-            action: () => {
-              onChange(editor => {
-                if (i <= 0) return false;
-                editor.moveLayers(-1, i);
-                return true;
-              });
-            },
-            icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerDown })
-          }, {
-            label: "Delete Layer",
-            disabled: layers.length <= 1,
-            action: () => {
-              onChange(editor => {
-                if (editor.layers.length <= 1) return false;
-                editor.deleteLayer(i);
-                return true;
-              });
-            },
-            icon: () => jsx(Components.Icon, { d: utils.paths.DeleteLayer })
-          }
-        ]), {
+            }
+          ]
+        }, {
+          type: "group",
+          items: [
+            {
+              label: "Copy Layer Contents",
+              action: () => {
+                if (!DiscordNative?.clipboard?.copyImage) return;
+
+                UI.showToast("Processing...", { type: "warn" });
+                editor.current.copyLayerContents(blob => {
+                  blob.arrayBuffer().then(buffer => {
+                    DiscordNative.clipboard.copyImage(new Uint8Array(buffer), "image.png");
+                  }).then(() => {
+                    UI.showToast("Layer copied", { type: "success" })
+                  }).catch(() => {
+                    UI.showToast("Failed to copy image", { type: "error" })
+                  })
+                })
+              },
+              icon: () => jsx(Components.Icon, { d: utils.paths.CopyLayer })
+            }, {
+              label: "Duplicate Layer",
+              action: async () => {
+                await editor.current.duplicateLayer(i);
+                onChange(() => true);
+              },
+              icon: () => jsx(Components.Icon, { d: utils.paths.DuplicateLayer })
+            }
+          ]
+        }, {
+          type: "group",
+          items: [
+            {
+              label: "Move Layer Up",
+              disabled: i >= layers.length - 1,
+              action: () => {
+                onChange(editor => {
+                  if (i >= editor.layers.length - 1) return false;
+                  editor.moveLayers(1, i);
+                  return true;
+                });
+              },
+              icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerUp })
+            }, {
+              label: "Move Layer Down",
+              disabled: i <= 0,
+              action: () => {
+                onChange(editor => {
+                  if (i <= 0) return false;
+                  editor.moveLayers(-1, i);
+                  return true;
+                });
+              },
+              icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerDown })
+            }, {
+              label: "Delete Layer",
+              disabled: layers.length <= 1,
+              action: () => {
+                onChange(editor => {
+                  if (editor.layers.length <= 1) return false;
+                  editor.deleteLayer(i);
+                  return true;
+                });
+              },
+              icon: () => jsx(Components.Icon, { d: utils.paths.DeleteLayer })
+            }
+          ]
+        }]), {
           align: "bottom",
           position: "left",
           onClose: () => { (i !== editor.current.activeLayerIndex) && editor.current.sandwichLayer() }
@@ -2015,7 +2025,7 @@ module.exports = function (meta) {
               if (editor.current.redo()) { e.preventDefault(); syncStates() };
               break;
 
-            case !isInteracting.current && !e.repeat && e.ctrlKey && DiscordNative?.clipboard.copyImage && "c":
+            case !isInteracting.current && !e.repeat && e.ctrlKey && DiscordNative?.clipboard?.copyImage && "c":
               UI.showToast("Processing...", { type: "warn" });
               editor.current.toBlob({
                 type: 'image/png'
@@ -2723,7 +2733,7 @@ module.exports = function (meta) {
                 width: dims.width,
                 height: dims.height,
                 layers,
-                onChange: async (cb) => { if (await cb(editor.current)) syncStates() }
+                onChange: (cb) => { if (cb(editor.current)) syncStates() }
               }),
               jsx("div", {
                 className: "layer-actions",
