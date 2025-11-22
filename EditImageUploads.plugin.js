@@ -326,16 +326,13 @@ module.exports = function (meta) {
       });
     }
 
-    duplicateLayer(layerIndex = this.#activeLayerIndex) {
+    async duplicateLayer(layerIndex = this.#activeLayerIndex) {
       if (!(layerIndex in this.layers)) return;
 
       const targetLayer = this.layers[layerIndex].layer;
-      const bitmap = targetLayer.img;
-      const newLayer = new Layer(
-        targetLayer.name,
-        bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height }
-      );
-      newLayer.state = { ...targetLayer.state, strokes: targetLayer.state.strokes.map(s => ({ ...s })) };
+      const bitmap = await targetLayer.toBitmap();
+      const newLayer = new Layer(targetLayer.name, bitmap);
+      newLayer.state = { ...targetLayer.state, strokes: [] };
 
       this.#state.state = {
         ...this.#state.state,
@@ -496,23 +493,22 @@ module.exports = function (meta) {
       const isOOB = !utils.pointInRect(to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
       const prevIsOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect, Math.ceil(this.#interactionCache.width / 2));
 
-      if (isOOB && prevIsOOB && !utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2)).length) {
+      const intersections = utils.lineRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
+
+      if (isOOB && prevIsOOB && !intersections.length) {
         this.#interactionCache.lastPoint = to_inv;
         this.#interactionCache.lastMidPoint = to_inv;
         return;
       }
 
-      let [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
-
-      if (prevIsOOB) {
-        this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
-      }
-
-      let midpoint = new DOMPoint((clampedTo.x + clampedFrom.x) / 2, (clampedTo.y + clampedFrom.y) / 2);
+      const [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
+      const midpoint = new DOMPoint((clampedTo.x + clampedFrom.x) / 2, (clampedTo.y + clampedFrom.y) / 2);
 
       if (isOOB && !prevIsOOB) {
-        clampedFrom = midpoint;
-        midpoint = clampedTo;
+        clampedFrom.x = midpoint.x;
+        clampedFrom.y = midpoint.y;
+        midpoint.x = clampedTo.x;
+        midpoint.y = clampedTo.y;
       }
 
       if (this.#activeLayer.state.isVisible) {
@@ -541,15 +537,17 @@ module.exports = function (meta) {
         this.refreshViewport();
       }
 
-      this.#interactionCache.lastMidPoint = midpoint;
-      const rawMidpoint = midpoint.matrixTransform(this.#interactionCache.layerTransform_inv);
+      prevIsOOB && this.#interactionCache.path2D.moveTo(this.#interactionCache.lastMidPoint.x, this.#interactionCache.lastMidPoint.y);
       this.#interactionCache.path2D.quadraticCurveTo(clampedFrom.x, clampedFrom.y, midpoint.x, midpoint.y);
-      this.#interactionCache.lastPoint = to_inv;
 
-      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawMidpoint.x, rawMidpoint.x - this.#interactionCache.rect.right, 0);
-      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.y - rawMidpoint.y, rawMidpoint.y - this.#interactionCache.rect.bottom, 0);
-      this.#interactionCache.rect.x = Math.min(rawMidpoint.x, this.#interactionCache.rect.x);
-      this.#interactionCache.rect.y = Math.min(rawMidpoint.y, this.#interactionCache.rect.y);
+      const rawMidpoint = midpoint.matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.left - rawMidpoint.x, rawMidpoint.x - this.#interactionCache.rect.right, 0);
+      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.top - rawMidpoint.y, rawMidpoint.y - this.#interactionCache.rect.bottom, 0);
+      this.#interactionCache.rect.x = Math.min(rawMidpoint.x, this.#interactionCache.rect.left);
+      this.#interactionCache.rect.y = Math.min(rawMidpoint.y, this.#interactionCache.rect.top);
+
+      this.#interactionCache.lastPoint = to_inv;
+      this.#interactionCache.lastMidPoint = midpoint;
     }
 
     /** @param {DOMPoint} point */
@@ -570,10 +568,6 @@ module.exports = function (meta) {
       }
 
       const [clampedFrom, clampedTo] = utils.clampLineToRect(this.#interactionCache.lastPoint, to_inv, availRect, Math.ceil(this.#interactionCache.width / 2));
-
-      if (prevIsOOB) {
-        this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
-      }
 
       if (this.#activeLayer.state.isVisible) {
         ctx.beginPath();
@@ -601,14 +595,16 @@ module.exports = function (meta) {
         this.refreshViewport();
       }
 
-      const rawClampedTo = clampedTo.matrixTransform(this.#interactionCache.layerTransform_inv);
+      prevIsOOB && this.#interactionCache.path2D.moveTo(clampedFrom.x, clampedFrom.y);
       this.#interactionCache.path2D.lineTo(clampedTo.x, clampedTo.y);
-      this.#interactionCache.lastPoint = to_inv;
 
-      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.x - rawClampedTo.x, rawClampedTo.x - this.#interactionCache.rect.right, 0);
-      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.y - rawClampedTo.y, rawClampedTo.y - this.#interactionCache.rect.bottom, 0);
-      this.#interactionCache.rect.x = Math.min(rawClampedTo.x, this.#interactionCache.rect.x);
-      this.#interactionCache.rect.y = Math.min(rawClampedTo.y, this.#interactionCache.rect.y);
+      const rawClampedTo = clampedTo.matrixTransform(this.#interactionCache.layerTransform_inv);
+      this.#interactionCache.rect.width += Math.max(this.#interactionCache.rect.left - rawClampedTo.x, rawClampedTo.x - this.#interactionCache.rect.right, 0);
+      this.#interactionCache.rect.height += Math.max(this.#interactionCache.rect.top - rawClampedTo.y, rawClampedTo.y - this.#interactionCache.rect.bottom, 0);
+      this.#interactionCache.rect.x = Math.min(rawClampedTo.x, this.#interactionCache.rect.left);
+      this.#interactionCache.rect.y = Math.min(rawClampedTo.y, this.#interactionCache.rect.top);
+
+      this.#interactionCache.lastPoint = to_inv;
     }
 
     endDrawing() {
@@ -616,7 +612,7 @@ module.exports = function (meta) {
       const clipPath = new Path2D();
       clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
 
-      this.#activeLayer.resizeFitStroke(this.#interactionCache.rect);
+      this.#activeLayer.resizeFitStroke(this.#interactionCache.rect, this.#interactionCache.width);
       this.#interactionCache.rect = null;
       const layerState = this.#activeLayer.addStroke({
         color: this.#interactionCache.color,
@@ -935,7 +931,6 @@ module.exports = function (meta) {
       }
     }
 
-    get img() { return this.#img }
     get width() { return this.#canvas.width }
     get height() { return this.#canvas.height }
     get state() { return this.#state }
@@ -956,6 +951,10 @@ module.exports = function (meta) {
       this.#state = state;
     }
 
+    toBitmap() {
+      return createImageBitmap(this.#canvas);
+    }
+
     /** @param {DOMMatrix} dM */
     previewTransformBy(dM) { this.#previewTransform.preMultiplySelf(dM) }
     /** @param {DOMMatrix} M */
@@ -971,11 +970,11 @@ module.exports = function (meta) {
     }
 
     /** @param {DOMRect} strokeRect */
-    resizeFitStroke(strokeRect) {
+    resizeFitStroke(strokeRect, strokeWidth = 0) {
       const canvasRect = new DOMRect(-this.width / 2, -this.height / 2, this.width, this.height);
 
-      const dx = Math.max(0, canvasRect.left - strokeRect.left, strokeRect.right - canvasRect.right);
-      const dy = Math.max(0, canvasRect.top - strokeRect.top, strokeRect.bottom - canvasRect.bottom);
+      const dx = Math.max(0, canvasRect.left - (strokeRect.left - strokeWidth / 2), (strokeRect.right + strokeWidth / 2) - canvasRect.right);
+      const dy = Math.max(0, canvasRect.top - (strokeRect.top - strokeWidth / 2), (strokeRect.bottom + strokeWidth / 2) - canvasRect.bottom);
 
       if (dx || dy) {
         this.#canvas.width += 2 * Math.ceil(dx);
@@ -1657,7 +1656,7 @@ module.exports = function (meta) {
     /**
      * @param {{
      *  layers: {id: number, name: string, visible: boolean, alpha: number, active: boolean}[]
-     *  onChange: (callback: (editor: CanvasEditor) => boolean) => void, width: number, height: number, 
+     *  onChange: (callback: (editor: CanvasEditor) => Promise<boolean>) => void, width: number, height: number, 
      *  editor: React.RefObject<CanvasEditor>
      * }} props
      */
@@ -1729,7 +1728,7 @@ module.exports = function (meta) {
           }, {
             label: "Duplicate Layer",
             action: () => {
-              onChange(editor => (editor.duplicateLayer(i), true));
+              onChange(async editor => (await editor.duplicateLayer(i), true));
             },
             icon: () => jsx(Components.Icon, { d: utils.paths.DuplicateLayer })
           }, {
@@ -2724,7 +2723,7 @@ module.exports = function (meta) {
                 width: dims.width,
                 height: dims.height,
                 layers,
-                onChange: (cb) => { if (cb(editor.current)) syncStates() }
+                onChange: async (cb) => { if (await cb(editor.current)) syncStates() }
               }),
               jsx("div", {
                 className: "layer-actions",
