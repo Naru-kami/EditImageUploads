@@ -147,7 +147,7 @@ module.exports = (meta) => {
         canvas.getContext("2d").imageSmoothingEnabled = false;
       }
 
-      const initialScale = Math.min(canvas.width / bitmap.width * 0.98, canvas.height / bitmap.height * 0.98);
+      const initialScale = Math.min(canvas.width / bitmap.width * 0.96, canvas.height / bitmap.height * 0.96);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
       this.#viewportTransform_inv = new DOMMatrix()
         .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
@@ -375,7 +375,7 @@ module.exports = (meta) => {
     }
 
     resetViewport() {
-      const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.98, this.#viewportCanvas.height / this.#mainCanvas.height * 0.98);
+      const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       this.refreshViewport();
       this.#staleViewportInv = true;
@@ -2651,11 +2651,9 @@ module.exports = (meta) => {
                               overlay.current.style.setProperty("--brushsize", (value * cs * boxScale).toFixed(4));
                               break;
                             }
-                            case 5: {
+                            case isInteracting.current && 5: {
                               editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
-                              if (isInteracting.current) {
-                                updateRegionRect()
-                              }
+                              updateRegionRect();
                               break;
                             }
                           }
@@ -2667,11 +2665,9 @@ module.exports = (meta) => {
                               overlay.current.style.removeProperty("--brushsize");
                               break;
                             }
-                            case 5: {
+                            case isInteracting.current && 5: {
                               editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
-                              if (isInteracting.current) {
-                                updateRegionRect();
-                              }
+                              updateRegionRect();
                               break;
                             }
                           }
