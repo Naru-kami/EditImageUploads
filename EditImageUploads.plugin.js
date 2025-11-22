@@ -6,9 +6,7 @@
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
-module.exports = function (meta) {
-  "use strict";
-
+module.exports = (meta) => {
   /** @type {{React: typeof import("react")}} */
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI, ContextMenu } = BdApi;
 
@@ -31,7 +29,7 @@ module.exports = function (meta) {
       urlConverter: { filter: Filters.bySource(".searchParams.delete(\"width\"),") }, // 296182
 
       actionButtonClass: { filter: Filters.byKeys("dangerous", "button") },
-      actionIconClass: { filter: m => m.actionBarIcon && m[Symbol.toStringTag] != "Module" },
+      actionIconClass: { filter: m => m.actionBarIcon && m[Symbol.toStringTag] !== "Module" },
       sliderClass: { filter: Filters.byKeys("sliderContainer", "slider") },
       scrollbarClass: { filter: Filters.byKeys("thin") },
       contextMenuClass: { filter: Filters.byKeys("hintContainer") }
@@ -258,14 +256,14 @@ module.exports = function (meta) {
       this.#bottomCache.getContext("2d").clearRect(0, 0, this.#bottomCache.width, this.#bottomCache.height);
       this.#topCache.getContext("2d").clearRect(0, 0, this.#topCache.width, this.#topCache.height);
 
-      this.layers.slice(0, layerIndex).forEach(layer => layer.layer.drawOn(this.#bottomCache));
-      this.layers.slice(layerIndex + 1).forEach(layer => layer.layer.drawOn(this.#topCache));
+      this.layers.slice(0, layerIndex).forEach(layer => { layer.layer.drawOn(this.#bottomCache) });
+      this.layers.slice(layerIndex + 1).forEach(layer => { layer.layer.drawOn(this.#topCache) });
     }
 
     /** @param {ImageBitmap | null} bitmap */
     createNewLayer(bitmap) {
       const newLayer = new Layer(
-        "Layer " + (this.layers.length - 1),
+        `Layer ${(this.layers.length - 1)}`,
         bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height }
       );
       this.#state.state = {
@@ -308,7 +306,9 @@ module.exports = function (meta) {
 
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
       updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, alpha } };
-      shouldPushToStack && (this.#state.state = updated);
+      if (shouldPushToStack) {
+        this.#state.state = updated;
+      };
       this.#state.state.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
 
       this.render(layerIndex);
@@ -876,7 +876,7 @@ module.exports = function (meta) {
         const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
         this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       }
-      this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
+      this.#state.state.layers.forEach(({ layer, state }) => { layer.state = state });
       this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
       this.render();
       return true;
@@ -891,7 +891,7 @@ module.exports = function (meta) {
         const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
         this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       }
-      this.#state.state.layers.forEach(({ layer, state }) => layer.state = state);
+      this.#state.state.layers.forEach(({ layer, state }) => { layer.state = state });
       this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
       this.render();
       return true;
@@ -1104,7 +1104,10 @@ module.exports = function (meta) {
 
       return Object.fromEntries(
         Object.entries(filters)
-          .map((e, i) => (e[1] = t[i], e))
+          .map((e, i) => {
+            e[1] = t[i];
+            return e;
+          })
       );
     },
 
@@ -1188,7 +1191,7 @@ module.exports = function (meta) {
     getTranslate(M) { return { x: M.e, y: M.f } },
 
     /** @param {...number} values */
-    minAbs: function (...values) {
+    minAbs(...values) {
       let best = values[0];
       for (let i = 1; i < values.length; i++) {
         if (Math.abs(values[i]) < Math.abs(best)) {
@@ -1199,7 +1202,7 @@ module.exports = function (meta) {
     },
 
     /** @param {...number} values */
-    maxAbs: function (...values) {
+    maxAbs(...values) {
       let best = values[0];
       for (let i = 1; i < values.length; i++) {
         if (Math.abs(values[i]) > Math.abs(best)) {
@@ -1514,7 +1517,7 @@ module.exports = function (meta) {
     Icon({ d }) {
       return jsx("svg", {
         className: internals.actionIconClass.actionBarIcon,
-        ["aria-hidden"]: "true",
+        "aria-hidden": "true",
         role: "img",
         xmlns: "http://www.w3.org/2000/svg",
         width: "16",
@@ -1676,13 +1679,16 @@ module.exports = function (meta) {
                 ),
                 label: "Name",
                 value: layers[i].name,
-                onChange: newName => onChange(editor => editor.layers[i].layer.name = newName),
+                onChange: newName => onChange(editor => { editor.layers[i].layer.name = newName }),
               })
             }, {
               label: "Visible",
               type: "toggle",
               checked: layers[i].visible,
-              action: () => onChange(editor => (editor.toggleLayerVisibility(i), true))
+              action: () => onChange(editor => {
+                editor.toggleLayerVisibility(i);
+                return true
+              })
             }, {
               label: "Opacity",
               type: "custom",
@@ -1806,11 +1812,14 @@ module.exports = function (meta) {
             onDrop: e => {
               e.currentTarget.classList.remove("droptarget");
               const idx = Number(e.dataTransfer.getData("text/plain"));
-              onChange(editor => (editor.moveLayers(i - idx, idx), i !== idx))
+              onChange(editor => {
+                editor.moveLayers(i - idx, idx);
+                return i !== idx;
+              })
             },
             onContextMenu: (e) => { handleContextMenu(e, i) },
             onClick: (e) => onChange(editor => {
-              if (editor.activeLayerIndex == i) return false;
+              if (editor.activeLayerIndex === i) return false;
               editor.activeLayerIndex = i;
               e.currentTarget.scrollIntoView({ block: "nearest" })
               return true;
@@ -1820,7 +1829,10 @@ module.exports = function (meta) {
               jsx(Components.IconButton, {
                 tooltip: state.visible ? "Visible" : "Hidden",
                 d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
-                onClick: () => onChange(editor => (editor.toggleLayerVisibility(i), true)),
+                onClick: () => onChange(editor => {
+                  editor.toggleLayerVisibility(i);
+                  return true;
+                }),
               }),
               jsx("span", { className: "layer-label" }, state.name),
               jsx(Components.Thumbnail, {
@@ -1891,7 +1903,7 @@ module.exports = function (meta) {
 
         _setMode((oldMode) => {
           const newMode = newVal instanceof Function ? newVal(oldMode) : newVal;
-          ["--translate", "--line-from", "--phi", "r", "--brushsize"].forEach(prop => overlay.current.style.removeProperty(prop));
+          ["--translate", "--line-from", "--phi", "r", "--brushsize"].forEach(prop => { overlay.current.style.removeProperty(prop) });
 
           switch (newMode) {
             case 1: {
@@ -1941,7 +1953,7 @@ module.exports = function (meta) {
           editor.current?.toBlob({ type: BdApi.Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
             internals.uploadDispatcher.addFile({
               file: {
-                file: new File([blob], "image." + (blob.type === "image/webp" ? "webp" : blob.type === "image/png" ? "png" : "jpg"), { type: blob.type }),
+                file: new File([blob], `image. ${(blob.type === "image/webp" ? "webp" : blob.type === "image/png" ? "png" : "jpg")}`, { type: blob.type }),
                 isThumbnail: false,
                 origin: "clipboard",
                 platform: 1     // 0: React Native, 1: Web
@@ -1961,20 +1973,20 @@ module.exports = function (meta) {
         const clipRect = editor.current.clipRect;
         if (!clipRect) return;
 
-        overlay.current.style.setProperty("--cx1", 100 * clipRect.left + "%");
-        overlay.current.style.setProperty("--cx2", 100 * clipRect.right + "%");
-        overlay.current.style.setProperty("--cy1", 100 * clipRect.top + "%");
-        overlay.current.style.setProperty("--cy2", 100 * clipRect.bottom + "%");
+        overlay.current.style.setProperty("--cx1", `${100 * clipRect.left}%`);
+        overlay.current.style.setProperty("--cx2", `${100 * clipRect.right}%`);
+        overlay.current.style.setProperty("--cy1", `${100 * clipRect.top}%`);
+        overlay.current.style.setProperty("--cy2", `${100 * clipRect.bottom}%`);
       }, []);
 
       const updateRegionRect = useCallback(() => {
         const rect = editor.current.regionRect;
         if (!rect) return;
 
-        overlay.current.style.setProperty("--rx1", 100 * rect.left + "%");
-        overlay.current.style.setProperty("--rx2", 100 * rect.right + "%");
-        overlay.current.style.setProperty("--ry1", 100 * rect.top + "%");
-        overlay.current.style.setProperty("--ry2", 100 * rect.bottom + "%");
+        overlay.current.style.setProperty("--rx1", `${100 * rect.left}%`);
+        overlay.current.style.setProperty("--rx2", `${100 * rect.right}%`);
+        overlay.current.style.setProperty("--ry1", `${100 * rect.top}%`);
+        overlay.current.style.setProperty("--ry2", `${100 * rect.bottom}%`);
       }, [])
 
       const syncStates = useCallback(() => {
@@ -1985,7 +1997,7 @@ module.exports = function (meta) {
             return d;
           editor.current.startRegionSelect(new DOMPoint(0, 0));
           editor.current.endRegionSelect();
-          ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
+          ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => { overlay.current.style.removeProperty(a) });
           return { width, height }
         });
         setLayers(editor.current.layers.map((layer, i) => ({
@@ -2084,7 +2096,7 @@ module.exports = function (meta) {
                 if (isInteracting.current) break;
                 editor.current.startRegionSelect(new DOMPoint(0, 0));
                 editor.current.endRegionSelect();
-                ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
+                ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => { overlay.current.style.removeProperty(a) });
               } else {
                 setMode(m => m === 7 ? null : 7);
               }
@@ -2103,7 +2115,7 @@ module.exports = function (meta) {
               if (!isInteracting.current && editor.current.clipRect) {
                 editor.current.startRegionSelect(new DOMPoint(0, 0));
                 editor.current.endRegionSelect();
-                ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
+                ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => { overlay.current.style.removeProperty(a) });
                 break;
               }
               if (isInteracting.current && !canvasRef.current.matches(".texting")) {
@@ -2160,6 +2172,22 @@ module.exports = function (meta) {
         return () => ctrl.abort()
       }, []);
 
+      /** @type {(e: React.MouseEvent<HTMLElement>) => void} */
+      const handleMouseMove = useCallback(e => {
+        if (mode !== 4 && mode !== 6 || (e.buttons & ~4)) return;
+        if (!e.shiftKey) {
+          ["--line-from", "--phi", "--r"].forEach(prop => { overlay.current.style.removeProperty(prop) });
+        } else {
+          const lastPoint = editor.current.lastPoint;
+          if (!lastPoint) return;
+          overlay.current.style.setProperty("--line-from", `${lastPoint.x}px ${lastPoint.y}px`);
+          const phi = utils.atan2(e.clientX - canvasRect.current.x - lastPoint.x, e.clientY - canvasRect.current.y - lastPoint.y);
+          const r = Math.hypot(e.clientY - canvasRect.current.y - lastPoint.y, e.clientX - canvasRect.current.x - lastPoint.x);
+          overlay.current.style.setProperty("--phi", `${phi || 0}deg`);
+          overlay.current.style.setProperty("--r", `${r || 0}px`);
+        }
+      }, [mode]);
+
       const handleWheel = hooks.useDebouncedWheel({
         onStart: () => {
           if (mode !== 5) isInteracting.current = true;
@@ -2199,25 +2227,13 @@ module.exports = function (meta) {
               }
               case 4:
               case 6: {
-                if (!e.shiftKey) {
-                  overlay.current.style.removeProperty("--line-from");
-                  overlay.current.style.removeProperty("--phi");
-                  overlay.current.style.removeProperty("--r");
-                } else {
-                  const lastPoint = editor.current.lastPoint;
-                  if (!lastPoint) return;
-                  overlay.current.style.setProperty("--line-from", `${lastPoint.x}px ${lastPoint.y}px`);
-                  const phi = utils.atan2(e.clientX - canvasRect.current.x - lastPoint.x, e.clientY - canvasRect.current.y - lastPoint.y);
-                  const r = Math.hypot(e.clientY - canvasRect.current.y - lastPoint.y, e.clientX - canvasRect.current.x - lastPoint.x);
-                  overlay.current.style.setProperty("--phi", `${phi || 0}deg`);
-                  overlay.current.style.setProperty("--r", `${r || 0}px`);
-                }
+                handleMouseMove(e);
                 break;
               }
             }
           }
         },
-        onSubmit: (e, store) => {
+        onSubmit: (_, store) => {
           if (mode !== 5) isInteracting.current = false;
 
           if (mode === 3 && store.changed) {
@@ -2248,7 +2264,7 @@ module.exports = function (meta) {
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
               editor.current.startRegionSelect(new DOMPoint(startX, startY), mode === 0 ? fixedAspect : false);
-              ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
+              ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => { overlay.current.style.removeProperty(a) });
               break;
             }
             case !!(e.buttons & 1) && 1: {
@@ -2287,9 +2303,7 @@ module.exports = function (meta) {
 
                 canvasRef.current.releasePointerCapture(e.pointerId);
 
-                overlay.current.style.removeProperty("--line-from");
-                overlay.current.style.removeProperty("--phi");
-                overlay.current.style.removeProperty("--r");
+                ["--line-from", "--phi", "--r"].forEach(prop => { overlay.current.style.removeProperty(prop) });
               } else {
                 const boxScale = canvasRect.current.width / canvasRef.current.width;
                 const startX = (e.clientX - canvasRect.current.x) / boxScale;
@@ -2306,7 +2320,7 @@ module.exports = function (meta) {
           }
         },
         onChange: (e, store) => {
-          if (e.buttons & 4 || mode == null || mode == 3) {
+          if (e.buttons & 4 || mode == null || mode === 3) {
             const dx = (e.clientX - store.startX) / canvasRect.current.width * canvasRef.current.width;
             const dy = (e.clientY - store.startY) / canvasRect.current.height * canvasRef.current.height;
             editor.current.translateViewportBy(dx, dy);
@@ -2314,12 +2328,16 @@ module.exports = function (meta) {
             updateClipRect();
 
             if (isInteracting.current && mode === 5) {
-              updateRegionRect()
+              updateRegionRect();
             }
 
             if (mode === 1) {
               const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
               overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
+            }
+
+            if (e.shiftKey && (mode === 4 || mode === 6)) {
+              handleMouseMove(e);
             }
           } else {
             store.changed = true;
@@ -2333,10 +2351,10 @@ module.exports = function (meta) {
 
                 const rect = editor.current.clipRect;
                 if (!rect) break;
-                overlay.current.style.setProperty("--cx1", 100 * rect.left + "%");
-                overlay.current.style.setProperty("--cx2", 100 * rect.right + "%");
-                overlay.current.style.setProperty("--cy1", 100 * rect.top + "%");
-                overlay.current.style.setProperty("--cy2", 100 * rect.bottom + "%");
+                overlay.current.style.setProperty("--cx1", `${100 * rect.left}%`);
+                overlay.current.style.setProperty("--cx2", `${100 * rect.right}%`);
+                overlay.current.style.setProperty("--cy1", `${100 * rect.top}%`);
+                overlay.current.style.setProperty("--cy2", `${100 * rect.bottom}%`);
                 break;
               }
               case 1: {
@@ -2392,7 +2410,7 @@ module.exports = function (meta) {
             startY: e.clientY
           });
         },
-        onSubmit: (e, store) => {
+        onSubmit: (_, store) => {
           if (mode !== 5) isInteracting.current = false;
 
           switch (mode) {
@@ -2404,18 +2422,18 @@ module.exports = function (meta) {
             case 0: {
               editor.current.endRegionSelect();
               canvasRef.current.classList.remove("pointerdown");
-              ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => overlay.current.style.removeProperty(a));
+              ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => { overlay.current.style.removeProperty(a) });
               if (store.changed && editor.current.cropToRegionRect()) {
                 syncStates();
                 editor.current.resetViewport();
               };
               break;
             }
-            case store.changed && 1:
+            case store.changed && 1: {
               canvasRef.current.classList.remove("pointerdown");
               const cr = utils.getAngle(editor.current.previewLayerTransform).toFixed(1);
               auxRef.current?.setValue(cr);
-            // Intentional fall-through
+            } // Intentional fall-through
             case store.changed && 2: {
               editor.current.finalizeLayerPreview();
               syncStates();
@@ -2435,24 +2453,6 @@ module.exports = function (meta) {
           }
         }
       });
-
-      /** @type {(e: React.MouseEvent) => void} */
-      const handleMouseMove = useCallback(e => {
-        if (!canvasRef.current.matches(".drawing") || (e.buttons & ~4)) return;
-        if (!e.shiftKey) {
-          overlay.current.style.removeProperty("--line-from");
-          overlay.current.style.removeProperty("--phi");
-          overlay.current.style.removeProperty("--r");
-        } else {
-          const lastPoint = editor.current.lastPoint;
-          if (!lastPoint) return;
-          overlay.current.style.setProperty("--line-from", `${lastPoint.x}px ${lastPoint.y}px`);
-          const phi = utils.atan2(e.clientX - canvasRect.current.x - lastPoint.x, e.clientY - canvasRect.current.y - lastPoint.y);
-          const r = Math.hypot(e.clientY - canvasRect.current.y - lastPoint.y, e.clientX - canvasRect.current.x - lastPoint.x);
-          overlay.current.style.setProperty("--phi", `${phi || 0}deg`);
-          overlay.current.style.setProperty("--r", `${r || 0}px`);
-        }
-      }, []);
 
       return jsx(Fragment, {
         children: [
@@ -2479,7 +2479,7 @@ module.exports = function (meta) {
                         editor.current.finalizeText();
                         syncStates();
                         isInteracting.current = false;
-                        ["--rx1", "--rx2", "--ry1", "--ry2"].forEach(prop => overlay.current.style.removeProperty(prop));
+                        ["--rx1", "--rx2", "--ry1", "--ry2"].forEach(prop => { overlay.current.style.removeProperty(prop) });
                       },
                       onChange: value => {
                         editor.current.updateText(value);
@@ -2684,12 +2684,12 @@ module.exports = function (meta) {
                       }),
                     ]
                   }),
-                  mode == 0 && jsx(Components.IconButton, {
+                  mode === 0 && jsx(Components.IconButton, {
                     tooltip: fixedAspect ? "Preserve aspect ratio" : "Free region select",
                     d: fixedAspect ? utils.paths.Lock : utils.paths.LockOpen,
                     onClick: () => !isInteracting.current && setFixedAspect(e => !e),
                   }),
-                  mode == 1 && jsx(Components.NumberSlider, {
+                  mode === 1 && jsx(Components.NumberSlider, {
                     ref: auxRef,
                     label: "Angle",
                     suffix: "°",
@@ -2704,7 +2704,7 @@ module.exports = function (meta) {
                       syncStates();
                     }
                   }),
-                  mode == 3 && jsx(Components.NumberSlider, {
+                  mode === 3 && jsx(Components.NumberSlider, {
                     ref: auxRef,
                     label: "Zoom ",
                     suffix: "x",
@@ -2904,7 +2904,7 @@ module.exports = function (meta) {
       const getWeightsOptions = useCallback((f) => {
         return Array.from({ length: 9 }, (_, i) => {
           const w = (i + 1) * 100;
-          const loaded = document.fonts.check(w + " 1rem " + f);
+          const loaded = document.fonts.check(`${w} 1rem ${f}`);
           return loaded ? { value: w, label: w } : null;
         }).filter(Boolean)
       }, []);
@@ -2929,10 +2929,10 @@ module.exports = function (meta) {
             merged.sort((a, b) => a.localeCompare(b));
             // move ugly "ABC Ginto" discord fonts to the end
             merged.push(...merged.splice(0, 4));
-            return merged.filter(f => document.fonts.check("1rem " + f)).map(e => ({ value: e, label: e }));
+            return merged.filter(f => document.fonts.check(`1rem ${f}`)).map(e => ({ value: e, label: e }));
           });
 
-          if (!document.fonts.check("1rem " + family)) {
+          if (!document.fonts.check(`1rem ${family}`)) {
             setFamily("gg sans");
           } else {
             const wo = getWeightsOptions(family);
@@ -2991,7 +2991,7 @@ module.exports = function (meta) {
      * }} props
      */
     NumberSlider({ value, onChange, className, suffix, ref, minValue, centerValue, maxValue, decimals, onSlide, label, withSlider = true, expScaling = true, ...restProps }) {
-      const [textValue, setTextValue] = useState(value + '');
+      const [textValue, setTextValue] = useState(`${value}`);
       const [sliderValue, setSliderValue] = useState(() => expScaling && withSlider ? utils.logScaling(value, { minValue, centerValue, maxValue }) : value);
       const id = useId();
       const oldValue = useRef(value);
@@ -3000,7 +3000,7 @@ module.exports = function (meta) {
 
       useImperativeHandle(ref, () => ({
         setValue: v => {
-          setTextValue(v + '');
+          setTextValue(`${v}`);
           oldValue.current = v;
 
           if (!withSlider) return;
@@ -3009,7 +3009,7 @@ module.exports = function (meta) {
           sliderRef.current?._reactInternals.stateNode.setState({ value: val });
         },
         previewValue: v => {
-          inputRef.current.value = v + '';
+          inputRef.current.value = `${v}`;
           if (!withSlider) return;
           const val = expScaling ? utils.logScaling(v, { minValue, centerValue, maxValue }) : v;
           sliderRef.current?._reactInternals.stateNode.setState({ value: val });
@@ -3017,7 +3017,7 @@ module.exports = function (meta) {
       }), [minValue, centerValue, maxValue]);
 
       useEffect(() => {
-        setTextValue(value + '');
+        setTextValue(`${value}`);
         oldValue.current = value;
 
         if (!withSlider) return;
@@ -3031,11 +3031,11 @@ module.exports = function (meta) {
       }, []);
 
       const handleTextCommit = useCallback(() => {
-        const newValue = !isNaN(Number(textValue)) && textValue !== "" ? Math.max(minValue ?? Number(textValue), Number(textValue)) : oldValue.current;
+        const newValue = !Number.isNaN(Number(textValue)) && textValue !== "" ? Math.max(minValue ?? Number(textValue), Number(textValue)) : oldValue.current;
         if (oldValue.current === newValue) return;
 
         oldValue.current = newValue
-        setTextValue(oldValue.current + "");
+        setTextValue(`${oldValue.current}`);
         onChange?.(oldValue.current);
 
         if (!withSlider) return;
@@ -3057,7 +3057,7 @@ module.exports = function (meta) {
         val = Number(val.toFixed(decimals ?? 0));
         if (val === oldValue.current) return;
 
-        setTextValue(val + '');
+        setTextValue(`${val}`);
         oldValue.current = val;
         onChange?.(val);
       }, [onChange, setTextValue, minValue, maxValue]);
@@ -3069,10 +3069,10 @@ module.exports = function (meta) {
           e.stopPropagation?.();
           if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
             e.preventDefault?.();
-            const delta = (e.key === 'ArrowUp' ? 1 : -1) * (decimals ? Math.pow(10, -1 * decimals) : 1);
+            const delta = (e.key === 'ArrowUp' ? 1 : -1) * (decimals ? 10 ** (-1 * decimals) : 1);
             setTextValue(val => {
               val = (Number(val) + delta).toFixed(decimals ?? 0);
-              return Math.max(Number(val), minValue ?? Number(val)) + '';
+              return `${Math.max(Number(val), minValue ?? Number(val))}`;
             });
           }
         }
@@ -3080,15 +3080,15 @@ module.exports = function (meta) {
 
       const handleWheel = useCallback(e => {
         if (document.activeElement !== e.currentTarget || !e.deltaY || e.buttons) return;
-        const delta = -Math.sign(e.deltaY) * (decimals ? Math.pow(10, -1 * decimals) : 1) * (e.ctrlKey ? 100 : e.shiftKey ? 10 : 1);
+        const delta = -Math.sign(e.deltaY) * (decimals ? 10 ** (-1 * decimals) : 1) * (e.ctrlKey ? 100 : e.shiftKey ? 10 : 1);
         setTextValue(val => {
           val = (Number(val) + delta).toFixed(decimals ?? 0);
-          return Math.max(Number(val), minValue ?? Number(val)) + '';
+          return `${Math.max(Number(val), minValue ?? Number(val))}`;
         });
       }, []);
 
       const handleBeforeInput = useCallback(e => {
-        if (e.data && /[^0-9e\+\-.]+/.test(e.data)) e.preventDefault?.();
+        if (e.data && /[^0-9e+\-.]+/.test(e.data)) e.preventDefault?.();
       }, []);
 
       const handleMouseEnter = useCallback(e => !e.buttons && e.currentTarget.focus(), []);
@@ -3144,7 +3144,7 @@ module.exports = function (meta) {
           }`),
           label && jsx("label", {
             htmlFor: id,
-            children: label + ": "
+            children: `${label}: `
           }),
           jsx("input", {
             className: "number-input",
@@ -3209,7 +3209,7 @@ module.exports = function (meta) {
           case " ": {
             const start = e.currentTarget.selectionStart;
             const end = e.currentTarget.selectionEnd;
-            setText(t => t.slice(0, start) + " " + t.slice(end));
+            setText(t => `${t.slice(0, start)} ${t.slice(end)}`);
             requestAnimationFrame(() => {
               e.target.selectionStart = e.target.selectionEnd = start + 1;
             })
