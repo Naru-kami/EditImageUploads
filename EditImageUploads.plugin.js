@@ -1788,62 +1788,59 @@ module.exports = (meta) => {
         });
       }, [onChange, layers]);
 
-      return jsx(BdApi.Components.ErrorBoundary, null, jsx("ul", {
+      return jsx(BdApi.Components.ErrorBoundary, null, jsx("div", {
         className: utils.clsx("thumbnails", internals.scrollbarClass.thin),
-        children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
-          key: state.id,
-          children: jsx("li", {
-            draggable: true,
-            onDragStart: (e) => {
-              e.currentTarget.classList.add("dragging");
-              e.dataTransfer.clearData();
-              e.dataTransfer.setData("text/plain", String(i));
-              e.dataTransfer.effectAllowed = "move";
-            },
-            onDragEnd: (e) => {
-              e.currentTarget.classList.remove("dragging");
-            },
-            onDragEnter: (e) => {
-              e.currentTarget.classList.add("droptarget")
-            },
-            onDragLeave: (e) => {
-              !e.currentTarget.contains(e.relatedTarget) && e.currentTarget.classList.remove("droptarget");
-            },
-            onDrop: e => {
-              e.currentTarget.classList.remove("droptarget");
-              const idx = Number(e.dataTransfer.getData("text/plain"));
-              onChange(editor => {
-                editor.moveLayers(i - idx, idx);
-                return i !== idx;
-              })
-            },
-            onContextMenu: (e) => { handleContextMenu(e, i) },
-            onClick: (e) => onChange(editor => {
-              if (editor.activeLayerIndex === i) return false;
-              editor.activeLayerIndex = i;
-              e.currentTarget.scrollIntoView({ block: "nearest" })
-              return true;
-            }),
-            className: utils.clsx("thumbnail", state.active && "active"),
-            children: [
-              jsx(Components.IconButton, {
-                tooltip: state.visible ? "Visible" : "Hidden",
-                d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
-                onClick: () => onChange(editor => {
-                  editor.toggleLayerVisibility(i);
-                  return true;
-                }),
+        children: jsx("ul", {
+          className: "thumbnails-wrapper",
+          children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
+            key: state.id,
+            children: jsx("li", {
+              draggable: true,
+              onDragStart: (e) => {
+                e.currentTarget.classList.add("dragging");
+                e.dataTransfer.clearData();
+                e.dataTransfer.setData("text/plain", String(i));
+                e.dataTransfer.effectAllowed = "move";
+              },
+              onDragEnd: (e) => { e.currentTarget.classList.remove("dragging") },
+              onDragEnter: (e) => { e.currentTarget.classList.add("droptarget") },
+              onDragLeave: (e) => { !e.currentTarget.contains(e.relatedTarget) && e.currentTarget.classList.remove("droptarget") },
+              onDrop: e => {
+                e.currentTarget.classList.remove("droptarget");
+                const idx = Number(e.dataTransfer.getData("text/plain"));
+                onChange(editor => {
+                  editor.moveLayers(i - idx, idx);
+                  return i !== idx;
+                })
+              },
+              onContextMenu: (e) => { handleContextMenu(e, i) },
+              onClick: (e) => onChange(editor => {
+                if (editor.activeLayerIndex === i) return false;
+                editor.activeLayerIndex = i;
+                e.currentTarget.scrollIntoView({ block: "nearest" })
+                return true;
               }),
-              jsx("span", { className: "layer-label" }, state.name),
-              jsx(Components.Thumbnail, {
-                index: i,
-                editor,
-                width,
-                height,
-              })
-            ]
-          })
-        }))
+              className: utils.clsx("thumbnail", state.active && "active"),
+              children: [
+                jsx(Components.IconButton, {
+                  tooltip: state.visible ? "Visible" : "Hidden",
+                  d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
+                  onClick: () => onChange(editor => {
+                    editor.toggleLayerVisibility(i);
+                    return true;
+                  }),
+                }),
+                jsx("span", { className: "layer-label" }, state.name),
+                jsx(Components.Thumbnail, {
+                  index: i,
+                  editor,
+                  width,
+                  height,
+                })
+              ]
+            })
+          }))
+        })
       }))
     },
 
@@ -1856,7 +1853,7 @@ module.exports = (meta) => {
         const ctx = canvas.current.getContext("2d");
         ctx.imageSmoothingEnabled = false;
 
-        // on mount, render initial thumbnail.
+        // on mount, force render initial thumbnail.
         const s = Math.max(canvas.current.width / width, canvas.current.height / height);
         editor.current.layers[index].layer.drawThumbnailOn(canvas.current, s, true);
       }, []);
@@ -3341,7 +3338,6 @@ module.exports = (meta) => {
 }
 
 .canvas-dims {
-  grid-column: 1 / -1;
   display: flex;
   justify-content: center;
   align-items: center;
@@ -3538,7 +3534,6 @@ module.exports = (meta) => {
 }
 
 .canvas-actions {
-  grid-column: 1 / -1;
   width: 128px;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -3556,7 +3551,6 @@ module.exports = (meta) => {
   grid-template-rows: auto auto 1fr;
   align-self: start;
   align-items: start;
-  grid-column: 1 / -1;
   color: var(--interactive-active);
   box-sizing: border-box;
   height: 100%;
@@ -3580,7 +3574,6 @@ module.exports = (meta) => {
   height: 1px;
   overflow: hidden;
   scrollbar-width: none;
-  clip: rect(0, 0, 0, 0);
   clip-path: inset(50%);
 }
 
@@ -3643,18 +3636,22 @@ module.exports = (meta) => {
 }
 
 .thumbnails {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-direction: column-reverse;
   max-height: calc(40px * 4);
   max-width: 128px;
   box-sizing: content-box;
   overflow: auto;
-  font-size: .8125em;
+}
+
+.thumbnails-wrapper {
+  display: flex;
+  flex-direction: column-reverse;
+  
   &::before {
     content: "";
     position: absolute;
-    inset: anchor(--active-thumbnail inside);
+    position-anchor: --active-thumbnail;
+    inset: auto anchor(inside) anchor(bottom);
+    height: anchor-size();
     background: #ffffff20;
     pointer-events: none;
     transition: inset 200ms ease-out;
@@ -3713,12 +3710,12 @@ module.exports = (meta) => {
   -webkit-line-clamp: 2;
   overflow: hidden;
   overflow-wrap: anywhere;
+  font-size: .8125em;
   text-align: center;
 }
 
 .layer-actions {
   display: flex;
-  grid-column: 1 / -1;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-normal);
 }
