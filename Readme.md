@@ -15,7 +15,7 @@ If you find yourself having performance issues, try lowering or turning off the 
 - <kbd>S</kbd> Scale current layer
 - <kbd>C</kbd> Crop the canvas to selected region.
 
-## Useful keybinds controls
+## Useful keybind controls
 - <kbd>Ctrl</kbd> + <kbd>Z</kbd>: Undo
 - <kbd>Ctrl</kbd> + <kbd>Y</kbd>: Redo
 - <kbd>Ctrl</kbd> + <kbd>B</kbd>: Reset Viewport
