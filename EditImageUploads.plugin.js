@@ -11,8 +11,8 @@ module.exports = (meta) => {
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI, ContextMenu } = BdApi;
 
   const {
-    createElement: jsx, useState, useEffect, useRef, useLayoutEffect, useId,
-    useImperativeHandle, useCallback, Fragment, cloneElement, useTransition
+    createElement: jsx, useState, useEffect, useRef, useMemo, useCallback, useId,
+    useImperativeHandle, useLayoutEffect, Fragment, cloneElement, useTransition
   } = React;
 
   var internals, ctrl;
@@ -1799,6 +1799,7 @@ module.exports = (meta) => {
           children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
             key: state.id,
             children: jsx("li", {
+              tabIndex: 0,
               draggable: true,
               onDragStart: (e) => {
                 e.currentTarget.classList.add("dragging");
@@ -1824,6 +1825,11 @@ module.exports = (meta) => {
                 e.currentTarget.scrollIntoView({ block: "nearest" })
                 return true;
               }),
+              onKeyDown: (e) => {
+                if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                  e.currentTarget.click();
+                }
+              },
               className: utils.clsx("thumbnail", state.active && "active"),
               children: [
                 jsx(Components.IconButton, {
@@ -2632,9 +2638,8 @@ module.exports = (meta) => {
                 children: [
                   (mode === 4 || mode === 5 || mode === 6) && jsx(Fragment, {
                     children: [
-                      mode !== 6 && jsx(BdApi.Components.ColorInput, {
+                      mode !== 6 && jsx(Components.ColorInput, {
                         value: strokeStyle.color,
-                        colors: ["#000000", 0xffffff, 0xffea00, 0xff9100, 0xff1744, 0xff4081, 0xd500f9, 0x651fff, 0x2979ff, 0x10e5ff, 0x1de9b6, 0x10e676],
                         onChange: c => setStrokeStyle(s => ({ ...s, color: c }))
                       }),
                       jsx(Components.NumberSlider, {
@@ -2980,6 +2985,25 @@ module.exports = (meta) => {
             }),
           })
         ]
+      })
+    },
+
+    /** @param {{onChange: (value: string) => void, value: string}} */
+    ColorInput({ onChange, value }) {
+      /** @type {React.RefObject<number | null>} */
+      const timer = useRef(null);
+      const colors = useMemo(() => ["#000000", 0xffffff, 0xffea00, 0xff9100, 0xff1744, 0xff4081, 0xd500f9, 0x651fff, 0x2979ff, 0x10e5ff, 0x1de9b6, 0x10e676], []);
+
+      return jsx(BdApi.Components.ColorInput, {
+        value,
+        colors,
+        onChange: c => {
+          timer.current && clearTimeout(timer.current);
+          timer.current = setTimeout(() => {
+            onChange(c)
+            timer.current = null;
+          }, 100);
+        }
       })
     },
 
