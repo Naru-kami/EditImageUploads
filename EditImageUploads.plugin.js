@@ -832,6 +832,10 @@ module.exports = (meta) => {
       });
       this.#resizeCanvas(this.#state.state.height, this.#state.state.width);
       this.#state.state = { ...this.#state.state, layers, width: this.#state.state.height, height: this.#state.state.width };
+
+      const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
+      this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
+
       this.fullRender();
     }
 
@@ -2166,7 +2170,10 @@ module.exports = (meta) => {
           }
         }, { signal: ctrl.signal, capture: true });
 
-        return () => ctrl.abort()
+        return () => {
+          ctrl.abort();
+          editor.current = null;
+        }
       }, []);
 
       /** @type {(e: React.MouseEvent<HTMLElement>) => void} */
@@ -3111,6 +3118,7 @@ module.exports = (meta) => {
             :scope {
               display: flex;
               flex-wrap: wrap;
+              row-gap: 4px;
               color: var(--interactive-active);
               padding-inline: ${withSlider ? "8px" : "0px"}; 
               & > label {
