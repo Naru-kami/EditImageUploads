@@ -1726,7 +1726,7 @@ module.exports = (meta) => {
               action: () => {
                 if (!DiscordNative?.clipboard?.copyImage) return;
 
-                UI.showToast("Processing...", { type: "warn" });
+                UI.showToast("Processing...", { type: "warning" });
                 editor.current.copyLayerContents(blob => {
                   blob.arrayBuffer().then(buffer => {
                     DiscordNative.clipboard.copyImage(new Uint8Array(buffer), "image.png");
@@ -1925,7 +1925,7 @@ module.exports = (meta) => {
 
       useImperativeHandle(ref, () => ({
         replace({ draftType, upload }) {
-          UI.showToast("Processing...", { type: "warn" });
+          UI.showToast("Processing...", { type: "warning" });
           editor.current?.toBlob({ type: BdApi.Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
             internals.uploadDispatcher.setFile({
               channelId: upload.channelId,
@@ -1956,7 +1956,7 @@ module.exports = (meta) => {
             return;
           }
 
-          UI.showToast("Processing...", { type: "warn" });
+          UI.showToast("Processing...", { type: "warning" });
           editor.current?.toBlob({ type: BdApi.Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
             internals.uploadDispatcher.addFile({
               file: {
@@ -2045,7 +2045,7 @@ module.exports = (meta) => {
               break;
 
             case !isInteracting.current && !e.repeat && e.ctrlKey && DiscordNative?.clipboard?.copyImage && "c":
-              UI.showToast("Processing...", { type: "warn" });
+              UI.showToast("Processing...", { type: "warning" });
               editor.current.toBlob({
                 type: 'image/png'
               }).then(blob =>
