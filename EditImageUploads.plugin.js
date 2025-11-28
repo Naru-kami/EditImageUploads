@@ -877,7 +877,7 @@ module.exports = (meta) => {
       if (!this.#state.undo()) return false;
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
-        const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
+        const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
         this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       }
       this.#state.state.layers.forEach(({ layer, state }) => { layer.state = state });
@@ -892,7 +892,7 @@ module.exports = (meta) => {
       if (!this.#state.redo()) return false;
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
-        const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.95, this.#viewportCanvas.height / this.#mainCanvas.height * 0.95);
+        const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
         this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       }
       this.#state.state.layers.forEach(({ layer, state }) => { layer.state = state });
@@ -1860,9 +1860,10 @@ module.exports = (meta) => {
       const canvas = useRef(null);
 
       useEffect(() => {
-        const ctx = canvas.current.getContext("2d");
-        ctx.imageSmoothingEnabled = false;
+        canvas.current.getContext("2d").imageSmoothingEnabled = false;
+      }, [width, height]);
 
+      useEffect(() => {
         // on mount, force render initial thumbnail.
         const s = Math.max(canvas.current.width / width, canvas.current.height / height);
         editor.current.layers[index].layer.drawThumbnailOn(canvas.current, s, true);
@@ -1960,7 +1961,7 @@ module.exports = (meta) => {
           editor.current?.toBlob({ type: BdApi.Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
             internals.uploadDispatcher.addFile({
               file: {
-                file: new File([blob], `image. ${(blob.type === "image/webp" ? "webp" : blob.type === "image/png" ? "png" : "jpg")}`, { type: blob.type }),
+                file: new File([blob], `image.${(blob.type === "image/webp" ? "webp" : blob.type === "image/png" ? "png" : "jpg")}`, { type: blob.type }),
                 isThumbnail: false,
                 origin: "clipboard",
                 platform: 1     // 0: React Native, 1: Web
@@ -3682,11 +3683,12 @@ module.exports = (meta) => {
     content: "";
     position: absolute;
     position-anchor: --active-thumbnail;
-    inset: auto anchor(inside) anchor(bottom);
+    inset-inline: anchor(inside);
+    bottom: min(anchor(bottom), 100% - anchor-size(height));
     height: anchor-size();
-    background: #ffffff20;
+    background: #fff2;
     pointer-events: none;
-    transition: inset 200ms ease-out;
+    transition: bottom 200ms ease-out;
   }
 }
 
