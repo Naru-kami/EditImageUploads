@@ -263,7 +263,7 @@ module.exports = (meta) => {
     /** @param {ImageBitmap | null} bitmap */
     createNewLayer(bitmap) {
       const newLayer = new Layer(
-        `Layer ${(this.layers.length - 1)}`,
+        `Layer ${(this.layers.length)}`,
         bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height }
       );
       this.#state.state = {
@@ -1810,7 +1810,7 @@ module.exports = (meta) => {
               onDragEnd: (e) => { e.currentTarget.classList.remove("dragging") },
               onDragEnter: (e) => { e.currentTarget.classList.add("droptarget") },
               onDragLeave: (e) => { !e.currentTarget.contains(e.relatedTarget) && e.currentTarget.classList.remove("droptarget") },
-              onDrop: e => {
+              onDrop: (e) => {
                 e.currentTarget.classList.remove("droptarget");
                 const idx = Number(e.dataTransfer.getData("text/plain"));
                 onChange(editor => {
@@ -1833,6 +1833,7 @@ module.exports = (meta) => {
               className: utils.clsx("thumbnail", state.active && "active"),
               children: [
                 jsx(Components.IconButton, {
+                  className: "layer-visibility",
                   tooltip: state.visible ? "Visible" : "Hidden",
                   d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
                   onClick: () => onChange(editor => {
@@ -1875,8 +1876,8 @@ module.exports = (meta) => {
       }) // yes, no dependency! Update the thumbnail on rerenders. However, repainting will only occur if thumbnail is stale!
 
       return jsx("canvas", {
-        width: ~~Math.min(32, 32 * width / height),
-        height: ~~Math.min(32, 32 / width * height),
+        width: ~~Math.min(40, 40 * width / height),
+        height: ~~Math.min(40, 40 / width * height),
         className: "canvas-thumbnail",
         ref: canvas,
       })
@@ -2927,14 +2928,12 @@ module.exports = (meta) => {
       }, [])
 
       useLayoutEffect(() => {
-        Promise.all(Array.from(document.fonts).map(f => f.load())).then(() => {
+        Promise.all(Array.from(document.fonts, f => f.load())).finally(() => {
           setFamilyOptions(() => {
-            const defaults = ["sans-serif", "serif", "monospace", "cursive", "fantasy", "system-ui", "Arial", "Arial Black", "Tahoma", "Times New Roman", "Verdana", "Georgia", "Garamond", "Helvetica"];
+            const defaults = ['Arial', 'Arial Black', 'cursive', 'fantasy', 'Garamond', 'Georgia', 'Helvetica', 'monospace', 'sans-serif', 'serif', 'system-ui', 'Tahoma', 'Times New Roman', 'Verdana'];
             const docFonts = Array.from(document.fonts, e => e.family);
             const merged = [...new Set(defaults.concat(docFonts))];
             merged.sort((a, b) => a.localeCompare(b));
-            // move ugly "ABC Ginto" discord fonts to the end
-            merged.push(...merged.splice(0, 4));
             return merged.filter(f => document.fonts.check(`1rem ${f}`)).map(e => ({ value: e, label: e }));
           });
 
@@ -3669,10 +3668,12 @@ module.exports = (meta) => {
 }
 
 .thumbnails {
-  max-height: calc(40px * 4);
+  --thumbnail-height: 40px;
+  max-height: calc((var(--thumbnail-height) + 8px) * 4);
   max-width: 128px;
   box-sizing: content-box;
   overflow: auto;
+  overflow-anchor: none;
 }
 
 .thumbnails-wrapper {
@@ -3695,9 +3696,10 @@ module.exports = (meta) => {
 .thumbnail {
   display: grid;
   position: relative;
-  grid-template-columns: 24px 1fr 32px;
+  grid-template-columns: min-content 1fr var(--thumbnail-height);
   justify-items: center;
-  flex: 0 0 32px;
+  gap: 4px;
+  flex: 0 0 var(--thumbnail-height);
   overflow: hidden;
   align-items: center;
   padding: 4px;
@@ -3736,6 +3738,10 @@ module.exports = (meta) => {
   width: 100%;
   border-radius: 4px;
   background-color: var(--brand-500);
+}
+
+.layer-visibility {
+  min-width: 0;
 }
 
 .layer-label {
