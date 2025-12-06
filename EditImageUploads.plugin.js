@@ -639,8 +639,8 @@ module.exports = (meta) => {
     /** @param {DOMPoint} startPoint  */
     startRegionSelect(startPoint, fixedAspect = false) {
       const start_T = startPoint.matrixTransform(this.viewportTransform_inv);
-      start_T.x = utils.clamp(0, start_T.x, this.#mainCanvas.width);
-      start_T.y = utils.clamp(0, start_T.y, this.#mainCanvas.height);
+      start_T.x = Math.round(utils.clamp(0, start_T.x, this.#mainCanvas.width));
+      start_T.y = Math.round(utils.clamp(0, start_T.y, this.#mainCanvas.height));
       this.#interactionCache.clipRect = new DOMRect(start_T.x, start_T.y, 0, 0);
       this.#interactionCache.width = Number(fixedAspect);
     }
@@ -648,8 +648,8 @@ module.exports = (meta) => {
     /** @param {DOMPoint} to  */
     regionSelect(to) {
       const to_T = to.matrixTransform(this.viewportTransform_inv);
-      to_T.x = utils.clamp(0, to_T.x, this.#mainCanvas.width);
-      to_T.y = utils.clamp(0, to_T.y, this.#mainCanvas.height);
+      to_T.x = Math.round(utils.clamp(0, to_T.x, this.#mainCanvas.width));
+      to_T.y = Math.round(utils.clamp(0, to_T.y, this.#mainCanvas.height));
 
       this.#interactionCache.clipRect.width = to_T.x - this.#interactionCache.clipRect.x;
       this.#interactionCache.clipRect.height = to_T.y - this.#interactionCache.clipRect.y;
@@ -664,8 +664,8 @@ module.exports = (meta) => {
         this.#interactionCache.clipRect.width = utils.clamp(-this.#interactionCache.clipRect.x, this.#interactionCache.clipRect.width, this.#mainCanvas.width - this.#interactionCache.clipRect.x);
         this.#interactionCache.clipRect.height = utils.clamp(-this.#interactionCache.clipRect.y, this.#interactionCache.clipRect.height, this.#mainCanvas.height - this.#interactionCache.clipRect.y);
 
-        this.#interactionCache.clipRect.width = utils.minAbs(this.#interactionCache.clipRect.width, (Math.sign(this.#interactionCache.clipRect.width) || 1) * Math.abs(this.#interactionCache.clipRect.height) * aspect);
-        this.#interactionCache.clipRect.height = utils.minAbs(this.#interactionCache.clipRect.height, (Math.sign(this.#interactionCache.clipRect.height) || 1) * Math.abs(this.#interactionCache.clipRect.width) / aspect);
+        this.#interactionCache.clipRect.width = Math.round(utils.minAbs(this.#interactionCache.clipRect.width, (Math.sign(this.#interactionCache.clipRect.width) || 1) * Math.abs(this.#interactionCache.clipRect.height) * aspect));
+        this.#interactionCache.clipRect.height = Math.round(utils.minAbs(this.#interactionCache.clipRect.height, (Math.sign(this.#interactionCache.clipRect.height) || 1) * Math.abs(this.#interactionCache.clipRect.width) / aspect));
       }
     }
 
@@ -2418,6 +2418,8 @@ module.exports = (meta) => {
             case 7: {
               editor.current.endRegionSelect();
               canvasRef.current.classList.remove("pointerdown");
+              ["--cx1", "--cx2", "--cy1", "--cy2"].forEach(a => { overlay.current.style.removeProperty(a) });
+              updateClipRect();
               break;
             }
             case 0: {
@@ -3453,7 +3455,7 @@ module.exports = (meta) => {
 .canvas.cropping.pointerdown + .canvas-overlay > .cropper-region {
   position: absolute;
   inset: 0;
-  background: rgba(0, 0, 0, 0.75);
+  background: rgba(0, 0, 0, 0.7);
   clip-path: polygon(
     0% 0%, 100% 0%, 100% 100%, 0 100%,
     var(--cx1, 50%) var(--cy2, 50%), var(--cx2, 50%) var(--cy2, 50%), var(--cx2, 50%) var(--cy1, 50%), var(--cx1, 50%) var(--cy1, 50%),
@@ -3503,13 +3505,20 @@ module.exports = (meta) => {
   );
 }
 
+.canvas.selecting.pointerdown + .canvas-overlay > .cropper-region {
+  opacity: min(
+    min(1000 * (var(--cx2, 0) - var(--cx1, 0)), 100%),
+    min(1000 * (var(--cy2, 0) - var(--cy1, 0)), 100%)
+  );
+}
+
 @container overlay style(--line-from) {
   .canvas.drawing + .canvas-overlay > .cropper-border {
     position: absolute;
     left: 0;
     top: 0;
     transform-origin: top left;
-    translate: var(--line-from, -1000px -1000px);
+    translate: var(--line-from);
     width: var(--r, 0px);
     rotate: var(--phi, 0rad);
     height: 1px;
