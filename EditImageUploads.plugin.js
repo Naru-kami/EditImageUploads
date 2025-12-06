@@ -23,10 +23,11 @@ module.exports = (meta) => {
     internals = utils.getBulk({
       uploadDispatcher: { filter: Filters.byKeys("setFile") }, // 166459
       uploadCard: { filter: Filters.bySource(".attachmentItemSmall]:") }, // 898463
-      nativeUI: { filter: m => m.showToast }, // 481060
-      Modal: { filter: Filters.bySource(".MODAL_ROOT_LEGACY,") }, // 466377
-      Button: { filter: Filters.bySource("BUTTON_LOADING_STARTED_LABEL,") }, // 906003
       urlConverter: { filter: Filters.bySource(".searchParams.delete(\"width\"),") }, // 296182
+      nativeUI: { filter: m => m.showToast }, // 481060
+      Select: { filter: Filters.bySource("(\"SingleSelect\")") }, // 199849
+      ModalSystem: { filter: Filters.bySource(".MODAL_ROOT_LEGACY,") }, // 466377
+      Button: { filter: Filters.bySource("BUTTON_LOADING_STARTED_LABEL,") }, // 906003
 
       actionButtonClass: { filter: Filters.byKeys("dangerous", "button") },
       actionIconClass: { filter: m => m.actionBarIcon && m[Symbol.toStringTag] !== "Module" },
@@ -55,9 +56,11 @@ module.exports = (meta) => {
           MenuSliderControl: "moveGrabber",
           closeModalInAllContexts: ".onCloseCallback)",
           Popout: "Unsupported animation config:",
-          SingleSelect: '"renderTrailing","value"',
         }),
-        ...utils.getKeysInModule(internals.Modal, {
+        ...utils.getKeysInModule(internals.Select, {
+          SingleSelect: "(\"SingleSelect\")"
+        }),
+        ...utils.getKeysInModule(internals.ModalSystem, {
           ModalRoot: ".MODAL_ROOT_LEGACY,",
           ModalContent: ",scrollbarType:",
           ModalFooter: "footerSeparator]",
@@ -70,7 +73,7 @@ module.exports = (meta) => {
   function start() {
     init();
 
-    if (!internals.keys.ModalRoot || !internals.keys.ModalContent || !internals.keys.ModalFooter) return;
+    if (!["ModalRoot", "ModalContent", "ModalFooter", "openModal"].every(key => key in internals.keys)) return;
 
     internals.uploadCard && Patcher.after(meta.slug, internals.uploadCard, internals.keys.uploadCard, (_, [args], ret) => {
       if (
@@ -93,8 +96,8 @@ module.exports = (meta) => {
           children: className => {
             const ret = res.props.children(className);
 
-            const mediaUrl = internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url);
-            const url = internals.urlConverter[internals.keys.toCdnUrl](mediaUrl, args.item.contentType, args.item.originalContentType);
+            const mediaUrl = internals.urlConverter[internals.keys.toMediaUrl]?.(args.item.original, args.item.url);
+            const url = internals.urlConverter[internals.keys.toCdnUrl]?.(mediaUrl, args.item.contentType, args.item.originalContentType);
 
             url && ret.props.children.unshift(jsx(Components.RemixIcon, { url }))
 
@@ -1324,13 +1327,13 @@ module.exports = (meta) => {
     /** @param {{onSubmit: () => void, bitmap: ImageBitmap, userActions: React.RefObject<any>}} */
     openEditor({ onSubmit, bitmap, userActions }) {
       const id = internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, {
-        children: jsx(internals.Modal[internals.keys.ModalRoot], {
+        children: jsx(internals.ModalSystem[internals.keys.ModalRoot], {
           ...e,
           animation: "subtle",
           size: "dynamic",
           className: `${meta.slug}Root`,
           children: [
-            jsx(internals.Modal[internals.keys.ModalFooter], {
+            jsx(internals.ModalSystem[internals.keys.ModalFooter], {
               className: "modal-footer",
               children: [
                 jsx(internals.Button[internals.keys.Button], {
@@ -1351,7 +1354,7 @@ module.exports = (meta) => {
                 })
               ]
             }),
-            jsx(internals.Modal[internals.keys.ModalContent], {
+            jsx(internals.ModalSystem[internals.keys.ModalContent], {
               className: "image-editor",
               children: jsx(Components.ImageEditor, {
                 bitmap,
@@ -2876,28 +2879,30 @@ module.exports = (meta) => {
     MenuItemSelect({ options, initialValue, onChange, text }) {
       const [value, setValue] = useState(initialValue);
 
-      return jsx("div", {
-        className: utils.clsx(
-          internals.contextMenuClass?.item,
-          internals.contextMenuClass?.labelContainer,
-        ),
-        children: [
-          jsx("style", null, `@scope {
-            :scope { display: block; }
-            .select { display: inline-block; }
-          }`),
-          text,
-          jsx(internals.nativeUI[internals.keys.SingleSelect], {
-            options: options,
-            value: value,
-            className: "select",
-            onChange: v => {
-              setValue(v);
-              onChange?.(v);
-            }
-          })
-        ]
-      })
+      return jsx(BdApi.Components.ErrorBoundary, null,
+        jsx("div", {
+          className: utils.clsx(
+            internals.contextMenuClass?.item,
+            internals.contextMenuClass?.labelContainer,
+          ),
+          children: [
+            jsx("style", null, `@scope {
+              :scope { display: block; }
+              .select { display: inline-block; }
+            }`),
+            text,
+            jsx(internals.Select[internals.keys.SingleSelect], {
+              options: options,
+              value: value,
+              className: "select",
+              onChange: v => {
+                setValue(v);
+                onChange?.(v);
+              }
+            })
+          ]
+        })
+      )
     },
 
     /** @param {{ value: { family: string, weight: number }, onChange: (e: { family: string, weight: number }) => void }} */
@@ -2951,10 +2956,10 @@ module.exports = (meta) => {
         });
       }, []);
 
-      return jsx("div", {
+      return jsx(BdApi.Components.ErrorBoundary, null, jsx("div", {
         className: "font-selector",
         children: [
-          jsx(internals.nativeUI[internals.keys.SingleSelect], {
+          jsx(internals.Select[internals.keys.SingleSelect], {
             options: familyOptions,
             value: family,
             className: "select",
@@ -2969,7 +2974,7 @@ module.exports = (meta) => {
               children: option.label
             }),
           }),
-          jsx(internals.nativeUI[internals.keys.SingleSelect], {
+          jsx(internals.Select[internals.keys.SingleSelect], {
             options: weightOptions,
             value: weight,
             className: "select",
@@ -2985,7 +2990,7 @@ module.exports = (meta) => {
             }),
           })
         ]
-      })
+      }))
     },
 
     /** @param {{onChange: (value: string) => void, value: string}} */
@@ -3570,7 +3575,7 @@ module.exports = (meta) => {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   & > .active {
-    background-color: var(--background-modifier-active);
+    background-color: rgba(151, 151, 159, 0.16);
     color: var(--interactive-active);
     padding-bottom: 3px;
     padding-top: 5px;
