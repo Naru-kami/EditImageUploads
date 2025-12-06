@@ -20,7 +20,7 @@ module.exports = (meta) => {
   function init() {
     if (internals) return;
 
-    internals = utils.getBulk({
+    internals = Webpack.getBulkKeyed({
       uploadDispatcher: { filter: Filters.byKeys("setFile") }, // 166459
       uploadCard: { filter: Filters.bySource(".attachmentItemSmall]:") }, // 898463
       urlConverter: { filter: Filters.bySource(".searchParams.delete(\"width\"),") }, // 296182
@@ -1104,20 +1104,6 @@ module.exports = (meta) => {
   }
 
   var utils = {
-    getBulk(filters) {
-      const t = Webpack.getBulk(
-        ...Object.values(filters)
-      );
-
-      return Object.fromEntries(
-        Object.entries(filters)
-          .map((e, i) => {
-            e[1] = t[i];
-            return e;
-          })
-      );
-    },
-
     getKeysInModule(mod, strs) {
       const entries = new Map(Object.entries(strs));
       const found = {};
