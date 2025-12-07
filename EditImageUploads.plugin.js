@@ -718,11 +718,11 @@ module.exports = (meta) => {
         .multiplySelf(this.layerTransform).invertSelf();
 
       const textMetrics = ctx.measureText("");
-      const width = textMetrics.actualBoundingBoxRight + textMetrics.actualBoundingBoxLeft;
-      const height = textMetrics.fontBoundingBoxDescent + textMetrics.fontBoundingBoxAscent;
+      const width = Math.ceil(textMetrics.actualBoundingBoxRight + textMetrics.actualBoundingBoxLeft);
+      const height = Math.ceil(textMetrics.fontBoundingBoxDescent + textMetrics.fontBoundingBoxAscent);
 
       const to_inv = point.matrixTransform(this.viewportTransform_inv);
-      this.#interactionCache.rect = new DOMRect(to_inv.x, to_inv.y - height / 2, width, height);
+      this.#interactionCache.rect = new DOMRect(Math.round(to_inv.x), Math.round(to_inv.y - height / 2), width, height);
       this.#interactionCache.color = color;
     }
 
@@ -740,11 +740,14 @@ module.exports = (meta) => {
       clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
       ctx.clip(clipPath);
 
-      [this.#interactionCache.rect.width, this.#interactionCache.rect.height] = utils.renderMultilineText(
+      const [w, h] = utils.renderMultilineText(
         ctx, this.#interactionCache.text,
-        new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y)
+        new DOMPoint(this.#interactionCache.rect.x + 1, this.#interactionCache.rect.y)
       );
       ctx.restore();
+
+      this.#interactionCache.rect.width = Math.ceil(w + !!(w));
+      this.#interactionCache.rect.height = Math.ceil(h);
 
       const mainCtx = this.#mainCanvas.getContext("2d");
       mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
@@ -780,7 +783,7 @@ module.exports = (meta) => {
       const layerState = this.#activeLayer.addStroke({
         text: this.#interactionCache.text,
         font: ctx.font,
-        origin: new DOMPoint(this.#interactionCache.rect.x, this.#interactionCache.rect.y),
+        origin: new DOMPoint(this.#interactionCache.rect.x + 1, this.#interactionCache.rect.y),
         color: this.#interactionCache.color,
         globalCompositeOperation: "source-over",
         clipPath,
@@ -3370,7 +3373,7 @@ module.exports = (meta) => {
   color: var(--interactive-active);
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-normal);
-  & .number-input {
+  .number-input {
     text-align: center;
   }
 }
@@ -3463,20 +3466,9 @@ module.exports = (meta) => {
   );
 }
 
+.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border,
 .canvas.selecting.pointerdown + .canvas-overlay > .cropper-region,
 .canvas:not(.cropping.pointerdown) + .canvas-overlay > .cropper-region {
-  position: absolute;
-  background: transparent;
-  border: 1px solid black;
-  outline: 1px dashed white;
-  outline-offset: -1px;
-  left: max(-2px, var(--cx1, -2px));
-  right: max(-2px, 100% - var(--cx2, 0px));
-  top: max(-2px, var(--cy1, -2px));
-  bottom: max(-2px, 100% - var(--cy2, 0px));
-}
-
-.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border {
   position: absolute;
   border: 1px solid black;
   outline: 1px dashed white;
@@ -3498,15 +3490,9 @@ module.exports = (meta) => {
   bottom: max(-2px, 100% - var(--ry2, 0px));
 }
 
-.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border {
-  opacity: min(
-    min(1000 * (var(--rx2, 0) - var(--rx1, 0)), 100%),
-    min(1000 * (var(--ry2, 0) - var(--ry1, 0)), 100%)
-  );
-}
-
+.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border,
 .canvas.selecting.pointerdown + .canvas-overlay > .cropper-region {
-  opacity: min(
+  opacity: max(
     min(1000 * (var(--cx2, 0) - var(--cx1, 0)), 100%),
     min(1000 * (var(--cy2, 0) - var(--cy1, 0)), 100%)
   );
@@ -3589,10 +3575,6 @@ module.exports = (meta) => {
   padding-block: 8px;
   border-top: 1px solid var(--border-normal);
   border-bottom: 1px solid var(--border-normal);
-
-  & > :nth-child(3) {
-    width: 128px;
-  }
 }
 
 .hiddenVisually {
@@ -3613,16 +3595,17 @@ module.exports = (meta) => {
   display: grid;
   gap: 6px;
   justify-content: stretch;
+  width: 128px;
 }
 
 .select {
   display: inline-block;
 }
 
-[role=button] {
+div[role=button] {
   border-radius: 8px;
 }
-[role=button].disabled {
+div[role=button].disabled {
   opacity: 0.5;
   cursor: default;
   color: var(--interactive-normal);
@@ -3643,6 +3626,7 @@ module.exports = (meta) => {
   display: block;
   height: 3rem;
   width: 127px;
+  outline: 1px solid var(--border-normal);
 }
 
 .bd-color-picker-swatch {
@@ -3707,7 +3691,7 @@ module.exports = (meta) => {
   color: var(--interactive-normal);
   transition: background-color 200ms ease;
 
-  & > [role=button] {
+  & > div[role=button] {
     padding: 0;
   }
   &.active {
