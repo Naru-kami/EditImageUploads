@@ -131,6 +131,8 @@ module.exports = (meta) => {
     #topCache;
 
     #interactionCache;
+    /** @type {"medium" | "low" | "high" | "off" | "auto"} */
+    #imageSmoothing;
 
     /** @param {HTMLCanvasElement} canvas @param {ImageBitmap} bitmap */
     constructor(canvas, bitmap) {
@@ -140,16 +142,6 @@ module.exports = (meta) => {
       this.#topCache = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#viewportCanvas = canvas;
 
-      [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(c => {
-        c.getContext("2d").imageSmoothingEnabled = false;
-      })
-      const smoothing = BdApi.Data.load(meta.slug, "smoothing") ?? "medium";
-      if (smoothing) {
-        canvas.getContext("2d").imageSmoothingQuality = smoothing;
-      } else {
-        canvas.getContext("2d").imageSmoothingEnabled = false;
-      }
-
       const initialScale = Math.min(canvas.width / bitmap.width * 0.96, canvas.height / bitmap.height * 0.96);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
       this.#viewportTransform_inv = new DOMMatrix()
@@ -158,6 +150,11 @@ module.exports = (meta) => {
         .translateSelf(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2)
         .invertSelf();
       this.#staleViewportInv = false;
+
+      [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(c => {
+        c.getContext("2d").imageSmoothingEnabled = false;
+      })
+      this.setImageSmoothing(BdApi.Data.load(meta.slug, "smoothing") ?? "medium");
 
       const layer = new Layer("Main", bitmap);
       this.#state = new utils.StateHistory({
@@ -362,6 +359,58 @@ module.exports = (meta) => {
       this.render();
     }
 
+    /** @param {string} smoothing */
+    setImageSmoothing(smoothing) {
+      const ctx = this.#viewportCanvas.getContext("2d");
+
+      switch (smoothing) {
+        case "auto": {
+          this.#autoSmooth();
+          break;
+        }
+        case "off": {
+          ctx.imageSmoothingEnabled = false;
+          break;
+        }
+        case "low":
+        case "medium":
+        case "high": {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = smoothing;
+          break;
+        }
+        default: throw new Error("Unsupported image smoothing quality.");
+      }
+      this.#imageSmoothing = smoothing;
+    }
+
+    #autoSmooth() {
+      const scale = utils.getScale(this.#viewportTransform);
+      const ctx = this.#viewportCanvas.getContext("2d");
+
+      switch (true) {
+        case scale > 1: {
+          ctx.imageSmoothingEnabled = false;
+          break;
+        }
+        case scale > 1 / 2: {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "low";
+          break;
+        }
+        case scale > 1 / 10: {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "medium";
+          break;
+        }
+        default: {
+          ctx.imageSmoothingEnabled = true;
+          ctx.imageSmoothingQuality = "high";
+          break;
+        }
+      }
+    }
+
     translateViewportBy(dx = 0, dy = 0) {
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().translateSelf(dx, dy));
       this.refreshViewport();
@@ -373,6 +422,7 @@ module.exports = (meta) => {
       const Ty = (y - 0.5) * this.#viewportCanvas.height;
 
       this.#viewportTransform.preMultiplySelf(new DOMMatrix().scaleSelf(ds, ds, 1, Tx, Ty));
+      this.#imageSmoothing === "auto" && this.#autoSmooth();
       this.refreshViewport();
       this.#staleViewportInv = true;
     }
@@ -380,11 +430,12 @@ module.exports = (meta) => {
     resetViewport() {
       const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
+      this.#imageSmoothing === "auto" && this.#autoSmooth();
       this.refreshViewport();
       this.#staleViewportInv = true;
     }
 
-    /** @param {DOMMatrix} M  */
+    /** @param {DOMMatrix} M */
     previewLayerTransformBy(M) {
       this.#activeLayer.previewTransformBy(M);
       this.render();
@@ -805,15 +856,11 @@ module.exports = (meta) => {
     /** @param {number} width @param {number} height  */
     #resizeCanvas(width, height) {
       this.#staleViewportInv = true;
-      this.#mainCanvas.width = width;
-      this.#mainCanvas.height = height;
-
-      this.#bottomCache.width = width;
-      this.#bottomCache.height = height;
-      this.#middleCache.width = width;
-      this.#middleCache.height = height;
-      this.#topCache.width = width;
-      this.#topCache.height = height;
+      [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(c => {
+        c.getContext("2d").imageSmoothingEnabled = false;
+        c.width = width;
+        c.height = height;
+      })
 
       this.layers.forEach(({ layer }) => { layer.staleThumbnail = true });
     }
@@ -841,6 +888,7 @@ module.exports = (meta) => {
 
       const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
+      this.#imageSmoothing === "auto" && this.#autoSmooth();
 
       this.fullRender();
     }
@@ -885,6 +933,7 @@ module.exports = (meta) => {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
         const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
         this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
+        this.#imageSmoothing === "auto" && this.#autoSmooth();
       }
       this.#state.state.layers.forEach(({ layer, state }) => { layer.state = state });
       this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
@@ -900,6 +949,7 @@ module.exports = (meta) => {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
         const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
         this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
+        this.#imageSmoothing === "auto" && this.#autoSmooth();
       }
       this.#state.state.layers.forEach(({ layer, state }) => { layer.state = state });
       this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
@@ -989,6 +1039,7 @@ module.exports = (meta) => {
       if (dx || dy) {
         this.#canvas.width += 2 * Math.ceil(dx);
         this.#canvas.height += 2 * Math.ceil(dy);
+        this.#canvas.getContext("2d").imageSmoothingEnabled = false;
         this.#drawImage();
         this.#drawStrokes();
       }
@@ -2141,15 +2192,9 @@ module.exports = (meta) => {
         addEventListener("resize", () => {
           const rect = canvasRef.current.offsetParent.getBoundingClientRect();
           editor.current.viewportDims = { width: ~~(rect.width), height: ~~(rect.height) };
-
-          const smoothing = BdApi.Data.load(meta.slug, "smoothing") ?? "medium";
-          if (smoothing) {
-            canvasRef.current.getContext("2d").imageSmoothingQuality = smoothing;
-          } else {
-            canvasRef.current.getContext("2d").imageSmoothingEnabled = false;
-          }
-
+          editor.current.setImageSmoothing(BdApi.Data.load(meta.slug, "smoothing") ?? "medium")
           editor.current.refreshViewport();
+
           updateClipRect();
           canvasRect.current = canvasRef.current.getBoundingClientRect();
         }, ctrl);
@@ -2793,13 +2838,7 @@ module.exports = (meta) => {
                   }),
                   jsx(Components.Settings, {
                     onChange: (smoothing) => {
-                      const ctx = canvasRef.current.getContext("2d");
-                      if (smoothing) {
-                        ctx.imageSmoothingEnabled = true;
-                        ctx.imageSmoothingQuality = smoothing;
-                      } else {
-                        ctx.imageSmoothingEnabled = false;
-                      }
+                      editor.current.setImageSmoothing(smoothing);
                       editor.current.refreshViewport();
                     }
                   })
@@ -2814,10 +2853,10 @@ module.exports = (meta) => {
     /** @param {{onChange?: (e: {exportType: string, smoothing: string | false}) => void}} */
     Settings({ onChange }) {
       const [exportType, setExportType] = hooks.useStoredState("exportType", "image/webp");
-      const [smoothing, setSmoothing] = hooks.useStoredState("smoothing", "medium");
+      const [smoothing, setSmoothing] = hooks.useStoredState("smoothing", "auto");
 
       const exportOptions = useRef([{ label: "jpg", value: "image/jpeg" }, { label: "png", value: "image/png" }, { label: "webp", value: "image/webp" }]);
-      const smoothingOptions = useRef([{ label: "Off", value: false }, { label: "Low", value: "low" }, { label: "Medium", value: "medium" }, { label: "High", value: "high" }])
+      const smoothingOptions = useRef(["Auto", "High", "Medium", "Low", "Off"].map(e => ({ label: e, value: e.toLowerCase() })))
 
       const handleClick = useCallback((e) => {
         ContextMenu.open(e, ContextMenu.buildMenu([
