@@ -249,7 +249,6 @@ module.exports = (meta) => {
       this.sandwichLayer();
     }
 
-    /** @param {number} layerIndex  */
     sandwichLayer(layerIndex = this.#activeLayerIndex) {
       if (!(layerIndex in this.layers)) return;
 
@@ -494,8 +493,10 @@ module.exports = (meta) => {
       const isOOB = !utils.pointInRect(this.#interactionCache.lastPoint, availRect, Math.ceil(width / 2));
 
       this.#interactionCache.layerTransform_inv = new DOMMatrix()
-        .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
-        .multiplySelf(this.layerTransform).invertSelf();
+        .translateSelf(
+          this.#mainCanvas.width / 2 - ((this.#mainCanvas.width - this.#activeLayer.width) & 1) / 2,
+          this.#mainCanvas.height / 2 - ((this.#mainCanvas.height - this.#activeLayer.height) & 1) / 2
+        ).multiplySelf(this.layerTransform).invertSelf();
 
       if (isOOB) {
         this.#interactionCache.rect = new DOMRect();
@@ -686,7 +687,7 @@ module.exports = (meta) => {
       this.render();
     }
 
-    /** @param {DOMPoint} startPoint  */
+    /** @param {DOMPoint} startPoint */
     startRegionSelect(startPoint, fixedAspect = false) {
       const start_T = startPoint.matrixTransform(this.viewportTransform_inv);
       start_T.x = Math.round(utils.clamp(0, start_T.x, this.#mainCanvas.width));
@@ -695,7 +696,7 @@ module.exports = (meta) => {
       this.#interactionCache.width = Number(fixedAspect);
     }
 
-    /** @param {DOMPoint} to  */
+    /** @param {DOMPoint} to */
     regionSelect(to) {
       const to_T = to.matrixTransform(this.viewportTransform_inv);
       to_T.x = Math.round(utils.clamp(0, to_T.x, this.#mainCanvas.width));
@@ -764,8 +765,10 @@ module.exports = (meta) => {
       ctx.fillStyle = color;
 
       this.#interactionCache.layerTransform_inv = new DOMMatrix()
-        .translateSelf(this.#mainCanvas.width / 2, this.#mainCanvas.height / 2)
-        .multiplySelf(this.layerTransform).invertSelf();
+        .translateSelf(
+          this.#mainCanvas.width / 2 - ((this.#mainCanvas.width - this.#activeLayer.width) & 1) / 2,
+          this.#mainCanvas.height / 2 - ((this.#mainCanvas.height - this.#activeLayer.height) & 1) / 2
+        ).multiplySelf(this.layerTransform).invertSelf();
 
       const textMetrics = ctx.measureText("");
       const width = Math.ceil(textMetrics.actualBoundingBoxRight + textMetrics.actualBoundingBoxLeft);
@@ -864,7 +867,7 @@ module.exports = (meta) => {
       this.layers.forEach(({ layer }) => { layer.staleThumbnail = true });
     }
 
-    /** @param {1 | -1} x @param {1 | -1} y */
+    /** @param {1 | -1} x @param {-1 | 1} y */
     flip(x, y) {
       const T = new DOMMatrix().scaleSelf(x, y);
       const layers = this.layers.map(({ layer }) => {
@@ -955,6 +958,7 @@ module.exports = (meta) => {
     #canvas;
     #state;
     #previewTransform;
+    #subPixelCorrection;
 
     /** @param {ImageBitmap | {width: number, height: number}} bitmap @param {string} name */
     constructor(name, bitmap) {
@@ -963,6 +967,7 @@ module.exports = (meta) => {
       this.#canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#canvas.getContext("2d").imageSmoothingEnabled = false;
 
+      this.#subPixelCorrection = { x: 0, y: 0 };
       this.#state = {
         transform: new DOMMatrix(),
         isVisible: true,
@@ -1003,9 +1008,7 @@ module.exports = (meta) => {
       this.#state = state;
     }
 
-    toBitmap() {
-      return createImageBitmap(this.#canvas);
-    }
+    toBitmap() { return createImageBitmap(this.#canvas) }
 
     /** @param {DOMMatrix} dM */
     previewTransformBy(dM) { this.#previewTransform.preMultiplySelf(dM) }
@@ -1116,11 +1119,14 @@ module.exports = (meta) => {
     drawOn(canvas) {
       if (!this.#state.isVisible || this.#state.alpha === 0 || this.#state.strokes.length === 0 && !this.#img) return;
 
+      this.#subPixelCorrection.x = ((canvas.width - this.width) & 1) / 2;
+      this.#subPixelCorrection.y = ((canvas.height - this.height) & 1) / 2;
+
       const ctx = canvas.getContext("2d");
       ctx.save();
       ctx.globalAlpha = this.#state.alpha;
       ctx.setTransform(new DOMMatrix()
-        .translateSelf(canvas.width / 2, canvas.height / 2)
+        .translateSelf(canvas.width / 2 - this.#subPixelCorrection.x, canvas.height / 2 - this.#subPixelCorrection.y)
         .multiplySelf(this.#previewTransform)
         .multiplySelf(this.#state.transform)
       );
@@ -1133,12 +1139,12 @@ module.exports = (meta) => {
       if (!this.staleThumbnail && !forced) return;
 
       const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-
       ctx.save();
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.setTransform(new DOMMatrix()
         .translateSelf(canvas.width / 2, canvas.height / 2)
         .scaleSelf(scale, scale)
+        .translateSelf(-this.#subPixelCorrection.x, -this.#subPixelCorrection.y)
         .multiplySelf(this.#previewTransform)
         .multiplySelf(this.#state.transform)
       );
@@ -1435,7 +1441,7 @@ module.exports = (meta) => {
      * @param {T | (() => T)} initialvalue
      * @param {string} key
      * @returns {[T, typeof setval]}
-    */
+     */
     useStoredState(key, initialvalue) {
       const [val, setval] = useState(() => {
         /** @type {T | null} */
@@ -1466,7 +1472,7 @@ module.exports = (meta) => {
      *  onChange?:(e: Omit<React.PointerEvent, "currentTarget">, store: Record<string, any>) => void,
      *  onSubmit?: (e: Omit<React.PointerEvent, "currentTarget">, store: Record<string, any>) => void
      * }} props
-    */
+     */
     usePointerCapture({ onStart, onChange, onSubmit, buttons = 5 }) {
       /** @type {React.RefObject<null | number>} */
       const pointerId = useRef(null);
@@ -2232,7 +2238,7 @@ module.exports = (meta) => {
 
       const handleWheel = hooks.useDebouncedWheel({
         onStart: () => {
-          if (mode !== 5) isInteracting.current = true;
+          if (mode === 3 && !e.ctrlKey) isInteracting.current = true;
         },
         onChange: (e, store) => {
           if (mode === 3 && !e.ctrlKey) {
@@ -2296,7 +2302,7 @@ module.exports = (meta) => {
             startY: e.clientY,
           });
 
-          if (mode !== 5) isInteracting.current = true;
+          if (mode !== 5 && !(e.buttons & 4 || mode == null || mode === 3)) isInteracting.current = true;
 
           switch (mode) {
             case !!(e.buttons & 1) && 7:
@@ -2718,7 +2724,7 @@ module.exports = (meta) => {
                           setStrokeStyle(s => ({ ...s, width: value }));
                         }
                       }),
-                      mode === 5 && jsx(Components.FontSelector, {
+                      mode === 5 && jsx(Components.FontSelector, { // to-do: Wrap in <Activity/> once Discord hits React 19.2.0
                         value: font,
                         onChange: f => setFont(f)
                       }),
@@ -2732,6 +2738,7 @@ module.exports = (meta) => {
                   mode === 1 && jsx(Components.NumberSlider, {
                     ref: auxRef,
                     label: "Angle",
+                    style: { paddingInline: 8 },
                     suffix: "°",
                     decimals: 0,
                     withSlider: false,
@@ -3150,17 +3157,17 @@ module.exports = (meta) => {
       const pointerHanders = hooks.usePointerCapture({
         buttons: 7,
         onStart: (e) => {
-          if (!sliderRef.current.state.boundingRect) {
+          if (!sliderRef.current?.state.boundingRect) {
             // The state for boundingRect will be set internally only *after* the handleMouseDown event fired,
             // so the first mousedown event doesn't have the boundingRect. _reactInternals.stateNode.setState
             // will only update the boundingRect after the render cycle, so we hijack the current state.
             sliderRef.current.state.boundingRect = sliderRef.current.containerRef.current.getBoundingClientRect();
           }
-          sliderRef.current.handleMouseDown(e);
-          sliderRef.current.moveSmoothly(e);
+          sliderRef.current?.handleMouseDown(e);
+          sliderRef.current?.moveSmoothly(e);
         },
-        onChange: (e) => { sliderRef.current.handleMouseMove(e) },
-        onSubmit: (e) => { sliderRef.current.handleMouseUp(e) },
+        onChange: (e) => { sliderRef.current?.handleMouseMove(e) },
+        onSubmit: (e) => { sliderRef.current?.handleMouseUp(e) },
       })
 
       return jsx("div", {
@@ -3171,7 +3178,7 @@ module.exports = (meta) => {
             :scope {
               display: flex;
               flex-wrap: wrap;
-              row-gap: 4px;
+              row-gap: 6px;
               color: var(--interactive-active);
               padding-inline: ${withSlider ? "8px" : "0px"}; 
               & > label {
@@ -3191,7 +3198,7 @@ module.exports = (meta) => {
               margin: 2px;
               background: var(--background-modifier-active);
               color: currentColor;
-              width: 2.75em;
+              width: 3em;
               margin-left: auto;
               text-align: right;
             }
