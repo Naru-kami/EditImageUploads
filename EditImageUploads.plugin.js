@@ -389,7 +389,7 @@ module.exports = (meta) => {
       const ctx = this.#viewportCanvas.getContext("2d");
 
       switch (true) {
-        case scale > 1: {
+        case scale > 2: {
           ctx.imageSmoothingEnabled = false;
           break;
         }
@@ -398,7 +398,7 @@ module.exports = (meta) => {
           ctx.imageSmoothingQuality = "low";
           break;
         }
-        case scale > 1 / 10: {
+        case scale > 1 / 8: {
           ctx.imageSmoothingEnabled = true;
           ctx.imageSmoothingQuality = "medium";
           break;
@@ -431,7 +431,6 @@ module.exports = (meta) => {
       const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       this.#imageSmoothing === "auto" && this.#autoSmooth();
-      this.refreshViewport();
       this.#staleViewportInv = true;
     }
 
@@ -886,10 +885,7 @@ module.exports = (meta) => {
       this.#resizeCanvas(this.#state.state.height, this.#state.state.width);
       this.#state.state = { ...this.#state.state, layers, width: this.#state.state.height, height: this.#state.state.width };
 
-      const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
-      this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
-      this.#imageSmoothing === "auto" && this.#autoSmooth();
-
+      this.resetViewport();
       this.fullRender();
     }
 
@@ -931,9 +927,7 @@ module.exports = (meta) => {
       if (!this.#state.undo()) return false;
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
-        const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
-        this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
-        this.#imageSmoothing === "auto" && this.#autoSmooth();
+        this.resetViewport();
       }
       this.#state.state.layers.forEach(({ layer, state }) => { layer.state = state });
       this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
@@ -947,9 +941,7 @@ module.exports = (meta) => {
       if (!this.#state.redo()) return false;
       if (this.#state.state.width !== oldWidth || this.#state.state.height !== oldHeight) {
         this.#resizeCanvas(this.#state.state.width, this.#state.state.height);
-        const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
-        this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
-        this.#imageSmoothing === "auto" && this.#autoSmooth();
+        this.resetViewport();
       }
       this.#state.state.layers.forEach(({ layer, state }) => { layer.state = state });
       this.activeLayerIndex = utils.clamp(0, this.activeLayerIndex, this.#state.state.layers.length - 1);
@@ -2106,6 +2098,7 @@ module.exports = (meta) => {
 
             case !e.repeat && e.ctrlKey && !e.shiftKey && "b":
               editor.current.resetViewport();
+              editor.current.refreshViewport();
               if (canvasRef.current?.matches(".rotating")) {
                 overlay.current.style.removeProperty("--translate");
               }
@@ -2477,6 +2470,7 @@ module.exports = (meta) => {
               if (store.changed && editor.current.cropToRegionRect()) {
                 syncStates();
                 editor.current.resetViewport();
+                editor.current.refreshViewport();
               };
               break;
             }
