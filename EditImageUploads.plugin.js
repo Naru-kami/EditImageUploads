@@ -1532,22 +1532,16 @@ module.exports = (meta) => {
     useDebouncedWheel({ onStart, onChange, onSubmit, wait = 250 }) {
       /** @type {React.RefObject<null | number>} */
       const timer = useRef(null);
-      const smolStore = useRef({});
 
       /** @type {(e: WheelEvent & {currentTarget: HTMLCanvasElement}) => void} */
       const onWheel = useCallback(e => {
         if (!e.deltaY) return;
 
-        if (timer.current == null) {
-          onStart?.(e, smolStore.current);
-        }
-
-        onChange?.(e, smolStore.current);
+        onChange?.(e);
 
         timer.current && clearTimeout(timer.current);
         timer.current = setTimeout(() => {
-          onSubmit?.(e, smolStore.current);
-          smolStore.current = {};
+          onSubmit?.(e);
           timer.current = null;
         }, wait);
 
@@ -2237,10 +2231,7 @@ module.exports = (meta) => {
       }, [mode]);
 
       const handleWheel = hooks.useDebouncedWheel({
-        onStart: () => {
-          if (mode === 3 && !e.ctrlKey) isInteracting.current = true;
-        },
-        onChange: (e, store) => {
+        onChange: (e) => {
           if (mode === 3 && !e.ctrlKey) {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
             const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
@@ -2255,7 +2246,7 @@ module.exports = (meta) => {
             const cs = utils.getScale(editor.current.previewLayerTransform).toFixed(2);
             auxRef.current?.previewValue(cs);
 
-            store.changed = true;
+            isInteracting.current = true;
           } else {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
             const x = (e.clientX - canvasRect.current.x) / canvasRect.current.width;
@@ -2281,10 +2272,9 @@ module.exports = (meta) => {
             }
           }
         },
-        onSubmit: (_, store) => {
-          if (mode !== 5) isInteracting.current = false;
-
-          if (mode === 3 && store.changed) {
+        onSubmit: () => {
+          if (mode === 3 && isInteracting.current) {
+            isInteracting.current = false;
             editor.current.finalizeLayerPreview();
             syncStates();
 
@@ -2458,8 +2448,8 @@ module.exports = (meta) => {
             startY: e.clientY
           });
         },
-        onSubmit: (_, store) => {
-          if (mode !== 5) isInteracting.current = false;
+        onSubmit: (e, store) => {
+          if (mode !== 5 && !(e.buttons & 4 || mode == null || mode === 3)) isInteracting.current = false;
 
           switch (mode) {
             case 7: {
