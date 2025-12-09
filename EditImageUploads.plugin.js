@@ -740,7 +740,10 @@ module.exports = (meta) => {
       const cx = this.#mainCanvas.width / 2;
       const cy = this.#mainCanvas.height / 2;
 
-      const T = new DOMMatrix().translateSelf(cx - ccx, cy - ccy);
+      const subPixelX = ((width - this.#activeLayer.width) & 1) / 2;
+      const subPixelY = ((height - this.#activeLayer.height) & 1) / 2;
+
+      const T = new DOMMatrix().translateSelf(cx - ccx + subPixelX, cy - ccy + subPixelY);
 
       const updated = { ...this.#state.state, width, height };
       updated.layers = updated.layers.map(({ layer, state }) => {
