@@ -27,7 +27,7 @@ module.exports = (meta) => {
       nativeUI: { filter: m => m.showToast }, // 481060
       Select: { filter: Filters.bySource("(\"SingleSelect\")") }, // 199849
       ModalSystem: { filter: Filters.bySource(".MODAL_ROOT_LEGACY,") }, // 466377
-      Button: { filter: Filters.bySource("BUTTON_LOADING_STARTED_LABEL,") }, // 906003
+      ManaButton: { filter: Filters.bySource(".BUTTON_LOADING_STARTED_LABEL,") }, // 906003
 
       actionButtonClass: { filter: Filters.byKeys("dangerous", "button") },
       actionIconClass: { filter: m => m.actionBarIcon && m[Symbol.toStringTag] !== "Module" },
@@ -42,8 +42,8 @@ module.exports = (meta) => {
         ...utils.getKeysInModule(internals.uploadCard, {
           uploadCard: ".attachmentItemSmall]:",
         }),
-        ...utils.getKeysInModule(internals.Button, {
-          Button: "BUTTON_LOADING_STARTED_LABEL,"
+        ...utils.getKeysInModule(internals.ManaButton, {
+          ManaButton: ".BUTTON_LOADING_STARTED_LABEL,"
         }),
         ...utils.getKeysInModule(internals.urlConverter, {
           toMediaUrl: ")return null!=",
@@ -75,13 +75,14 @@ module.exports = (meta) => {
 
     if (!["ModalRoot", "ModalContent", "ModalFooter", "openModal"].every(key => key in internals.keys)) return;
 
-    internals.uploadCard && Patcher.after(meta.slug, internals.uploadCard, internals.keys.uploadCard, (_, [args], ret) => {
+    internals.keys.uploadCard && Patcher.after(meta.slug, internals.uploadCard, internals.keys.uploadCard, (_, [args], ret) => {
       if (
         args?.upload?.mimeType?.startsWith("image/") && !args?.upload?.mimeType?.endsWith("gif") &&
         !ret?.props?.actions?.props?.children?.some(e => e?.key === meta.slug)
       ) {
         ret.props.actions.props.children.splice(0, 0, jsx(BdApi.Components.ErrorBoundary, {
           key: meta.slug,
+          fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
           children: jsx(Components.UploadIcon, { args })
         }))
       }
@@ -89,6 +90,8 @@ module.exports = (meta) => {
 
     ctrl = new AbortController()
     Webpack.waitForModule(Filters.bySource('children:["IMAGE"==='), ctrl).then(m => { // 73249
+      if (!("toMediaUrl" in internals.keys && "toCdnUrl" in internals.keys)) return;
+
       m?.Z && Patcher.after(meta.slug, m.Z, "type", (_, [args], res) => {
         if (args.item.type !== "IMAGE" || args.item.srcIsAnimated || args.item.animated) return res;
 
@@ -96,8 +99,8 @@ module.exports = (meta) => {
           children: className => {
             const ret = res.props.children(className);
 
-            const mediaUrl = internals.urlConverter[internals.keys.toMediaUrl]?.(args.item.original, args.item.url);
-            const url = internals.urlConverter[internals.keys.toCdnUrl]?.(mediaUrl, args.item.contentType, args.item.originalContentType);
+            const mediaUrl = internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url);
+            const url = internals.urlConverter[internals.keys.toCdnUrl](mediaUrl, args.item.contentType, args.item.originalContentType);
 
             url && ret.props.children.unshift(jsx(Components.RemixIcon, { url }))
 
@@ -1377,16 +1380,15 @@ module.exports = (meta) => {
             jsx(internals.ModalSystem[internals.keys.ModalFooter], {
               className: "modal-footer",
               children: [
-                jsx(internals.Button[internals.keys.Button], {
+                jsx(internals.ManaButton[internals.keys.ManaButton], {
                   text: "Save",
                   type: "submit",
-                  variant: "primary",
                   onClick: () => {
                     onSubmit?.();
                     internals.nativeUI[internals.keys.closeModal](id);
                   }
                 }),
-                jsx(internals.Button[internals.keys.Button], {
+                jsx(internals.ManaButton[internals.keys.ManaButton], {
                   text: "Cancel",
                   variant: "secondary",
                   onClick: () => {
@@ -1575,31 +1577,27 @@ module.exports = (meta) => {
 
     /**
      * @param {{
-     *  onClick?: (e: MouseEvent) => void, tooltip?: string, disabled?: boolean,
+     *  onClick?: (e: React.MouseEvent<HTMLElement>) => void, tooltip?: string, disabled?: boolean,
      *  active?: boolean, position?: string, className?: string, d?: string
      * }} props
      */
-    IconButton({ onClick, tooltip, d, disabled, active, className, position = 'top' }) {
+    IconButton({ onClick, tooltip, d, disabled, active, className }) {
       return jsx(BdApi.Components.ErrorBoundary, {
+        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
         children: jsx(BdApi.Components.Tooltip, {
           spacing: 11,
-          position,
-          color: 'primary',
-          hideOnClick: true,
-          text: tooltip ?? '',
-          children: ({ onContextMenu, ...restProps }) => {
-            return internals.keys.FocusRing && jsx(internals.nativeUI[internals.keys.FocusRing], {
-              children: jsx("div", {
-                ...restProps,
-                onClick: (e) => { if (onClick) { e.stopPropagation(); onClick(e) } },
-                onKeyDown: e => { !e.repeat && (e.key === 'Enter' || e.key === ' ') && onClick?.() },
-                className: utils.clsx(internals.actionButtonClass.button, className, disabled && "disabled", active && "active"),
-                role: "button",
-                tabIndex: 0,
-                children: jsx(Components.Icon, { d }),
-              })
+          text: tooltip ?? "",
+          children: ({ onContextMenu, ...restProps }) => jsx(internals.nativeUI[internals.keys.FocusRing], {
+            children: jsx("div", {
+              ...restProps,
+              onClick: (e) => { if (onClick && !disabled) { e.stopPropagation(); onClick(e) } },
+              onKeyDown: e => { if (!e.repeat && (e.key === "Enter" || e.key === " ") && !disabled) onClick?.() },
+              className: utils.clsx(internals.actionButtonClass.button, className, "icon-button", disabled && "disabled", active && "active"),
+              role: "button",
+              tabIndex: disabled ? null : 0,
+              children: jsx(Components.Icon, { d }),
             })
-          }
+          })
         })
       })
     },
@@ -1612,26 +1610,17 @@ module.exports = (meta) => {
 
       useEffect(() => () => ctrl.current.abort(), []);
 
-      return !isPending ? jsx("span", {
-        children: [
-          jsx("style", null, `@scope {
-            .remixIcon {
-              border-radius: var(--radius-sm);
-              outline: 1px solid transparent;
-              outline-offset: -1px;
-              transition-property: background-color, color, outline-color;
-              transition-duration: 50ms;
-              transition-timing-function: ease-in;
-            }
-            .remixIcon:is(:hover, :focus-visible) {
-              background-color: var(--control-background-icon-only-hover);
-              outline-color: var(--control-border-icon-only-hover);
-              color: var(--control-icon-icon-only-hover);
-              transition-duration: 150ms;
-              transition-timing-function: ease-out;
-            }
-          }`),
-          jsx(Components.IconButton, {
+      return !isPending ? jsx(BdApi.Components.ErrorBoundary, {
+        fallback: jsx("div", { style: { color: "var(--red-430, #d6363fff)" } }, "Component Error"),
+        children: jsx(BdApi.Components.Tooltip, {
+          spacing: 11,
+          position: "bottom",
+          text: "Edit Image",
+          children: ({ onContextMenu, ...tooltipProps }) => jsx(internals.ManaButton[internals.keys.ManaButton], {
+            ...tooltipProps,
+            size: "sm",
+            variant: "icon-only",
+            icon: () => jsx(Components.Icon, { d: utils.paths.Main }),
             onClick: () => {
               startTransition(async () => {
                 try {
@@ -1656,12 +1645,8 @@ module.exports = (meta) => {
                 }
               })
             },
-            className: "remixIcon",
-            position: 'bottom',
-            tooltip: "Edit Image",
-            d: utils.paths.Main
           })
-        ]
+        })
       }) : jsx(BdApi.Components.Spinner, {
         type: BdApi.Components.Spinner.Type.SPINNING_CIRCLE_SIMPLE
       })
@@ -1830,67 +1815,66 @@ module.exports = (meta) => {
         });
       }, [onChange, layers]);
 
-      return jsx(BdApi.Components.ErrorBoundary, null, jsx("div", {
-        className: utils.clsx("thumbnails", internals.scrollbarClass.thin),
-        children: jsx("ul", {
-          className: "thumbnails-wrapper",
-          children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
-            key: state.id,
-            children: jsx("li", {
-              tabIndex: 0,
-              draggable: true,
-              onDragStart: (e) => {
-                e.currentTarget.classList.add("dragging");
-                e.dataTransfer.clearData();
-                e.dataTransfer.setData("text/plain", String(i));
-                e.dataTransfer.effectAllowed = "move";
-              },
-              onDragEnd: (e) => { e.currentTarget.classList.remove("dragging") },
-              onDragEnter: (e) => { e.currentTarget.classList.add("droptarget") },
-              onDragLeave: (e) => { !e.currentTarget.contains(e.relatedTarget) && e.currentTarget.classList.remove("droptarget") },
-              onDrop: (e) => {
-                e.currentTarget.classList.remove("droptarget");
-                const idx = Number(e.dataTransfer.getData("text/plain"));
-                onChange(editor => {
-                  editor.moveLayers(i - idx, idx);
-                  return i !== idx;
-                })
-              },
-              onContextMenu: (e) => { handleContextMenu(e, i) },
-              onClick: (e) => onChange(editor => {
-                if (editor.activeLayerIndex === i) return false;
-                editor.activeLayerIndex = i;
-                e.currentTarget.scrollIntoView({ block: "nearest" })
-                return true;
-              }),
-              onKeyDown: (e) => {
-                if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-                  e.currentTarget.click();
-                }
-              },
-              className: utils.clsx("thumbnail", state.active && "active"),
-              children: [
-                jsx(Components.IconButton, {
-                  className: "layer-visibility",
-                  tooltip: state.visible ? "Visible" : "Hidden",
-                  d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
-                  onClick: () => onChange(editor => {
-                    editor.toggleLayerVisibility(i);
-                    return true;
-                  }),
+      return jsx(BdApi.Components.ErrorBoundary, {
+        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
+        children: jsx("div", {
+          className: utils.clsx("thumbnails", internals.scrollbarClass.thin),
+          children: jsx("ul", {
+            className: "thumbnails-wrapper",
+            children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
+              key: state.id,
+              children: jsx("li", {
+                tabIndex: 0,
+                draggable: true,
+                onDragStart: (e) => {
+                  e.currentTarget.classList.add("dragging");
+                  e.dataTransfer.clearData();
+                  e.dataTransfer.setData("text/plain", String(i));
+                  e.dataTransfer.effectAllowed = "move";
+                },
+                onDragEnd: (e) => { e.currentTarget.classList.remove("dragging") },
+                onDragEnter: (e) => { e.currentTarget.classList.add("droptarget") },
+                onDragLeave: (e) => { !e.currentTarget.contains(e.relatedTarget) && e.currentTarget.classList.remove("droptarget") },
+                onDrop: (e) => {
+                  e.currentTarget.classList.remove("droptarget");
+                  const idx = e.dataTransfer.getData("text/plain");
+                  idx && onChange(editor => {
+                    const from = Number(idx);
+                    editor.moveLayers(i - from, from);
+                    return i !== from;
+                  })
+                },
+                onContextMenu: (e) => { handleContextMenu(e, i) },
+                onClick: (e) => onChange(editor => {
+                  if (editor.activeLayerIndex === i) return false;
+                  editor.activeLayerIndex = i;
+                  e.currentTarget.scrollIntoView({ block: "nearest" })
+                  return true;
                 }),
-                jsx("span", { className: "layer-label" }, state.name),
-                jsx(Components.Thumbnail, {
-                  index: i,
-                  editor,
-                  width,
-                  height,
-                })
-              ]
-            })
-          }))
+                onKeyDown: (e) => {
+                  if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                    e.currentTarget.click();
+                  }
+                },
+                className: utils.clsx("thumbnail", state.active && "active"),
+                children: [
+                  jsx(Components.Thumbnail, { index: i, editor, width, height }),
+                  jsx("span", { className: "layer-label" }, state.name),
+                  jsx(Components.IconButton, {
+                    className: "layer-visibility",
+                    tooltip: state.visible ? "Visible" : "Hidden",
+                    d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
+                    onClick: () => onChange(editor => {
+                      editor.toggleLayerVisibility(i);
+                      return true;
+                    }),
+                  }),
+                ]
+              })
+            }))
+          })
         })
-      }))
+      })
     },
 
     /** @param {{index: number, editor: React.RefObject<CanvasEditor>, width: number, height: number}} */
@@ -2214,6 +2198,7 @@ module.exports = (meta) => {
         return () => {
           ctrl.abort();
           editor.current = null;
+          bitmap?.close();
         }
       }, []);
 
@@ -2903,8 +2888,9 @@ module.exports = (meta) => {
     MenuItemSelect({ options, initialValue, onChange, text }) {
       const [value, setValue] = useState(initialValue);
 
-      return jsx(BdApi.Components.ErrorBoundary, null,
-        jsx("div", {
+      return jsx(BdApi.Components.ErrorBoundary, {
+        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
+        children: jsx("div", {
           className: utils.clsx(
             internals.contextMenuClass?.item,
             internals.contextMenuClass?.labelContainer,
@@ -2926,7 +2912,7 @@ module.exports = (meta) => {
             })
           ]
         })
-      )
+      })
     },
 
     /** @param {{ value: { family: string, weight: number }, onChange: (e: { family: string, weight: number }) => void }} */
@@ -2958,63 +2944,64 @@ module.exports = (meta) => {
 
       useLayoutEffect(() => {
         Promise.all(Array.from(document.fonts, f => f.load())).finally(() => {
-          setFamilyOptions(() => {
-            const defaults = ['Arial', 'Arial Black', 'cursive', 'fantasy', 'Garamond', 'Georgia', 'Helvetica', 'monospace', 'sans-serif', 'serif', 'system-ui', 'Tahoma', 'Times New Roman', 'Verdana'];
-            const docFonts = Array.from(document.fonts, e => e.family);
-            const merged = [...new Set(defaults.concat(docFonts))];
-            merged.sort((a, b) => a.localeCompare(b));
-            return merged.filter(f => document.fonts.check(`1rem ${f}`)).map(e => ({ value: e, label: e }));
-          });
+          const defaults = ['Arial', 'Arial Black', 'cursive', 'fantasy', 'Garamond', 'Georgia', 'Helvetica', 'monospace', 'sans-serif', 'serif', 'system-ui', 'Tahoma', 'Times New Roman', 'Verdana'];
+          const docFonts = Array.from(document.fonts, e => e.family);
+          const merged = [...new Set(defaults.concat(docFonts))];
+          merged.sort((a, b) => a.localeCompare(b));
 
-          if (!document.fonts.check(`1rem ${family}`)) {
-            setFamily("gg sans");
-          } else {
-            const wo = getWeightsOptions(family);
-            setWeightsOptions(wo);
+          setFamilyOptions(merged.filter(f => document.fonts.check(`1rem ${f}`)).map(e => ({ value: e, label: e })));
 
-            if (wo.every(w => w.label !== weight)) {
-              const closest = wo.toSorted((a, b) => Math.abs(a.label - weight) - Math.abs(b.label - weight))[0];
-              setWeight(closest.value);
-            }
+          const purifiedFamily = merged.includes(family) && !document.fonts.check(`1rem ${family}`) ? "gg sans" : family;
+          setFamily(purifiedFamily);
+
+          const wo = getWeightsOptions(purifiedFamily);
+          setWeightsOptions(wo);
+
+          if (wo.every(w => w.label !== weight)) {
+            const closest = wo.toSorted((a, b) => Math.abs(a.label - weight) - Math.abs(b.label - weight))[0];
+            setWeight(closest.value);
           }
         });
       }, []);
 
-      return jsx(BdApi.Components.ErrorBoundary, null, jsx("div", {
-        className: "font-selector",
-        children: [
-          jsx(internals.Select[internals.keys.SingleSelect], {
-            options: familyOptions,
-            value: family,
-            className: "select",
-            onChange: f => {
-              setFamily(f);
-              onChange({ family: f, weight });
-            },
-            renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: option.value } }, option.value),
-            renderOptionLabel: option => jsx("span", {
-              ref: node => { option.value === family && node?.scrollIntoView({ block: "nearest" }) },
-              style: { fontFamily: option.label, scrollMarginBlock: "24px" },
-              children: option.label
+      return jsx(BdApi.Components.ErrorBoundary, {
+        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
+        children: jsx("div", {
+          className: "font-selector",
+          children: [
+            jsx(internals.Select[internals.keys.SingleSelect], {
+              options: familyOptions,
+              value: family,
+              className: "select",
+              onChange: f => {
+                setFamily(f);
+                onChange({ family: f, weight });
+              },
+              renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: option.value } }, option.value),
+              renderOptionLabel: option => jsx("span", {
+                ref: node => { option.value === family && node?.scrollIntoView({ block: "nearest" }) },
+                style: { fontFamily: option.label, scrollMarginBlock: "24px" },
+                children: option.label
+              }),
             }),
-          }),
-          jsx(internals.Select[internals.keys.SingleSelect], {
-            options: weightOptions,
-            value: weight,
-            className: "select",
-            onChange: w => {
-              setWeight(w);
-              onChange({ family, weight: w });
-            },
-            renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: family, fontWeight: option.value } }, option.value),
-            renderOptionLabel: option => jsx("span", {
-              ref: node => { option.value === weight && node?.scrollIntoView({ block: "nearest" }) },
-              style: { fontFamily: family, fontWeight: option.label, scrollMarginBlock: "24px" },
-              children: option.label
-            }),
-          })
-        ]
-      }))
+            jsx(internals.Select[internals.keys.SingleSelect], {
+              options: weightOptions,
+              value: weight,
+              className: "select",
+              onChange: w => {
+                setWeight(w);
+                onChange({ family, weight: w });
+              },
+              renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: family, fontWeight: option.value } }, option.value),
+              renderOptionLabel: option => jsx("span", {
+                ref: node => { option.value === weight && node?.scrollIntoView({ block: "nearest" }) },
+                style: { fontFamily: family, fontWeight: option.label, scrollMarginBlock: "24px" },
+                children: option.label
+              }),
+            })
+          ]
+        })
+      })
     },
 
     /** @param {{onChange: (value: string) => void, value: string}} */
@@ -3172,7 +3159,7 @@ module.exports = (meta) => {
               display: flex;
               flex-wrap: wrap;
               row-gap: 6px;
-              color: var(--interactive-active);
+              color: var(--interactive-text-active);
               padding-inline: ${withSlider ? "8px" : "0px"}; 
               & > label {
                 align-content: center;
@@ -3189,7 +3176,7 @@ module.exports = (meta) => {
               border-radius: 6px;
               padding: 4px;
               margin: 2px;
-              background: var(--background-modifier-active);
+              background: var(--interactive-background-active);
               color: currentColor;
               width: 3em;
               margin-left: auto;
@@ -3297,7 +3284,7 @@ module.exports = (meta) => {
               align-items: center;
               gap: 16px;
               padding: 4px 8px;
-              color: var(--interactive-active);
+              color: var(--interactive-text-active);
             }
             label {
               cursor: inherit;
@@ -3306,7 +3293,7 @@ module.exports = (meta) => {
               border: 1px solid var(--border-normal);
               border-radius: 6px;
               padding: 4px;
-              background: var(--background-modifier-active);
+              background: var(--interactive-background-active);
               flex: 0 0 50%;
               min-width: 0;
               color: currentColor;
@@ -3403,7 +3390,7 @@ module.exports = (meta) => {
   justify-content: center;
   align-items: center;
   gap: 4px;
-  color: var(--interactive-active);
+  color: var(--interactive-text-active);
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-normal);
   .number-input {
@@ -3417,7 +3404,7 @@ module.exports = (meta) => {
   display: grid;
   place-items: center;
   position: relative;
-  color: var(--interactive-active);
+  color: var(--interactive-text-active);
 }
 
 .canvas {
@@ -3588,12 +3575,6 @@ module.exports = (meta) => {
   width: 128px;
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  & > .active {
-    background-color: rgba(151, 151, 159, 0.16);
-    color: var(--interactive-active);
-    padding-bottom: 3px;
-    padding-top: 5px;
-  }
 }
 
 .aux-inputs {
@@ -3602,7 +3583,7 @@ module.exports = (meta) => {
   grid-template-rows: auto auto 1fr;
   align-self: start;
   align-items: start;
-  color: var(--interactive-active);
+  color: var(--interactive-text-active);
   box-sizing: border-box;
   height: 100%;
   padding-block: 8px;
@@ -3635,15 +3616,21 @@ module.exports = (meta) => {
   display: inline-block;
 }
 
-div[role=button] {
+.icon-button {
   border-radius: 8px;
-}
-div[role=button].disabled {
-  opacity: 0.5;
-  cursor: default;
-  color: var(--interactive-normal);
-  background: none;
-  padding: 4px;
+
+  &.active {
+    background-color: rgb(from var(--interactive-text-default) r g b / 0.2);
+    color: var(--interactive-text-active);
+  }
+
+  &.disabled {
+    opacity: 0.5;
+    cursor: default;
+    color: var(--interactive-text-default);
+    background: none;
+    padding-block: 4px;
+  }
 }
 
 .bd-color-picker-container {
@@ -3671,6 +3658,7 @@ div[role=button].disabled {
 
 .bd-color-picker-swatch-item {
   margin: 3px;
+  outline: 1px solid var(--border-normal);
 }
 
 .sidebar {
@@ -3704,7 +3692,7 @@ div[role=button].disabled {
     inset-inline: anchor(inside);
     bottom: min(anchor(bottom), 100% - anchor-size(height));
     height: anchor-size();
-    background: #fff2;
+    background: rgb(from var(--interactive-text-default) r g b / 0.2);
     pointer-events: none;
     transition: bottom 200ms ease-out;
   }
@@ -3713,7 +3701,7 @@ div[role=button].disabled {
 .thumbnail {
   display: grid;
   position: relative;
-  grid-template-columns: min-content 1fr var(--thumbnail-height);
+  grid-template-columns: var(--thumbnail-height) 1fr min-content;
   justify-items: center;
   gap: 4px;
   flex: 0 0 var(--thumbnail-height);
@@ -3721,7 +3709,7 @@ div[role=button].disabled {
   align-items: center;
   padding: 4px;
   cursor: pointer;
-  color: var(--interactive-normal);
+  color: var(--interactive-text-default);
   transition: background-color 200ms ease;
 
   & > div[role=button] {
@@ -3731,7 +3719,7 @@ div[role=button].disabled {
     anchor-name: --active-thumbnail;
   }
   &:hover {
-    background: #fff1;
+    background: rgb(from var(--interactive-text-default) r g b / 0.1);
   }
 }
 
