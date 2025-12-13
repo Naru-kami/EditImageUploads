@@ -46,8 +46,9 @@ module.exports = (meta) => {
           ManaButton: ".BUTTON_LOADING_STARTED_LABEL,"
         }),
         ...utils.getKeysInModule(internals.urlConverter, {
-          toMediaUrl: ")return null!=",
-          toCdnUrl: ".searchParams.delete(\"width\"),"
+          convertable: "canSaveImage",
+          toMediaUrl: "return null",
+          toCdnUrl: "searchParams"
         }),
         ...utils.getKeysInModule(internals.nativeUI, {
           FocusRing: "FocusRing was given a focusTarget",
@@ -99,7 +100,8 @@ module.exports = (meta) => {
           children: className => {
             const ret = res.props.children(className);
 
-            const mediaUrl = internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url);
+            const convertable = internals.urlConverter[internals.keys.convertable](args.item.original)
+            const mediaUrl = convertable ? internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url) : args.item.url;
             const url = internals.urlConverter[internals.keys.toCdnUrl](mediaUrl, args.item.contentType, args.item.originalContentType);
 
             url && ret.props.children.unshift(jsx(Components.RemixIcon, { url }))
@@ -289,7 +291,7 @@ module.exports = (meta) => {
       }
     }
 
-    /** @param {number} layerIndex  */
+    /** @param {number} layerIndex */
     toggleLayerVisibility(layerIndex) {
       if (!(layerIndex in this.layers)) return;
 
@@ -297,7 +299,7 @@ module.exports = (meta) => {
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
       updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, isVisible } };
       this.#state.state = updated;
-      this.#state.state.layers[layerIndex].layer.state = this.#state.state.layers[layerIndex].state;
+      this.layers[layerIndex].layer.state = this.layers[layerIndex].state;
 
       this.fullRender();
     }
@@ -311,12 +313,24 @@ module.exports = (meta) => {
       if (shouldPushToStack) {
         this.#state.state = updated;
       };
-      this.#state.state.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
+      updated.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
 
       this.render(layerIndex);
     }
 
-    /** @param {(blob: Blob) => void} callback  */
+    /** @param {number} layerIndex */
+    resetLayer(layerIndex) {
+      if (!(layerIndex in this.layers)) return;
+
+      const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
+      updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, transform: new DOMMatrix() } };
+      this.#state.state = updated;
+      this.layers[layerIndex].layer.state = this.layers[layerIndex].state;
+
+      this.render(layerIndex);
+    }
+
+    /** @param {(blob: Blob) => void} callback */
     copyLayerContents(callback, layerIndex = this.#activeLayerIndex) {
       if (!(layerIndex in this.layers)) return;
 
@@ -538,6 +552,7 @@ module.exports = (meta) => {
 
       this.#interactionCache.path2D.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
       this.#interactionCache.path2D.lineTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
+      this.#interactionCache.path2D.moveTo(this.#interactionCache.lastPoint.x, this.#interactionCache.lastPoint.y);
     }
 
     /** @param {DOMPoint} point */
@@ -1123,10 +1138,10 @@ module.exports = (meta) => {
 
     /** @param {OffscreenCanvas} canvas */
     drawOn(canvas) {
-      if (!this.#state.isVisible || this.#state.alpha === 0 || this.#state.strokes.length === 0 && !this.#img) return;
-
       this.#subPixelCorrection.x = ((canvas.width - this.width) & 1) / 2;
       this.#subPixelCorrection.y = ((canvas.height - this.height) & 1) / 2;
+
+      if (!this.#state.isVisible || this.#state.alpha === 0 || this.#state.strokes.length === 0 && !this.#img) return;
 
       const ctx = canvas.getContext("2d");
       ctx.save();
@@ -1424,16 +1439,17 @@ module.exports = (meta) => {
       Draw: "M4 21v-4.25L17.175 3.6q.3-.3.675-.45T18.6 3q.4 0 .763.15T20 3.6L21.4 5q.3.275.45.638T22 6.4q0 .375-.15.75t-.45.675L8.25 21zm2-2h1.4l9.825-9.8l-.7-.725l-.725-.7L6 17.6zM20 6.425L18.575 5zm-3.475 2.05l-.725-.7L17.225 9.2zM14 21q1.85 0 3.425-.925T19 17.5q0-.9-.475-1.55t-1.275-1.125L15.775 16.3q.575.25.9.55t.325.65q0 .575-.913 1.038T14 19q-.425 0-.712.288T13 20t.288.713T14 21m-9.425-7.65l1.5-1.5q-.5-.2-.788-.412T5 11q0-.3.45-.6t1.9-.925q2.2-.95 2.925-1.725T11 6q0-1.375-1.1-2.187T7 3q-1.125 0-2.013.4t-1.362.975Q3.35 4.7 3.4 5.1t.375.65q.325.275.725.225t.675-.325q.35-.35.775-.5T7 5q1.025 0 1.513.3T9 6q0 .35-.437.637T6.55 7.65q-2 .875-2.775 1.588T3 11q0 .8.425 1.363t1.15.987",
       Eraser: "m16.24 3.56l4.95 4.94c.78.79.78 2.05 0 2.84L12 20.53a4.01 4.01 0 0 1-5.66 0L2.81 17c-.78-.79-.78-2.05 0-2.84l10.6-10.6c.79-.78 2.05-.78 2.83 0M4.22 15.58l3.54 3.53c.78.79 2.04.79 2.83 0l3.53-3.53l-4.95-4.95z",
       Text: "m18.5 4l1.16 4.35l-.96.26c-.45-.87-.91-1.74-1.44-2.18C16.73 6 16.11 6 15.5 6H13v10.5c0 .5 0 1 .33 1.25c.34.25 1 .25 1.67.25v1H9v-1c.67 0 1.33 0 1.67-.25c.33-.25.33-.75.33-1.25V6H8.5c-.61 0-1.23 0-1.76.43c-.53.44-.99 1.31-1.44 2.18l-.96-.26L5.5 4z",
-      Pan: "M23 12 18.886 7.864v2.772h-5.5v-5.5h2.75L12 1 7.886 5.136h2.75v5.5H5.092V7.886L1 12l4.136 4.136v-2.75h5.5v5.5H7.886L12 23l4.136-4.114h-2.75v-5.5h5.5v2.75L23 12Z",
-      Scale: "M16 3a1 1 0 100 2h1.586L11 11.586V10A1 1 0 009 10v3.75c0 .69.56 1.25 1.25 1.25H14a1 1 0 100-2H12.414L19 6.414V8a1 1 0 102 0V4.25C21 3.56 20.44 3 19.75 3ZM5 3l-.15.005A2 2 0 003 5V19l.005.15A2 2 0 005 21H19l.15-.005A2 2 0 0021 19V13l-.007-.117A1 1 0 0019 13v6H5V5h6l.117-.007A1 1 0 0011 3Z",
       LockOpen: "M6 20h12V10H6zm6-3q.825 0 1.413-.587T14 15t-.587-1.412T12 13t-1.412.588T10 15t.588 1.413T12 17m-6 3V10zm0 2q-.825 0-1.412-.587T4 20V10q0-.825.588-1.412T6 8h7V6q0-2.075 1.463-3.537T18 1q1.775 0 3.1 1.075t1.75 2.7q.125.425-.162.825T22 6q-.425 0-.7-.175t-.4-.575q-.275-.95-1.062-1.6T18 3q-1.25 0-2.125.875T15 6v2h3q.825 0 1.413.588T20 10v10q0 .825-.587 1.413T18 22z",
       Lock: "M12 17c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2m5 3c.55 0 1-.45 1-1V11c0-.55-.45-1-1-1H7c-.55 0-1 .45-1 1v8c0 .55.45 1 1 1H17M9 8h6V6c0-1.66-1.34-3-3-3S9 4.34 9 6Zm9 0c1.1 0 2 .9 2 2V20c0 1.1-.9 2-2 2H6c-1.1 0-2-.9-2-2V10c0-1.1.9-2 2-2H7V6c0-2.76 2.24-5 5-5s5 2.24 5 5V8h1",
+      Pan: "M23 12 18.886 7.864v2.772h-5.5v-5.5h2.75L12 1 7.886 5.136h2.75v5.5H5.092V7.886L1 12l4.136 4.136v-2.75h5.5v5.5H7.886L12 23l4.136-4.114h-2.75v-5.5h5.5v2.75L23 12Z",
+      Scale: "M16 3a1 1 0 100 2h1.586L11 11.586V10A1 1 0 009 10v3.75c0 .69.56 1.25 1.25 1.25H14a1 1 0 100-2H12.414L19 6.414V8a1 1 0 102 0V4.25C21 3.56 20.44 3 19.75 3ZM5 3l-.15.005A2 2 0 003 5V19l.005.15A2 2 0 005 21H19l.15-.005A2 2 0 0021 19V13l-.007-.117A1 1 0 0019 13v6H5V5h6l.117-.007A1 1 0 0011 3Z",
+      ResetTransform: "M8 9H4q-.425 0-.712-.288T3 8V4q0-.425.288-.712T4 3t.713.288T5 4v2.35Q6.25 4.8 8.063 3.9T12 3q2.475 0 4.488 1.2T19.7 7.35q.2.35.113.75t-.438.6-.763.113T18 8.375q-.925-1.525-2.5-2.45T12 5q-1.425 0-2.687.525T7.1 7H8q.425 0 .713.288T9 8t-.288.713T8 9 M18.94 16.002 11.976 12.143 5.059 15.965l6.964 3.89Zm2.544-.877a1 1 0 01.002 1.749l-8.978 5a1 1 0 01-.973-.001l-9.022-5.04a1 1 0 01.003-1.749l8.978-4.96a1 1 0 01.968.001l9.022 5z",
       AddLayer: "M18.94 12.002 11.976 8.143 5.059 11.965l6.964 3.89Zm2.544-.877a1 1 0 01.002 1.749l-8.978 5a1 1 0 01-.973-.001l-9.022-5.04a1 1 0 01.003-1.749l8.978-4.96a1 1 0 01.968.001l9.022 5zM12 22a1 1 0 00.485-.126l9-5-.971-1.748L12 19.856l-8.515-4.73-.971 1.748 9 5A1 1 0 0012 22m8-22h-2v3h-3v2h3v3h2V5h3V3h-3z",
-      DuplicateLayer: "M14.7 16.1H11.2V14.7h3.5V11.2h1.4v3.5h3.5v1.4H16.1v3.5H14.7ZM21 9.8H9.8V21H21Zm0-1.4a1.4 1.4 90 011.4 1.4V21A1.4 1.4 90 0121 22.4H9.8A1.4 1.4 90 018.4 21V9.8A1.4 1.4 90 019.8 8.4H21m-16.8 7H7v1.4H4.2A1.4 1.4 90 012.8 15.4V4.2A1.4 1.4 90 014.2 2.8H15.4a1.4 1.4 90 011.4 1.4V7H15.4V4.2H4.2Z",
+      DuplicateLayer: "M14 16h-3v-2h3v-3h2v3h3v2h-3v3h-2zM20.5 9.5h-11v11h11zM20.5 7.5a2 2 0 012 2v11a2 2 0 01-2 2h-11a2 2 0 01-2-2v-11a2 2 0 012-2h11M3.5 14.5h3v2h-3a2 2 0 01-2-2v-11a2 2 0 012-2h11a2 2 0 012 2v3h-2v-3h-11z",
       CopyLayer: "M21.73 12H19A3 3 0 0116 9V6.27a3 3 0 01.88.61l4.25 4.24a3 3 0 01.6.88ZM6 18V10a4 4 0 014-4h4V9a5 5 0 005 5h3v4a4 4 0 01-4 4H10A4 4 0 016 18ZM3 16h.5a.5.5 0 00.5-.5V10a6 6 0 016-6h5.5a.5.5 0 00.5-.5V3A1 1 0 0015 2H10A8 8 0 002 10v5a1 1 0 001 1Z",
       DeleteLayer: "M5.06 11.965l6.964 3.89 6.917-3.853-6.964-3.859Zm-2.547.868a1 1 0 01.003-1.749l8.978-4.96a1 1 0 01.968.001l9.022 5a1 1 0 01.002 1.749l-8.978 5a1 1 0 01-.973-.001l-9.022-5.04M15 5h8V3H15ZM12 19.856l8.514-4.73.971 1.748-9 5a1 1 0 01-.971 0l-9-5 .971-1.748Z",
-      MoveLayerUp: "M11.604 3.061c-.687.193-1.306.752-2.604 2.353-.913 1.126-.958 1.193-.987 1.476-.076.733.611 1.281 1.311 1.049.27-.09.45-.27 1.139-1.143l.517-.654.02 4.582.02 4.582.121.197c.402.653 1.316.653 1.718 0l.121-.197.02-4.582.02-4.582.517.654c.689.873.869 1.053 1.139 1.143.7.232 1.387-.316 1.311-1.049-.029-.282-.073-.348-.985-1.477-1.15-1.421-1.883-2.107-2.471-2.311-.276-.096-.67-.113-.927-.041M7.8 10.549c-.033.013-.96.436-2.06.941-2.632 1.207-3.468 1.632-3.9 1.98-.888.715-1.085 1.674-.518 2.523.306.458.764.787 1.817 1.306.724.356 6.326 2.934 7.001 3.222 1.498.637 2.223.637 3.72-.001.684-.291 6.283-2.868 7.001-3.221 1.054-.519 1.511-.848 1.817-1.306.567-.849.37-1.808-.518-2.523-.429-.346-1.247-.762-3.92-1.993-1.863-.858-2.04-.932-2.283-.948-.492-.032-.888.242-1.024.71-.111.38.036.814.355 1.053.073.053.87.436 1.772.849.902.413 1.946.893 2.32 1.067.686.32 1.5.75 1.5.794 0 .04-.551.341-1.12.612-1.087.519-6.512 3.001-6.891 3.154-.733.295-1.005.295-1.738 0-.215-.087-1.732-.773-3.371-1.525-2.858-1.311-4.412-2.052-4.578-2.182-.077-.06-.077-.062 0-.12.154-.118 1.635-.83 3.498-1.682 1.045-.478 1.959-.914 2.032-.967.761-.568.342-1.779-.612-1.768-.132.001-.267.013-.3.025",
-      MoveLayerDown: "M11.449 3.057c-.701.134-.701.134-4.749 1.992C3.093 6.705 2.298 7.101 1.84 7.47c-.888.715-1.085 1.674-.518 2.523.31.464.765.789 1.858 1.325 1.212.595 4.561 2.117 4.751 2.16.137.031.235.026.413-.021a.966.966 0 00.743-.78.988.988 0 00-.21-.809c-.152-.184-.218-.217-2.337-1.186-1.7-.778-3.216-1.509-3.358-1.621-.077-.06-.077-.062 0-.121.167-.128 1.64-.83 4.478-2.132 1.628-.747 3.131-1.43 3.34-1.519.418-.178.802-.289 1-.289s.582.111 1 .289c.209.088 1.712.772 3.34 1.519 2.799 1.283 4.303 2 4.478 2.133.077.058.077.06 0 .119-.147.114-1.681.855-3.358 1.622-2.119.969-2.185 1.002-2.337 1.186-.123.149-.243.462-.243.632 0 .18.124.49.258.647.23.269.607.401.936.329.095-.021 1.04-.436 2.1-.923 3.083-1.415 3.555-1.657 4.07-2.085.811-.675.979-1.66.423-2.478-.276-.405-.718-.728-1.625-1.186-.76-.386-6.232-2.914-7.249-3.35-.903-.387-1.693-.521-2.344-.397m.246 5a1.04 1.04 0 00-.567.459l-.108.184-.02 4.579-.02 4.579-.52-.658c-.696-.881-.878-1.06-1.166-1.144-.704-.204-1.356.332-1.281 1.055.029.281.073.348.985 1.476.795.983 1.557 1.782 1.942 2.033.983.643 1.749.468 2.862-.654.428-.433 1.795-2.075 2.05-2.464.24-.365.172-.885-.157-1.205-.417-.405-1-.39-1.426.036-.115.115-.444.506-.729.867l-.52.658-.02-4.579-.02-4.579-.108-.184a1.005 1.005 0 00-1.177-.459",
+      MoveLayerUp: "M10 11l-7.484 4.084a1 1 0 000 1.75l9 5a1 1 0 001 0l9-5a1 1 0 000-1.75L14 11v2.235L19 16l-7 3.855L5 16l5-2.765Zm3-7.8284 3.4142 3.4142A1 1 0 0115 8L13 6v9.5a1 1 0 01-2 0V6L9 8A1 1 0 017.5858 6.5858L11 3.1716a1.4142 1.4142 0 012 0",
+      MoveLayerDown: "M14 13l7.484-4.084a1 1 90 000-1.75l-9-5a1 1 90 00-1 0l-9 5a1 1 90 000 1.75L10 13v-2.235L5 8l7-3.855L19 8l-5 2.765Zm-3 7.8284-3.4142-3.4142A1 1 90 019 16l2 2V8.5a1 1 90 012 0V18l2-2a1 1 90 011.4142 1.4142L13 20.8284a1.4142 1.4142 90 01-2 0",
       Visibility: "M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5M12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5m0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3",
       VisibilityOff: "M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7M2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2m4.31-.78 3.15 3.15.02-.16c0-1.66-1.34-3-3-3z",
       Settings: "M12 15.6c1.98 0 3.6-1.62 3.6-3.6S13.98 8.4 12 8.4 8.4 10.02 8.4 12s1.62 3.6 3.6 3.6m9.15-1.08c.19.14.24.39.12.61l-1.92 3.32c-.12.22-.37.3-.59.22l-2.39-.96c-.49.38-1.03.7-1.62.94l-.36 2.54c-.03.24-.23.41-.47.41H10.08c-.24 0-.43-.17-.48-.41l-.36-2.54c-.59-.24-1.12-.56-1.62-.94l-2.39.96c-.22.07-.47 0-.59-.22L2.72 15.13c-.11-.2-.06-.47.12-.61l2.03-1.58c-.05-.3-.07-.63-.07-.94s.04-.64.09-.94L2.86 9.48c-.2-.14-.24-.4-.12-.61L4.65 5.55c.12-.22.37-.3.59-.22l2.39.96c.49-.37 1.03-.7 1.62-.94l.36-2.54c.04-.24.23-.41.47-.41h3.84c.24 0 .44.17.48.41l.36 2.54c.59.24 1.12.56 1.62.94l2.39-.96c.22-.07.47 0 .59.22l1.92 3.32c.11.2.06.47-.12.61l-2.03 1.58c.05.3.07.62.07.94 0 .33-.02.64-.06.94Z",
@@ -1611,7 +1627,7 @@ module.exports = (meta) => {
       useEffect(() => () => ctrl.current.abort(), []);
 
       return !isPending ? jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, #d6363fff)" } }, "Component Error"),
+        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
         children: jsx(BdApi.Components.Tooltip, {
           spacing: 11,
           position: "bottom",
@@ -1686,8 +1702,7 @@ module.exports = (meta) => {
     /**
      * @param {{
      *  layers: {id: number, name: string, visible: boolean, alpha: number, active: boolean}[]
-     *  onChange: (callback: (editor: CanvasEditor) => boolean) => void, width: number, height: number, 
-     *  editor: React.RefObject<CanvasEditor>
+     *  onChange: () => void, width: number, height: number, editor: React.RefObject<CanvasEditor>
      * }} props
      */
     LayerThumbnails({ layers, onChange, width, height, editor }) {
@@ -1706,16 +1721,16 @@ module.exports = (meta) => {
                 ),
                 label: "Name",
                 value: layers[i].name,
-                onChange: newName => onChange(editor => { editor.layers[i].layer.name = newName }),
+                onChange: newName => { editor.current.layers[i].layer.name = newName; onChange() },
               })
             }, {
               label: "Visible",
               type: "toggle",
               checked: layers[i].visible,
-              action: () => onChange(editor => {
-                editor.toggleLayerVisibility(i);
-                return true
-              })
+              action: () => {
+                editor.current.toggleLayerVisibility(i);
+                onChange();
+              }
             }, {
               label: "Opacity",
               type: "custom",
@@ -1730,15 +1745,21 @@ module.exports = (meta) => {
                 label: "Opacity",
                 decimals: 2,
                 expScaling: false,
-                onChange: alpha => onChange(editor => {
-                  if (alpha === editor.layers[i].state.alpha) return false;
-                  editor.setLayerAlpha(alpha, i, true);
-                  return true;
-                }),
-                onSlide: alpha => onChange(editor => {
-                  editor.setLayerAlpha(alpha, i);
-                })
+                onChange: alpha => {
+                  if (alpha === editor.current.layers[i].state.alpha) return;
+                  editor.current.setLayerAlpha(alpha, i, true);
+                  onChange();
+                },
+                onSlide: alpha => editor.current.setLayerAlpha(alpha, i)
               })
+            }, {
+              label: "Reset Transform",
+              disabled: editor.current.layers[i].state.transform.isIdentity,
+              action: () => {
+                editor.current.resetLayer(i);
+                onChange();
+              },
+              icon: () => jsx(Components.Icon, { d: utils.paths.ResetTransform })
             }
           ]
         }, {
@@ -1763,10 +1784,7 @@ module.exports = (meta) => {
               icon: () => jsx(Components.Icon, { d: utils.paths.CopyLayer })
             }, {
               label: "Duplicate Layer",
-              action: async () => {
-                await editor.current.duplicateLayer(i);
-                onChange(() => true);
-              },
+              action: () => editor.current.duplicateLayer(i).then(onChange),
               icon: () => jsx(Components.Icon, { d: utils.paths.DuplicateLayer })
             }
           ]
@@ -1777,33 +1795,27 @@ module.exports = (meta) => {
               label: "Move Layer Up",
               disabled: i >= layers.length - 1,
               action: () => {
-                onChange(editor => {
-                  if (i >= editor.layers.length - 1) return false;
-                  editor.moveLayers(1, i);
-                  return true;
-                });
+                if (i >= editor.current.layers.length - 1) return;
+                editor.current.moveLayers(1, i);
+                onChange();
               },
               icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerUp })
             }, {
               label: "Move Layer Down",
               disabled: i <= 0,
               action: () => {
-                onChange(editor => {
-                  if (i <= 0) return false;
-                  editor.moveLayers(-1, i);
-                  return true;
-                });
+                if (i <= 0) return;
+                editor.current.moveLayers(-1, i);
+                onChange();
               },
               icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerDown })
             }, {
               label: "Delete Layer",
               disabled: layers.length <= 1,
               action: () => {
-                onChange(editor => {
-                  if (editor.layers.length <= 1) return false;
-                  editor.deleteLayer(i);
-                  return true;
-                });
+                if (editor.current.layers.length <= 1) return;
+                editor.current.deleteLayer(i);
+                onChange();
               },
               icon: () => jsx(Components.Icon, { d: utils.paths.DeleteLayer })
             }
@@ -1838,19 +1850,18 @@ module.exports = (meta) => {
                 onDrop: (e) => {
                   e.currentTarget.classList.remove("droptarget");
                   const idx = e.dataTransfer.getData("text/plain");
-                  idx && onChange(editor => {
-                    const from = Number(idx);
-                    editor.moveLayers(i - from, from);
-                    return i !== from;
-                  })
+                  const from = Number(idx);
+                  if (!idx || i === from) return;
+                  editor.current.moveLayers(i - from, from);
+                  onChange()
                 },
                 onContextMenu: (e) => { handleContextMenu(e, i) },
-                onClick: (e) => onChange(editor => {
-                  if (editor.activeLayerIndex === i) return false;
-                  editor.activeLayerIndex = i;
+                onClick: (e) => {
+                  if (editor.current.activeLayerIndex === i) return;
+                  editor.current.activeLayerIndex = i;
                   e.currentTarget.scrollIntoView({ block: "nearest" })
-                  return true;
-                }),
+                  onChange();
+                },
                 onKeyDown: (e) => {
                   if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
                     e.currentTarget.click();
@@ -1864,10 +1875,10 @@ module.exports = (meta) => {
                     className: "layer-visibility",
                     tooltip: state.visible ? "Visible" : "Hidden",
                     d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
-                    onClick: () => onChange(editor => {
-                      editor.toggleLayerVisibility(i);
-                      return true;
-                    }),
+                    onClick: () => {
+                      editor.current.toggleLayerVisibility(i);
+                      onChange();
+                    },
                   }),
                 ]
               })
@@ -2758,7 +2769,7 @@ module.exports = (meta) => {
                 width: dims.width,
                 height: dims.height,
                 layers,
-                onChange: (cb) => { if (cb(editor.current)) syncStates() }
+                onChange: () => { syncStates() }
               }),
               jsx("div", {
                 className: "layer-actions",
@@ -2951,7 +2962,7 @@ module.exports = (meta) => {
 
           setFamilyOptions(merged.filter(f => document.fonts.check(`1rem ${f}`)).map(e => ({ value: e, label: e })));
 
-          const purifiedFamily = merged.includes(family) && !document.fonts.check(`1rem ${family}`) ? "gg sans" : family;
+          const purifiedFamily = !merged.includes(family) || !document.fonts.check(`1rem ${family}`) ? "gg sans" : family;
           setFamily(purifiedFamily);
 
           const wo = getWeightsOptions(purifiedFamily);
