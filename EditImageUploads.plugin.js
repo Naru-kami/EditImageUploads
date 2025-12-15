@@ -11,8 +11,8 @@ module.exports = (meta) => {
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI, ContextMenu } = BdApi;
 
   const {
-    createElement: jsx, useState, useEffect, useRef, useMemo, useCallback, useId,
-    useImperativeHandle, useLayoutEffect, Fragment, cloneElement, useTransition
+    createElement: jsx, useState, useEffect, useLayoutEffect, useRef, useId,
+    useImperativeHandle, useCallback, Fragment, cloneElement, useTransition
   } = React;
 
   var internals, ctrl;
@@ -74,7 +74,7 @@ module.exports = (meta) => {
   function start() {
     init();
 
-    if (!["ModalRoot", "ModalContent", "ModalFooter", "openModal"].every(key => key in internals.keys)) return;
+    if (!internals.uploadDispatcher || !["ModalRoot", "ModalContent", "ModalFooter", "openModal"].every(key => key in internals.keys)) return;
 
     internals.keys.uploadCard && Patcher.after(meta.slug, internals.uploadCard, internals.keys.uploadCard, (_, [args], ret) => {
       if (
@@ -90,21 +90,23 @@ module.exports = (meta) => {
     });
 
     ctrl = new AbortController()
-    Webpack.waitForModule(Filters.bySource('children:["IMAGE"==='), ctrl).then(m => { // 73249
-      if (!("toMediaUrl" in internals.keys && "toCdnUrl" in internals.keys)) return;
+    Webpack.waitForModule(Filters.bySource("children:[\"IMAGE\"==="), ctrl).then(m => { // 73249
+      if (!m) return;
 
-      m?.Z && Patcher.after(meta.slug, m.Z, "type", (_, [args], res) => {
+      const key = Object.keys(m).find(k => m[k].type?.toString().includes("children:[\"IMAGE\"==="));
+      key && Patcher.after(meta.slug, m[key], "type", (_, [args], res) => {
         if (args.item.type !== "IMAGE" || args.item.srcIsAnimated || args.item.animated) return res;
 
         return cloneElement(res, {
           children: className => {
             const ret = res.props.children(className);
 
-            const convertable = internals.urlConverter[internals.keys.convertable](args.item.original)
-            const mediaUrl = convertable ? internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url) : args.item.url;
-            const url = internals.urlConverter[internals.keys.toCdnUrl](mediaUrl, args.item.contentType, args.item.originalContentType);
-
-            url && ret.props.children.unshift(jsx(Components.RemixIcon, { url }))
+            try {
+              const convertable = internals.urlConverter[internals.keys.convertable](args.item.original ?? args.item.url)
+              const mediaUrl = convertable ? internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url) : args.item.url;
+              const url = internals.urlConverter[internals.keys.toCdnUrl](mediaUrl, args.item.contentType, args.item.originalContentType);
+              url && ret.props.children.unshift(jsx(Components.RemixIcon, { url }))
+            } catch { }
 
             return ret;
           }
@@ -147,6 +149,8 @@ module.exports = (meta) => {
       this.#topCache = new OffscreenCanvas(bitmap.width, bitmap.height);
       this.#viewportCanvas = canvas;
 
+      /** @type {string} */
+      this.backgroundColor = BdApi.Data.load(meta.slug, "backgroundColor") ?? "#393946";
       const initialScale = Math.min(canvas.width / bitmap.width * 0.96, canvas.height / bitmap.height * 0.96);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
       this.#viewportTransform_inv = new DOMMatrix()
@@ -156,8 +160,8 @@ module.exports = (meta) => {
         .invertSelf();
       this.#staleViewportInv = false;
 
-      [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(c => {
-        c.getContext("2d").imageSmoothingEnabled = false;
+      [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(canv => {
+        canv.getContext("2d").imageSmoothingEnabled = false;
       })
       this.setImageSmoothing(BdApi.Data.load(meta.slug, "smoothing") ?? "medium");
 
@@ -448,6 +452,19 @@ module.exports = (meta) => {
       this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
       this.#imageSmoothing === "auto" && this.#autoSmooth();
       this.#staleViewportInv = true;
+    }
+
+    refreshViewport() {
+      const ctx = this.#viewportCanvas.getContext("2d");
+
+      ctx.fillStyle = this.backgroundColor;
+      ctx.fillRect(0, 0, this.#viewportCanvas.width, this.#viewportCanvas.height);
+      ctx.setTransform(new DOMMatrix().translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2).multiplySelf(this.#viewportTransform));
+
+      ctx.clearRect(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2, this.#mainCanvas.width, this.#mainCanvas.height);
+      ctx.drawImage(this.#mainCanvas, -this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2);
+
+      ctx.resetTransform();
     }
 
     /** @param {DOMMatrix} M */
@@ -916,19 +933,6 @@ module.exports = (meta) => {
     /** @type {typeof OffscreenCanvas.prototype.convertToBlob} */
     toBlob(options) { return this.#mainCanvas.convertToBlob(options) }
 
-    refreshViewport() {
-      const ctx = this.#viewportCanvas.getContext("2d");
-
-      ctx.fillStyle = "#303038";
-      ctx.fillRect(0, 0, this.#viewportCanvas.width, this.#viewportCanvas.height);
-      ctx.setTransform(new DOMMatrix().translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2).multiplySelf(this.#viewportTransform));
-
-      ctx.clearRect(-this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2, this.#mainCanvas.width, this.#mainCanvas.height);
-      ctx.drawImage(this.#mainCanvas, -this.#mainCanvas.width / 2, -this.#mainCanvas.height / 2);
-
-      ctx.resetTransform();
-    }
-
     render(layerIndex = this.#activeLayerIndex) {
       const ctx = this.#mainCanvas.getContext("2d");
       ctx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
@@ -1256,7 +1260,7 @@ module.exports = (meta) => {
     /** @param {DOMMatrix} M */
     getTranslate(M) { return { x: M.e, y: M.f } },
 
-    /** @param {...number} values */
+    /** @param {number[]} values */
     minAbs(...values) {
       let best = values[0];
       for (let i = 1; i < values.length; i++) {
@@ -1267,7 +1271,7 @@ module.exports = (meta) => {
       return best;
     },
 
-    /** @param {...number} values */
+    /** @param {number[]} values */
     maxAbs(...values) {
       let best = values[0];
       for (let i = 1; i < values.length; i++) {
@@ -1423,6 +1427,9 @@ module.exports = (meta) => {
         })
       }));
     },
+
+    paintingColors: ["#000000", 0xffffff, 0xffea00, 0xff9100, 0xff1744, 0xff4081, 0xd500f9, 0x651fff, 0x2979ff, 0x10e5ff, 0x1de9b6, 0x10e676],
+    backgroundColors: [0x393946, 0x443946, 0x46393d, 0x464139, 0x414639, 0x39463d, 0x394446, 0x575775, 0x715775, 0x75575f, 0x756857, 0x687557, 0x57755f, 0x577175],
 
     paths: {
       Main: "m22.7 14.3l-1 1l-2-2l1-1c.1-.1.2-.2.4-.2c.1 0 .3.1.4.2l1.3 1.3c.1.2.1.5-.1.7M13 19.9V22h2.1l6.1-6.1l-2-2zm-1.79-4.07l-1.96-2.36L6.5 17h6.62l2.54-2.45l-1.7-2.26zM11 19.9v-.85l.05-.05H5V5h14v6.31l2-1.93V5a2 2 0 0 0-2-2H5c-1.1 0-2 .9-2 2v14a2 2 0 0 0 2 2h6z",
@@ -2669,6 +2676,7 @@ module.exports = (meta) => {
                   (mode === 4 || mode === 5 || mode === 6) && jsx(Fragment, {
                     children: [
                       mode !== 6 && jsx(Components.ColorInput, {
+                        colors: utils.paintingColors,
                         value: strokeStyle.color,
                         onChange: c => setStrokeStyle(s => ({ ...s, color: c }))
                       }),
@@ -2827,8 +2835,9 @@ module.exports = (meta) => {
                     disabled: !(canUndoRedo & 1)
                   }),
                   jsx(Components.Settings, {
-                    onChange: (smoothing) => {
-                      editor.current.setImageSmoothing(smoothing);
+                    onChange: ({ smoothing, background }) => {
+                      if (smoothing != null) editor.current.setImageSmoothing(smoothing);
+                      if (background != null) editor.current.backgroundColor = background;
                       editor.current.refreshViewport();
                     }
                   })
@@ -2840,10 +2849,11 @@ module.exports = (meta) => {
       })
     },
 
-    /** @param {{onChange?: (e: {exportType: string, smoothing: string | false}) => void}} */
+    /** @param {{onChange?: (e: {exportType?: string, smoothing?: string | false, background?: string}) => void}} */
     Settings({ onChange }) {
       const [exportType, setExportType] = hooks.useStoredState("exportType", "image/webp");
       const [smoothing, setSmoothing] = hooks.useStoredState("smoothing", "auto");
+      const [background, setBackground] = hooks.useStoredState("backgroundColor", "#393946")
 
       const exportOptions = useRef([{ label: "jpg", value: "image/jpeg" }, { label: "png", value: "image/png" }, { label: "webp", value: "image/webp" }]);
       const smoothingOptions = useRef(["Auto", "High", "Medium", "Low", "Off"].map(e => ({ label: e, value: e.toLowerCase() })))
@@ -2851,6 +2861,39 @@ module.exports = (meta) => {
       const handleClick = useCallback((e) => {
         ContextMenu.open(e, ContextMenu.buildMenu([
           {
+            label: "background",
+            type: "custom",
+            render: () => jsx("div", {
+              className: utils.clsx(
+                internals.contextMenuClass?.item,
+                internals.contextMenuClass?.labelContainer,
+                "menu-item-color-root"
+              ),
+              children: [
+                jsx("span", null, "Background color"),
+                jsx(Components.ColorInput, {
+                  colors: utils.backgroundColors,
+                  value: background,
+                  onChange: bg => {
+                    setBackground(bg);
+                    onChange({ background: bg })
+                  }
+                })
+              ]
+            })
+          }, {
+            label: "Smoothing",
+            type: "custom",
+            render: () => jsx(Components.MenuItemSelect, {
+              text: "Image smoothing",
+              options: smoothingOptions.current,
+              initialValue: smoothing,
+              onChange: s => {
+                setSmoothing(s);
+                onChange?.({ smoothing: s })
+              }
+            })
+          }, {
             label: "Export",
             type: "custom",
             render: () => jsx(Components.MenuItemSelect, {
@@ -2861,24 +2904,12 @@ module.exports = (meta) => {
                 setExportType(e);
               }
             })
-          }, {
-            label: "Export",
-            type: "custom",
-            render: () => jsx(Components.MenuItemSelect, {
-              text: "Image smoothing: ",
-              options: smoothingOptions.current,
-              initialValue: smoothing,
-              onChange: s => {
-                setSmoothing(s);
-                onChange?.(s)
-              }
-            })
           }
         ]), {
           align: "bottom",
           position: "left"
         })
-      }, [smoothing, exportType]);
+      }, [smoothing, exportType, background]);
 
       return jsx(Components.IconButton, {
         tooltip: "Settings",
@@ -2890,13 +2921,11 @@ module.exports = (meta) => {
     /**
      * @template T
      * @param {{
-     *   initialValue: T,
-     *   options: {label: "string", value: T}[],
-     *   onChange?: (newValue: T) => void,
-     *   text?: string
+     *   initialValue: T, options: { label: string, value: T }[],
+     *   onChange?: (newValue: T) => void, text?: string
      * }}
      */
-    MenuItemSelect({ options, initialValue, onChange, text }) {
+    MenuItemSelect({ initialValue, options, onChange, text }) {
       const [value, setValue] = useState(initialValue);
 
       return jsx(BdApi.Components.ErrorBoundary, {
@@ -2905,13 +2934,10 @@ module.exports = (meta) => {
           className: utils.clsx(
             internals.contextMenuClass?.item,
             internals.contextMenuClass?.labelContainer,
+            "menu-item-select-root"
           ),
           children: [
-            jsx("style", null, `@scope {
-              :scope { display: block; }
-              .select { display: inline-block; }
-            }`),
-            text,
+            jsx("span", null, text),
             jsx(internals.Select[internals.keys.SingleSelect], {
               options: options,
               value: value,
@@ -3015,11 +3041,10 @@ module.exports = (meta) => {
       })
     },
 
-    /** @param {{onChange: (value: string) => void, value: string}} */
-    ColorInput({ onChange, value }) {
+    /** @param {{onChange: (value: string) => void, value: string, colors?: string[], wait?: number}} */
+    ColorInput({ onChange, value, colors, wait = 150 }) {
       /** @type {React.RefObject<number | null>} */
       const timer = useRef(null);
-      const colors = useMemo(() => ["#000000", 0xffffff, 0xffea00, 0xff9100, 0xff1744, 0xff4081, 0xd500f9, 0x651fff, 0x2979ff, 0x10e5ff, 0x1de9b6, 0x10e676], []);
 
       return jsx(BdApi.Components.ColorInput, {
         value,
@@ -3029,7 +3054,7 @@ module.exports = (meta) => {
           timer.current = setTimeout(() => {
             onChange(c)
             timer.current = null;
-          }, 100);
+          }, wait);
         }
       })
     },
@@ -3163,41 +3188,9 @@ module.exports = (meta) => {
 
       return jsx("div", {
         ...restProps,
-        className: className,
+        className: utils.clsx(className, "number-input-root", withSlider && "with-slider"),
         children: [
-          jsx("style", null, `@scope {
-            :scope {
-              display: flex;
-              flex-wrap: wrap;
-              row-gap: 6px;
-              color: var(--interactive-text-active);
-              padding-inline: ${withSlider ? "8px" : "0px"}; 
-              & > label {
-                align-content: center;
-                cursor: inherit;
-              }
-              & > .slider-wrapper {
-                cursor: inherit;
-                flex-basis: 100%;
-                margin-top: 6px;
-              }
-            }
-            .number-input {
-              border: 1px solid var(--border-normal);
-              border-radius: 6px;
-              padding: 4px;
-              margin: 2px;
-              background: var(--interactive-background-active);
-              color: currentColor;
-              width: 3em;
-              margin-left: auto;
-              text-align: right;
-            }
-          }`),
-          label && jsx("label", {
-            htmlFor: id,
-            children: `${label}: `
-          }),
+          label && jsx("label", { htmlFor: id }, `${label}: `),
           jsx("input", {
             className: "number-input",
             id: id,
@@ -3286,34 +3279,9 @@ module.exports = (meta) => {
       const handleMouseLeave = useCallback(e => e.currentTarget.blur(), []);
 
       return jsx("div", {
-        className,
+        className: utils.clsx(className, "text-input-root"),
         children: [
-          jsx("style", null, `@scope {
-            :scope {
-              display: flex;
-              justify-content: space-between;
-              align-items: center;
-              gap: 16px;
-              padding: 4px 8px;
-              color: var(--interactive-text-active);
-            }
-            label {
-              cursor: inherit;
-            }
-            .text-input {
-              border: 1px solid var(--border-normal);
-              border-radius: 6px;
-              padding: 4px;
-              background: var(--interactive-background-active);
-              flex: 0 0 50%;
-              min-width: 0;
-              color: currentColor;
-            }
-          }`),
-          label && jsx("label", {
-            htmlFor: id,
-            children: label,
-          }),
+          label && jsx("label", { htmlFor: id }, label),
           jsx("input", {
             id,
             className: "text-input",
@@ -3372,7 +3340,7 @@ module.exports = (meta) => {
   }
 
   function generateCSS() {
-    DOM.addStyle(meta.slug, `@scope (.${meta.slug}Root){
+    DOM.addStyle(meta.slug, `@scope (.${meta.slug}Root) {
 :scope {
   min-height: unset;
   max-height: unset;
@@ -3645,12 +3613,8 @@ module.exports = (meta) => {
 }
 
 .bd-color-picker-container {
-  flex-direction: column;
+  display: grid;
   gap: 4px;
-}
-
-.bd-color-picker-controls {
-  flex-basis: 100%;
 }
 
 .bd-color-picker {
@@ -3780,8 +3744,96 @@ module.exports = (meta) => {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
   align-items: center;
+}}
+
+@scope (.number-input-root) {
+  :scope {
+    display: flex;
+    flex-wrap: wrap;
+    row-gap: 6px;
+    color: var(--interactive-text-active);
+
+    &.with-slider {
+      padding-inline: 8px; 
+    }
+    & > label {
+      align-content: center;
+      cursor: inherit;
+    }
+    & > .slider-wrapper {
+      cursor: inherit;
+      flex-basis: 100%;
+      margin-top: 6px;
+    }
+  }
+  .number-input {
+    border: 1px solid var(--border-normal);
+    border-radius: 6px;
+    padding: 4px;
+    margin: 2px;
+    background: var(--interactive-background-active);
+    color: currentColor;
+    width: 3em;
+    margin-left: auto;
+    text-align: right;
+  }
 }
 
+@scope (.menu-item-select-root) {
+  :scope { 
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .select {
+    display: unset;
+  }
+}
+
+@scope (.menu-item-color-root) {
+  :scope { 
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 4px;
+  }
+  .bd-color-picker-container {
+    display: grid;
+    gap: 4px;
+  }
+  .bd-color-picker-swatch {
+    max-width: 156px;
+    margin: 0 !important;
+    display: grid;
+    place-items: center;
+    grid-template-columns: repeat(auto-fill, minmax(21px, 1fr));
+  }
+  .bd-color-picker {
+    width: 155px;
+    height: 56px;
+  }
+}
+
+@scope (.text-input-root) {
+  :scope {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 4px 8px;
+    color: var(--interactive-text-active);
+  }
+  label {
+    cursor: inherit;
+  }
+  .text-input {
+    border: 1px solid var(--border-normal);
+    border-radius: 6px;
+    padding: 4px;
+    background: var(--interactive-background-active);
+    flex: 0 0 50%;
+    min-width: 0;
+    color: currentColor;
+  }
 }`);
   }
 
