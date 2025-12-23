@@ -2718,7 +2718,6 @@ module.exports = (meta) => {
                   mode === 1 && jsx(Components.NumberSlider, {
                     ref: auxRef,
                     label: "Angle",
-                    style: { paddingInline: 8 },
                     suffix: "°",
                     withSlider: false,
                     value: editor.current ? Number(utils.getAngle(editor.current.layerTransform).toFixed(1)) : 0,
@@ -2732,7 +2731,7 @@ module.exports = (meta) => {
                   }),
                   mode === 3 && jsx(Components.NumberSlider, {
                     ref: auxRef,
-                    label: "Zoom ",
+                    label: "Scale",
                     suffix: "x",
                     decimals: 2,
                     minValue: 0.01,
@@ -2874,7 +2873,7 @@ module.exports = (meta) => {
                 :scope {
                   display: grid;
                   justify-content: stretch;
-                  font-size: 1rem;
+                  font-size: 16px;
                   cursor: auto;
                 }
 
@@ -2990,11 +2989,11 @@ module.exports = (meta) => {
                 display: flex;
                 align-items: flex-end;
                 justify-content: flex-end;
-                gap: 0.25rem;
-                padding-inline: 0.5rem;
+                gap: 4px;
+                padding-inline: 8px;
                 font-size: smaller;
               } }`),
-              jsx("span", { style: { marginRight: "auto" } },
+              jsx("span", { style: { marginInlineEnd: "auto" } },
                 `${((resize.current.mode === 0 ? menuData.current.width * menuData.current.height :
                   resize.current.mode === 1 ? Math.round(dimensions.width * dimensions.height * menuData.current.canvasP ** 2 / 100 ** 2) :
                     Math.round(dimensions.width * dimensions.height * menuData.current.imageP ** 2 / 100 ** 2)) * layerCount / 65536).toFixed(2)} MiB`
@@ -3430,37 +3429,43 @@ module.exports = (meta) => {
 
       return jsx("div", {
         ...restProps,
-        className: utils.clsx(className, "number-input-wrapper", withSlider && "with-slider"),
+        className: utils.clsx(className, "number-input-wrapper"),
         children: [
           jsx("style", null, `@scope {
-            :scope {
+            div& {
               display: flex;
               align-items: center;
               flex-wrap: wrap;
               row-gap: 6px;
               color: var(--interactive-text-active);
-
-              &.with-slider { padding-inline: 8px }
+              padding-inline: 4px;
             }
             .slider-wrapper {
               cursor: inherit;
               flex-basis: 100%;
-              margin-top: 6px;
+              margin-block-start: 6px;
+            }
+            label {
+              cursor: inherit;
+              margin-inline-end: 6px;
             }
             .number-input {
               border: 1px solid var(--border-normal);
               border-radius: 6px;
-              padding: 0.25rem 0.5rem;
+              padding: 4px 8px;
               margin: 2px;
               background: var(--interactive-background-active);
               color: currentColor;
-              width: 2.5rem;
+              flex: 1 1 0%;
+              width: 0;
+              min-width: 1em;
+              max-width: 3em;
               margin-left: auto;
               text-align: right;
               font-size: smaller;
             }
           }`),
-          label && jsx("label", { htmlFor: id, style: { cursor: "inherit" } }, `${label}: `),
+          label && jsx("label", null, `${label}: `),
           jsx("input", {
             className: "number-input",
             id: id,
@@ -3664,7 +3669,7 @@ module.exports = (meta) => {
   display: flex;
   align-items: flex-end;
   gap: 6px;
-  font-size: 1rem;
+  font-size: 16px;
   
   > * { font-size: smaller }
   > .canvas-dims-resizer-number {
@@ -3905,7 +3910,7 @@ module.exports = (meta) => {
 
 .bd-color-picker {
   display: block;
-  height: 3rem;
+  height: 56px;
   width: 127px;
   outline: 1px solid var(--border-normal);
 }
@@ -3923,6 +3928,7 @@ module.exports = (meta) => {
 }
 
 .sidebar {
+  width: 136px;
   display: grid;
   grid-template-rows: auto auto 1fr min-content auto auto;
   gap: 8px;
@@ -3930,7 +3936,8 @@ module.exports = (meta) => {
   justify-content: center;
   overflow: auto;
   scrollbar-gutter: stable;
-  margin-right: -8px;
+  margin-inline-end: -8px;
+  font-size: 16px;
 }
 
 .thumbnails {
@@ -4004,7 +4011,14 @@ module.exports = (meta) => {
   background-color: var(--brand-500);
 }
 
-.layer-visibility { min-width: 0 }
+.layer-visibility {
+  min-width: 0;
+  padding: 0;
+  svg {
+    width: 18px;
+    height: 18px;
+  }
+}
 
 .layer-label {
   display: -webkit-box;
@@ -4012,7 +4026,8 @@ module.exports = (meta) => {
   -webkit-line-clamp: 2;
   overflow: hidden;
   overflow-wrap: anywhere;
-  font-size: .8125em;
+  font-size: smaller;
+  line-height: 1.25;
   text-align: center;
 }
 
