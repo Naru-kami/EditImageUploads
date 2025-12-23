@@ -20,46 +20,39 @@ module.exports = (meta) => {
   function init() {
     if (internals) return;
 
-    internals = Webpack.getBulkKeyed({
-      uploadDispatcher: { filter: Filters.byKeys("setFile") }, // 166459
-      uploadCard: { filter: Filters.bySource(".attachmentItemSmall]:") }, // 898463
-      urlConverter: { filter: Filters.bySource(".searchParams.delete(\"width\"),") }, // 296182
-      nativeUI: { filter: m => m.showToast }, // 481060
-      Select: { filter: Filters.bySource("(\"SingleSelect\")") }, // 199849
-      ModalSystem: { filter: Filters.bySource(".MODAL_ROOT_LEGACY,") }, // 466377
-      ManaButton: { filter: Filters.bySource(".BUTTON_LOADING_STARTED_LABEL,") }, // 906003
+    internals = utils.getBulk({
+      uploadCard: { id: 898463, filter: Filters.bySource(".attachmentItemSmall]:") },
+      urlConverter: { id: 296182, filter: Filters.bySource(".searchParams.delete(\"width\"),") },
+      nativeUI: { id: 481060, filter: Filters.byKeys("showToast") },
+      Select: { id: 199849, filter: Filters.bySource("(\"SingleSelect\")") },
+      ModalSystem: { id: 466377, filter: Filters.bySource(".MODAL_ROOT_LEGACY,") },
+      ManaButton: { id: 906003, filter: Filters.bySource(".BUTTON_LOADING_STARTED_LABEL,") },
 
-      actionButtonClass: { filter: Filters.byKeys("dangerous", "button") },
-      actionIconClass: { filter: m => m.actionBarIcon && m[Symbol.toStringTag] !== "Module" },
-      sliderClass: { filter: Filters.byKeys("sliderContainer", "slider") },
-      scrollbarClass: { filter: Filters.byKeys("thin") },
-      contextMenuClass: { filter: Filters.byKeys("hintContainer") }
+      actionButtonClass: { id: 945233, filter: Filters.byKeys("dangerous", "button") },
+      actionIconClass: { id: 348962, filter: m => m.actionBarIcon && !m.action },
+      sliderClass: { id: 30724, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
+      scrollbarClass: { id: 690651, filter: m => m.thin && !m.none },
+      contextMenuClass: { id: 564546, filter: Filters.byKeys("hintContainer") }
     });
 
     Object.assign(internals, {
+      uploadDispatcher: Webpack.getByKeys("setFile"), // 166459
       SelectedChannelStore: Webpack.getStore("SelectedChannelStore"),
       keys: {
-        ...utils.getKeysInModule(internals.uploadCard, {
-          uploadCard: ".attachmentItemSmall]:",
-        }),
-        ...utils.getKeysInModule(internals.ManaButton, {
-          ManaButton: ".BUTTON_LOADING_STARTED_LABEL,"
-        }),
+        ...utils.getKeysInModule(internals.uploadCard, { uploadCard: ".attachmentItemSmall]:" }),
+        ...utils.getKeysInModule(internals.ManaButton, { ManaButton: ".BUTTON_LOADING_STARTED_LABEL," }),
+        ...utils.getKeysInModule(internals.Select, { SingleSelect: "(\"SingleSelect\")" }),
         ...utils.getKeysInModule(internals.urlConverter, {
           convertable: "canSaveImage",
           toMediaUrl: "return null",
           toCdnUrl: "searchParams"
         }),
         ...utils.getKeysInModule(internals.nativeUI, {
-          FocusRing: "FocusRing was given a focusTarget",
-          openModal: ",stackNextByDefault:",
           closeModal: ".onCloseCallback()",
-          MenuSliderControl: "moveGrabber",
           closeModalInAllContexts: ".onCloseCallback)",
-          Popout: "Unsupported animation config:",
-        }),
-        ...utils.getKeysInModule(internals.Select, {
-          SingleSelect: "(\"SingleSelect\")"
+          FocusRing: "FocusRing was given a focusTarget",
+          MenuSliderControl: "moveGrabber",
+          openModal: ",stackNextByDefault:",
         }),
         ...utils.getKeysInModule(internals.ModalSystem, {
           ModalRoot: ".MODAL_ROOT_LEGACY,",
@@ -74,7 +67,7 @@ module.exports = (meta) => {
   function start() {
     init();
 
-    if (!internals.uploadDispatcher || !["ModalRoot", "ModalContent", "ModalFooter", "openModal"].every(key => key in internals.keys)) return;
+    if (!["ModalRoot", "ModalContent", "ModalFooter", "openModal"].every(key => key in internals.keys)) return;
 
     internals.keys.uploadCard && Patcher.after(meta.slug, internals.uploadCard, internals.keys.uploadCard, (_, [args], ret) => {
       if (
@@ -83,7 +76,7 @@ module.exports = (meta) => {
       ) {
         ret.props.actions.props.children.splice(0, 0, jsx(BdApi.Components.ErrorBoundary, {
           key: meta.slug,
-          fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
+          fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
           children: jsx(Components.UploadIcon, { args })
         }))
       }
@@ -105,7 +98,11 @@ module.exports = (meta) => {
               const convertable = internals.urlConverter[internals.keys.convertable](args.item.original ?? args.item.url)
               const mediaUrl = convertable ? internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url) : args.item.url;
               const url = internals.urlConverter[internals.keys.toCdnUrl](mediaUrl, args.item.contentType, args.item.originalContentType);
-              url && ret.props.children.unshift(jsx(Components.RemixIcon, { url }))
+              url && ret.props.children.unshift(jsx(BdApi.Components.ErrorBoundary, {
+                key: meta.slug,
+                fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
+                children: jsx(Components.RemixIcon, { url })
+              }))
             } catch { }
 
             return ret;
@@ -163,7 +160,7 @@ module.exports = (meta) => {
       [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(canv => {
         canv.getContext("2d").imageSmoothingEnabled = false;
       })
-      this.setImageSmoothing(BdApi.Data.load(meta.slug, "smoothing") ?? "medium");
+      this.setImageSmoothing(BdApi.Data.load(meta.slug, "smoothing") ?? "auto");
 
       const layer = new Layer("Main", bitmap);
       this.#state = new utils.StateHistory({
@@ -272,7 +269,7 @@ module.exports = (meta) => {
     createNewLayer(bitmap) {
       const newLayer = new Layer(
         `Layer ${(this.layers.length)}`,
-        bitmap instanceof ImageBitmap ? bitmap : { width: this.#mainCanvas.width, height: this.#mainCanvas.height }
+        bitmap instanceof ImageBitmap ? bitmap : { width: 1, height: 1 }
       );
       this.#state.state = {
         ...this.#state.state,
@@ -906,14 +903,13 @@ module.exports = (meta) => {
     }
 
     /** @param {1 | -1} x @param {-1 | 1} y */
-    flip(x, y) {
+    scale(x, y) {
       const T = new DOMMatrix().scaleSelf(x, y);
       const layers = this.layers.map(({ layer }) => {
         layer.previewTransformBy(T);
         return { layer, state: layer.finalizePreview() }
       });
       this.#state.state = { ...this.#state.state, layers };
-      this.fullRender();
     }
 
     /** @param {90 | -90} angle  */
@@ -1181,20 +1177,50 @@ module.exports = (meta) => {
   }
 
   var utils = {
+    /** @param {Record<string, {id: number, filter: () => boolean}>} filters  */
+    getBulk(filters) {
+      let wrongOrMissed = false;
+      const result = {};
+
+      for (const name in filters) {
+        const exports = Webpack.getById(filters[name].id);
+        const id = filters[name].id;
+
+        if (exports && filters[name].filter(exports, { id, exports }, id)) {
+          result[name] = exports;
+          delete filters[name];
+          continue;
+        }
+        wrongOrMissed = true;
+      }
+
+      if (wrongOrMissed) {
+        BdApi.Logger.warn(meta.slug, "Mismatched id for modules:", Object.keys(filters));
+        Object.assign(result, Webpack.getBulkKeyed(filters))
+      }
+
+      return result;
+    },
+
+    /** @param {object} mod @param {Record<string, string>} strs */
     getKeysInModule(mod, strs) {
-      const entries = new Map(Object.entries(strs));
+      let size = Object.keys(strs).length;
       const found = {};
 
       outer: for (const key in mod) {
         const src = mod[key]?.toString?.();
         if (!src) continue;
 
-        for (const [name, search] of entries) {
+        for (const name in strs) {
+          const search = strs[name];
           if (!src.includes(search)) continue;
 
           found[name] = key;
-          entries.delete(name)
-          if (entries.size === 0) break outer; else break;
+          delete strs[name];
+          size--;
+
+          if (size) break;
+          else break outer;
         }
       }
       return found;
@@ -1329,10 +1355,7 @@ module.exports = (meta) => {
         p.y <= rect.bottom + padding
     },
 
-    /**
-     * Intersection point between two lines
-     * @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMPoint} p3 @param {DOMPoint} p4
-     */
+    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMPoint} p3 @param {DOMPoint} p4 */
     lineLine(p1, p2, p3, p4) {
       const uA = ((p4.x - p3.x) * (p1.y - p3.y) - (p4.y - p3.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
       const uB = ((p2.x - p1.x) * (p1.y - p3.y) - (p2.y - p1.y) * (p1.x - p3.x)) / ((p4.y - p3.y) * (p2.x - p1.x) - (p4.x - p3.x) * (p2.y - p1.y));
@@ -1343,10 +1366,7 @@ module.exports = (meta) => {
       return null;
     },
 
-    /** 
-     * Intersection points between line and Rect
-     * @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]}
-     */
+    /** @param {DOMPoint} p1 @param {DOMPoint} p2 @param {DOMRect} rect @returns {DOMPoint[]} */
     lineRect(p1, p2, rect, padding = 0) {
       const top = utils.lineLine(p1, p2, new DOMPoint(rect.left - padding, rect.top - padding), new DOMPoint(rect.right + padding, rect.top - padding));
       const right = utils.lineLine(p1, p2, new DOMPoint(rect.right + padding, rect.top - padding), new DOMPoint(rect.right + padding, rect.bottom + padding));
@@ -1389,8 +1409,10 @@ module.exports = (meta) => {
 
     /** @param {{onSubmit: () => void, bitmap: ImageBitmap, userActions: React.RefObject<any>}} */
     openEditor({ onSubmit, bitmap, userActions }) {
-      const id = internals.nativeUI[internals.keys.openModal]?.(e => jsx(BdApi.Components.ErrorBoundary, {
-        children: jsx(internals.ModalSystem[internals.keys.ModalRoot], {
+      const id = internals.nativeUI[internals.keys.openModal]?.(e => {
+        const channelId = internals.SelectedChannelStore.getCurrentlySelectedChannelId();
+
+        return jsx(BdApi.Components.ErrorBoundary, null, jsx(internals.ModalSystem[internals.keys.ModalRoot], {
           ...e,
           animation: "subtle",
           size: "dynamic",
@@ -1398,9 +1420,10 @@ module.exports = (meta) => {
           children: [
             jsx(internals.ModalSystem[internals.keys.ModalFooter], {
               className: "modal-footer",
-              children: [
+              children: internals.uploadDispatcher && channelId ? [
                 jsx(internals.ManaButton[internals.keys.ManaButton], {
                   text: "Save",
+                  variant: "active",
                   type: "submit",
                   onClick: () => {
                     onSubmit?.();
@@ -1414,7 +1437,10 @@ module.exports = (meta) => {
                     internals.nativeUI[internals.keys.closeModal](id);
                   }
                 })
-              ]
+              ] : jsx("div", {
+                style: { color: "var(--red-430, #d6363f)" },
+                children: "Unable to save. Please use [Ctrl] + [C] instead."
+              })
             }),
             jsx(internals.ModalSystem[internals.keys.ModalContent], {
               className: "image-editor",
@@ -1424,12 +1450,12 @@ module.exports = (meta) => {
               })
             })
           ]
-        })
-      }));
+        }))
+      });
     },
 
     paintingColors: ["#000000", 0xffffff, 0xffea00, 0xff9100, 0xff1744, 0xff4081, 0xd500f9, 0x651fff, 0x2979ff, 0x10e5ff, 0x1de9b6, 0x10e676],
-    backgroundColors: [0x393946, 0x443946, 0x46393d, 0x464139, 0x414639, 0x39463d, 0x394446, 0x575775, 0x715775, 0x75575f, 0x756857, 0x687557, 0x57755f, 0x577175],
+    backgroundColors: [0x303038, 0x373038, 0x383032, 0x383530, 0x353830, 0x303832, 0x303738, 0x363649, 0x473649, 0x49363c, 0x494136, 0x414936, 0x36493c, 0x364749],
 
     paths: {
       Main: "m22.7 14.3l-1 1l-2-2l1-1c.1-.1.2-.2.4-.2c.1 0 .3.1.4.2l1.3 1.3c.1.2.1.5-.1.7M13 19.9V22h2.1l6.1-6.1l-2-2zm-1.79-4.07l-1.96-2.36L6.5 17h6.62l2.54-2.45l-1.7-2.26zM11 19.9v-.85l.05-.05H5V5h14v6.31l2-1.93V5a2 2 0 0 0-2-2H5c-1.1 0-2 .9-2 2v14a2 2 0 0 0 2 2h6z",
@@ -1486,14 +1512,13 @@ module.exports = (meta) => {
       });
 
       useEffect(() => {
-        BdApi.Data.save(key, BdApi.Data.save(meta.slug, key, val));
+        BdApi.Data.save(meta.slug, key, val);
       }, [val, key]);
 
       return [val, setval]
     },
 
     /**
-     * Wrapper for interaction events
      * @param {{
      *  buttons?: number,
      *  onStart?: (e: Omit<React.PointerEvent, "currentTarget">, store: Record<string, any>) => void,
@@ -1502,8 +1527,9 @@ module.exports = (meta) => {
      * }} props
      */
     usePointerCapture({ onStart, onChange, onSubmit, buttons = 5 }) {
-      /** @type {React.RefObject<null | number>} */
+      /** @type {React.RefObject<number?>} */
       const pointerId = useRef(null);
+      /** @type {React.RefObject<number?>} */
       const rafId = useRef(null);
       const smolStore = useRef({});
 
@@ -1521,7 +1547,6 @@ module.exports = (meta) => {
       const onPointerMove = useCallback(e => {
         if (!(e.buttons & buttons) || pointerId.current !== e.pointerId || rafId.current) return;
 
-        rafId.current && cancelAnimationFrame(rafId.current);
         rafId.current = requestAnimationFrame(() => {
           onChange?.(e, smolStore.current);
           rafId.current = null;
@@ -1551,17 +1576,17 @@ module.exports = (meta) => {
 
     /**
      * @param {{
-     *  onStart?: (e: React.WheelEvent, store: Record<string, any>) => void,
-     *  onChange?: (e: React.WheelEvent, store: Record<string, any>) => void,
-     *  onSubmit?: (e: React.WheelEvent, store: Record<string, any>) => void,
+     *  onStart?: (e: React.WheelEvent<HTMLCanvasElement>, store: Record<string, any>) => void,
+     *  onChange?: (e: React.WheelEvent<HTMLCanvasElement>, store: Record<string, any>) => void,
+     *  onSubmit?: (e: React.WheelEvent<HTMLCanvasElement>, store: Record<string, any>) => void,
      *  wait?: number,
      * }} params
      */
     useDebouncedWheel({ onStart, onChange, onSubmit, wait = 250 }) {
-      /** @type {React.RefObject<null | number>} */
+      /** @type {React.RefObject<number?>} */
       const timer = useRef(null);
 
-      /** @type {(e: WheelEvent & {currentTarget: HTMLCanvasElement}) => void} */
+      /** @type {(e: React.WheelEvent<HTMLCanvasElement>) => void} */
       const onWheel = useCallback(e => {
         if (!e.deltaY) return;
 
@@ -1606,15 +1631,15 @@ module.exports = (meta) => {
      */
     IconButton({ onClick, tooltip, d, disabled, active, className }) {
       return jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
+        fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
         children: jsx(BdApi.Components.Tooltip, {
           spacing: 11,
-          text: tooltip ?? "",
+          text: tooltip,
           children: ({ onContextMenu, ...restProps }) => jsx(internals.nativeUI[internals.keys.FocusRing], {
             children: jsx("div", {
               ...restProps,
               onClick: (e) => { if (onClick && !disabled) { e.stopPropagation(); onClick(e) } },
-              onKeyDown: e => { if (!e.repeat && (e.key === "Enter" || e.key === " ") && !disabled) onClick?.() },
+              onKeyDown: e => { if (!e.repeat && (e.key === "Enter" || e.key === " ") && !disabled) onClick?.(e) },
               className: utils.clsx(internals.actionButtonClass.button, className, "icon-button", disabled && "disabled", active && "active"),
               role: "button",
               tabIndex: disabled ? null : 0,
@@ -1627,48 +1652,45 @@ module.exports = (meta) => {
 
     /** @param {{url: string}} props */
     RemixIcon({ url }) {
-      const [isPending, startTransition] = useTransition(); // Very cool React 19 stuff
+      const [isPending, startTransition] = useTransition();
       const ctrl = useRef(new AbortController());
       const userActions = useRef(null);
 
       useEffect(() => () => ctrl.current.abort(), []);
 
-      return !isPending ? jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
-        children: jsx(BdApi.Components.Tooltip, {
-          spacing: 11,
-          position: "bottom",
-          text: "Edit Image",
-          children: ({ onContextMenu, ...tooltipProps }) => jsx(internals.ManaButton[internals.keys.ManaButton], {
-            ...tooltipProps,
-            size: "sm",
-            variant: "icon-only",
-            icon: () => jsx(Components.Icon, { d: utils.paths.Main }),
-            onClick: () => {
-              startTransition(async () => {
-                try {
-                  const response = await fetch(url, { signal: ctrl.current.signal }); // BdApi.Net.fetch will reject blobs
-                  if (!response.headers.get('Content-Type').startsWith('image')) {
-                    throw new Error("Url is not an image");
-                  }
-                  const blob = await response.blob();
-                  const bitmap = await createImageBitmap(blob);
-
-                  internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
-                  utils.openEditor({
-                    onSubmit: () => { userActions.current?.upload() },
-                    userActions,
-                    bitmap
-                  });
-                } catch (e) {
-                  if (e.name === "AbortError") return;
-
-                  BdApi.Logger.error(meta.slug, e);
-                  UI.showToast("Could not fetch image.", { type: "error" });
+      return !isPending ? jsx(BdApi.Components.Tooltip, {
+        spacing: 11,
+        position: "bottom",
+        text: "Edit Image",
+        children: ({ onContextMenu, ...tooltipProps }) => jsx(internals.ManaButton[internals.keys.ManaButton], {
+          ...tooltipProps,
+          size: "sm",
+          variant: "icon-only",
+          icon: () => jsx(Components.Icon, { d: utils.paths.Main }),
+          onClick: () => {
+            startTransition(async () => {
+              try {
+                const response = await fetch(url, { signal: ctrl.current.signal }); // BdApi.Net.fetch will reject blobs
+                if (!response.headers.get('Content-Type').startsWith('image')) {
+                  throw new Error("Url is not an image");
                 }
-              })
-            },
-          })
+                const blob = await response.blob();
+                const bitmap = await createImageBitmap(blob);
+
+                internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
+                utils.openEditor({
+                  onSubmit: () => { userActions.current?.upload() },
+                  userActions,
+                  bitmap
+                });
+              } catch (e) {
+                if (e.name === "AbortError") return;
+
+                BdApi.Logger.error(meta.slug, e);
+                UI.showToast("Could not fetch image.", { type: "error" });
+              }
+            })
+          },
         })
       }) : jsx(BdApi.Components.Spinner, {
         type: BdApi.Components.Spinner.Type.SPINNING_CIRCLE_SIMPLE
@@ -1716,117 +1738,96 @@ module.exports = (meta) => {
       const handleContextMenu = useCallback((e, i) => {
         (i !== editor.current.activeLayerIndex) && editor.current.sandwichLayer(i);
         ContextMenu.open(e, ContextMenu.buildMenu([{
-          type: "group",
-          items: [
-            {
-              label: "Name",
-              type: "custom",
-              render: () => jsx(Components.TextInput, {
-                className: utils.clsx(
-                  internals.contextMenuClass?.item,
-                  internals.contextMenuClass?.labelContainer
-                ),
-                label: "Name",
-                value: layers[i].name,
-                onChange: newName => { editor.current.layers[i].layer.name = newName; onChange() },
-              })
-            }, {
-              label: "Visible",
-              type: "toggle",
-              checked: layers[i].visible,
-              action: () => {
-                editor.current.toggleLayerVisibility(i);
-                onChange();
-              }
-            }, {
-              label: "Opacity",
-              type: "custom",
-              render: () => jsx(Components.NumberSlider, {
-                className: utils.clsx(
-                  internals.contextMenuClass?.item,
-                  internals.contextMenuClass?.labelContainer,
-                ),
-                value: layers[i].alpha,
-                minValue: 0,
-                maxValue: 1,
-                label: "Opacity",
-                decimals: 2,
-                expScaling: false,
-                onChange: alpha => {
-                  if (alpha === editor.current.layers[i].state.alpha) return;
-                  editor.current.setLayerAlpha(alpha, i, true);
-                  onChange();
-                },
-                onSlide: alpha => editor.current.setLayerAlpha(alpha, i)
-              })
-            }, {
-              label: "Reset Transform",
-              disabled: editor.current.layers[i].state.transform.isIdentity,
-              action: () => {
-                editor.current.resetLayer(i);
-                onChange();
-              },
-              icon: () => jsx(Components.Icon, { d: utils.paths.ResetTransform })
-            }
-          ]
+          label: "Name",
+          type: "custom",
+          render: () => jsx(Components.TextInput, {
+            className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+            label: "Name",
+            value: layers[i].name,
+            onChange: newName => { editor.current.layers[i].layer.name = newName; onChange() },
+          })
         }, {
-          type: "group",
-          items: [
-            {
-              label: "Copy Layer Contents",
-              action: () => {
-                if (!DiscordNative?.clipboard?.copyImage) return;
+          label: "Visible",
+          type: "toggle",
+          checked: layers[i].visible,
+          action: () => {
+            editor.current.toggleLayerVisibility(i);
+            onChange();
+          }
+        }, {
+          label: "Opacity",
+          type: "custom",
+          render: () => jsx(Components.NumberSlider, {
+            className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+            value: layers[i].alpha,
+            minValue: 0,
+            maxValue: 1,
+            label: "Opacity",
+            decimals: 2,
+            expScaling: false,
+            onChange: alpha => {
+              if (alpha === editor.current.layers[i].state.alpha) return;
+              editor.current.setLayerAlpha(utils.clamp(0, alpha, 1), i, true);
+              onChange();
+            },
+            onSlide: alpha => editor.current.setLayerAlpha(alpha, i)
+          })
+        }, {
+          label: "Reset Transform",
+          disabled: editor.current.layers[i].state.transform.isIdentity,
+          action: () => {
+            editor.current.resetLayer(i);
+            onChange();
+          },
+          icon: () => jsx(Components.Icon, { d: utils.paths.ResetTransform })
+        }, { type: "separator" }, {
+          label: "Copy Layer Contents",
+          action: () => {
+            if (!DiscordNative?.clipboard?.copyImage) return;
 
-                UI.showToast("Processing...", { type: "warning" });
-                editor.current.copyLayerContents(blob => {
-                  blob.arrayBuffer().then(buffer => {
-                    DiscordNative.clipboard.copyImage(new Uint8Array(buffer), "image.png");
-                  }).then(() => {
-                    UI.showToast("Layer copied", { type: "success" })
-                  }).catch(() => {
-                    UI.showToast("Failed to copy image", { type: "error" })
-                  })
-                })
-              },
-              icon: () => jsx(Components.Icon, { d: utils.paths.CopyLayer })
-            }, {
-              label: "Duplicate Layer",
-              action: () => editor.current.duplicateLayer(i).then(onChange),
-              icon: () => jsx(Components.Icon, { d: utils.paths.DuplicateLayer })
-            }
-          ]
+            UI.showToast("Processing...", { type: "warning" });
+            editor.current.copyLayerContents(blob => {
+              blob.arrayBuffer().then(buffer => {
+                DiscordNative.clipboard.copyImage(new Uint8Array(buffer), "image.png");
+              }).then(() => {
+                UI.showToast("Layer copied", { type: "success" })
+              }).catch(() => {
+                UI.showToast("Failed to copy image", { type: "error" })
+              })
+            })
+          },
+          icon: () => jsx(Components.Icon, { d: utils.paths.CopyLayer })
         }, {
-          type: "group",
-          items: [
-            {
-              label: "Move Layer Up",
-              disabled: i >= layers.length - 1,
-              action: () => {
-                if (i >= editor.current.layers.length - 1) return;
-                editor.current.moveLayers(1, i);
-                onChange();
-              },
-              icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerUp })
-            }, {
-              label: "Move Layer Down",
-              disabled: i <= 0,
-              action: () => {
-                if (i <= 0) return;
-                editor.current.moveLayers(-1, i);
-                onChange();
-              },
-              icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerDown })
-            }, {
-              label: "Delete Layer",
-              disabled: layers.length <= 1,
-              action: () => {
-                if (editor.current.layers.length <= 1) return;
-                editor.current.deleteLayer(i);
-                onChange();
-              },
-              icon: () => jsx(Components.Icon, { d: utils.paths.DeleteLayer })
-            }
-          ]
+          label: "Duplicate Layer",
+          action: () => editor.current.duplicateLayer(i).then(onChange),
+          icon: () => jsx(Components.Icon, { d: utils.paths.DuplicateLayer })
+        }, { type: "separator" }, {
+          label: "Move Layer Up",
+          disabled: i >= layers.length - 1,
+          action: () => {
+            if (i >= editor.current.layers.length - 1) return;
+            editor.current.moveLayers(1, i);
+            onChange();
+          },
+          icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerUp })
+        }, {
+          label: "Move Layer Down",
+          disabled: i <= 0,
+          action: () => {
+            if (i <= 0) return;
+            editor.current.moveLayers(-1, i);
+            onChange();
+          },
+          icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerDown })
+        }, {
+          label: "Delete Layer",
+          disabled: layers.length <= 1,
+          action: () => {
+            if (editor.current.layers.length <= 1) return;
+            editor.current.deleteLayer(i);
+            onChange();
+          },
+          icon: () => jsx(Components.Icon, { d: utils.paths.DeleteLayer })
         }]), {
           align: "bottom",
           position: "left",
@@ -1835,9 +1836,9 @@ module.exports = (meta) => {
       }, [onChange, layers]);
 
       return jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
+        fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
         children: jsx("div", {
-          className: utils.clsx("thumbnails", internals.scrollbarClass.thin),
+          className: utils.clsx("thumbnails", internals.scrollbarClass?.thin),
           children: jsx("ul", {
             className: "thumbnails-wrapper",
             children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
@@ -1935,16 +1936,16 @@ module.exports = (meta) => {
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 25, color: "#000000" }));
 
       const isInteracting = useRef(false);
-      /** @type { React.RefObject<HTMLCanvasElement | null> } */
+      /** @type { React.RefObject<HTMLCanvasElement?> } */
       const canvasRef = useRef(null);
       const canvasRect = useRef(new DOMRect());
-      /** @type { React.RefObject<CanvasEditor | null> } */
+      /** @type { React.RefObject<CanvasEditor?> } */
       const editor = useRef(null);
-      /** @type { React.RefObject<HTMLDivElement | null> } */
+      /** @type { React.RefObject<HTMLDivElement?> } */
       const overlay = useRef(null);
       /** @type { React.RefObject<{ focus: () => void }> } */
       const textarea = useRef(null);
-      /**  @type { React.RefObject<{ setValue: (value: number) => void, previewValue: (value: number) => void } | null> } */
+      /**  @type { React.RefObject<{ setValue: (value: number) => void, previewValue: (value: number) => void }?> } */
       const auxRef = useRef(null);
 
       const setMode = useCallback((newVal) => {
@@ -1954,12 +1955,9 @@ module.exports = (meta) => {
           const newMode = newVal instanceof Function ? newVal(oldMode) : newVal;
           ["--translate", "--line-from", "--phi", "r", "--brushsize"].forEach(prop => { overlay.current.style.removeProperty(prop) });
 
-          switch (newMode) {
-            case 1: {
-              const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
-              overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
-              break;
-            }
+          if (newMode === 1) {
+            const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
+            overlay.current.style.setProperty("--translate", `${ctx.toFixed(1)}px ${cty.toFixed(1)}px`);
           }
           return newMode;
         })
@@ -1993,10 +1991,7 @@ module.exports = (meta) => {
         },
         upload() {
           const channelId = internals.SelectedChannelStore.getCurrentlySelectedChannelId();
-          if (!channelId) {
-            UI.showToast("Currently not in any channel.", { type: "error" });
-            return;
-          }
+          if (!channelId) return;
 
           UI.showToast("Processing...", { type: "warning" });
           editor.current?.toBlob({ type: BdApi.Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
@@ -2078,15 +2073,15 @@ module.exports = (meta) => {
 
           let matchedCase = true;
           switch (e.key) {
-            case !isInteracting.current && e.ctrlKey && "z":
+            case !isInteracting.current && (e.ctrlKey || e.metaKey) && "z":
               if (editor.current.undo()) { e.preventDefault(); syncStates() };
               break;
 
-            case !isInteracting.current && e.ctrlKey && "y":
+            case !isInteracting.current && (e.ctrlKey || e.metaKey) && "y":
               if (editor.current.redo()) { e.preventDefault(); syncStates() };
               break;
 
-            case !isInteracting.current && !e.repeat && e.ctrlKey && DiscordNative?.clipboard?.copyImage && "c":
+            case !isInteracting.current && !e.repeat && (e.ctrlKey || e.metaKey) && DiscordNative?.clipboard?.copyImage && "c":
               UI.showToast("Processing...", { type: "warning" });
               editor.current.toBlob({
                 type: 'image/png'
@@ -2101,7 +2096,7 @@ module.exports = (meta) => {
               });
               break;
 
-            case !e.repeat && e.ctrlKey && !e.shiftKey && "b":
+            case !e.repeat && (e.ctrlKey || e.metaKey) && "b":
               editor.current.resetViewport();
               editor.current.refreshViewport();
               if (canvasRef.current?.matches(".rotating")) {
@@ -2113,36 +2108,36 @@ module.exports = (meta) => {
               updateClipRect();
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "c":
+            case !e.repeat && !(e.ctrlKey || e.metaKey) && "c":
               setMode(m => m === 0 ? null : 0);
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "r":
+            case !e.repeat && !(e.ctrlKey || e.metaKey) && "r":
               setMode(m => m === 1 ? null : 1);
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "m":
+            case !e.repeat && !(e.ctrlKey || e.metaKey) && "m":
               setMode(m => m === 2 ? null : 2);
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "s":
+            case !e.repeat && !(e.ctrlKey || e.metaKey) && "s":
               setMode(m => m === 3 ? null : 3);
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "b":
+            case !e.repeat && !(e.ctrlKey || e.metaKey) && "b":
               setMode(m => m === 4 ? null : 4);
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "t":
+            case !e.repeat && !(e.ctrlKey || e.metaKey) && "t":
               setMode(m => m === 5 ? null : 5);
               break;
 
-            case !e.repeat && !e.ctrlKey && !e.shiftKey && "e":
+            case !e.repeat && !(e.ctrlKey || e.metaKey) && "e":
               setMode(m => m === 6 ? null : 6);
               break;
 
-            case !e.repeat && !e.shiftKey && "p":
-              if (e.ctrlKey) {
+            case !e.repeat && "p":
+              if (e.ctrlKey || e.metaKey) {
                 if (isInteracting.current) break;
                 editor.current.startRegionSelect(new DOMPoint(0, 0));
                 editor.current.endRegionSelect();
@@ -2190,7 +2185,7 @@ module.exports = (meta) => {
         addEventListener("resize", () => {
           const rect = canvasRef.current.offsetParent.getBoundingClientRect();
           editor.current.viewportDims = { width: ~~(rect.width), height: ~~(rect.height) };
-          editor.current.setImageSmoothing(BdApi.Data.load(meta.slug, "smoothing") ?? "medium")
+          editor.current.setImageSmoothing(BdApi.Data.load(meta.slug, "smoothing") ?? "auto")
           editor.current.refreshViewport();
 
           updateClipRect();
@@ -2223,9 +2218,8 @@ module.exports = (meta) => {
       /** @type {(e: React.MouseEvent<HTMLElement>) => void} */
       const handleMouseMove = useCallback(e => {
         if (mode !== 4 && mode !== 6 || (e.buttons & ~4)) return;
-        if (!e.shiftKey) {
-          ["--line-from", "--phi", "--r"].forEach(prop => { overlay.current.style.removeProperty(prop) });
-        } else {
+
+        if (e.shiftKey) {
           const lastPoint = editor.current.lastPoint;
           if (!lastPoint) return;
           overlay.current.style.setProperty("--line-from", `${lastPoint.x}px ${lastPoint.y}px`);
@@ -2233,12 +2227,14 @@ module.exports = (meta) => {
           const r = Math.hypot(e.clientY - canvasRect.current.y - lastPoint.y, e.clientX - canvasRect.current.x - lastPoint.x);
           overlay.current.style.setProperty("--phi", `${phi || 0}deg`);
           overlay.current.style.setProperty("--r", `${r || 0}px`);
+        } else if (overlay.current.style.getPropertyValue("--r")) {
+          ["--line-from", "--phi", "--r"].forEach(prop => { overlay.current.style.removeProperty(prop) });
         }
       }, [mode]);
 
       const handleWheel = hooks.useDebouncedWheel({
         onChange: (e) => {
-          if (mode === 3 && !e.ctrlKey) {
+          if (mode === 3 && !(e.ctrlKey || e.metaKey)) {
             const delta = 1 - 0.05 * Math.sign(e.deltaY);
             const { x: ctx, y: cty } = utils.getTranslate(editor.current.viewportTransform);
             const viewportScale = utils.getScale(editor.current.viewportTransform);
@@ -2393,12 +2389,7 @@ module.exports = (meta) => {
                 const startY = (e.clientY - canvasRect.current.y) / boxScale;
                 editor.current.regionSelect(new DOMPoint(startX, startY));
 
-                const rect = editor.current.clipRect;
-                if (!rect) break;
-                overlay.current.style.setProperty("--cx1", `${100 * rect.left}%`);
-                overlay.current.style.setProperty("--cx2", `${100 * rect.right}%`);
-                overlay.current.style.setProperty("--cy1", `${100 * rect.top}%`);
-                overlay.current.style.setProperty("--cy2", `${100 * rect.bottom}%`);
+                updateClipRect();
                 break;
               }
               case 1: {
@@ -2541,37 +2532,32 @@ module.exports = (meta) => {
           jsx("aside", {
             className: utils.clsx("sidebar", internals.scrollbarClass.thin),
             children: [
-              jsx("div", {
-                className: "canvas-dims",
-                children: [
-                  jsx(Components.NumberSlider, {
-                    value: dims.width,
-                    withSlider: false,
-                    minValue: 1,
-                    onChange: newWidth => {
-                      const { width, height } = editor.current.canvasDims;
-                      if (newWidth !== width) {
-                        editor.current.canvasDims = { width: newWidth, height };
-                        editor.current.fullRender();
-                        syncStates();
-                      }
-                    }
-                  }),
-                  "x",
-                  jsx(Components.NumberSlider, {
-                    value: dims.height,
-                    withSlider: false,
-                    minValue: 1,
-                    onChange: newHeight => {
-                      const { width, height } = editor.current.canvasDims;
-                      if (newHeight !== height) {
-                        editor.current.canvasDims = { width, height: newHeight };
-                        editor.current.fullRender();
-                        syncStates();
-                      }
-                    }
-                  }),
-                ]
+              jsx(Components.Resizer, {
+                dimensions: dims,
+                layerCount: editor.current?.layers.length ?? 0,
+                onCanvasResize: ({ width: w, height: h }) => {
+                  const { width, height } = editor.current.canvasDims;
+                  if (w === width && h === height) return;
+
+                  editor.current.canvasDims = { width: w, height: h };
+                  editor.current.resetViewport();
+                  editor.current.fullRender();
+                  syncStates();
+                },
+                onImageResize: p => {
+                  if (p === 1) return;
+
+                  const { width, height } = editor.current.canvasDims;
+                  const newWidth = Math.round(width * p);
+                  const newHeight = Math.round(height * p);
+                  p = Math.max(newWidth / width, newHeight / height);
+
+                  editor.current.canvasDims = { width: newWidth, height: newHeight };
+                  editor.current.scale(p, p)
+                  editor.current.resetViewport();
+                  editor.current.fullRender();
+                  syncStates();
+                }
               }),
               jsx("div", {
                 className: "canvas-actions",
@@ -2628,7 +2614,8 @@ module.exports = (meta) => {
                     tooltip: "Flip Horizontal",
                     d: utils.paths.FlipH,
                     onClick: () => {
-                      editor.current.flip(-1, 1);
+                      editor.current.scale(-1, 1);
+                      editor.current.fullRender();
                       syncStates();
                       if (mode === 1) {
                         auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
@@ -2639,7 +2626,8 @@ module.exports = (meta) => {
                     tooltip: "Flip Vertical",
                     d: utils.paths.FlipV,
                     onClick: () => {
-                      editor.current.flip(1, -1);
+                      editor.current.scale(1, -1);
+                      editor.current.fullRender();
                       syncStates();
                       if (mode === 1) {
                         auxRef.current.setValue(utils.getAngle(editor.current.layerTransform).toFixed(1));
@@ -2673,59 +2661,54 @@ module.exports = (meta) => {
               jsx("div", {
                 className: "aux-inputs",
                 children: [
-                  (mode === 4 || mode === 5 || mode === 6) && jsx(Fragment, {
-                    children: [
-                      mode !== 6 && jsx(Components.ColorInput, {
-                        colors: utils.paintingColors,
-                        value: strokeStyle.color,
-                        onChange: c => setStrokeStyle(s => ({ ...s, color: c }))
-                      }),
-                      jsx(Components.NumberSlider, {
-                        ref: auxRef,
-                        label: "Size",
-                        suffix: "px",
-                        decimals: 0,
-                        minValue: 1,
-                        centerValue: 100,
-                        maxValue: 400,
-                        value: strokeStyle.width,
-                        onSlide: value => {
-                          switch (mode) {
-                            case 4:
-                            case 6: {
-                              const boxScale = canvasRect.current.width / canvasRef.current.width;
-                              const cs = utils.getScale(editor.current.viewportTransform);
-                              overlay.current.style.setProperty("--brushsize", (value * cs * boxScale).toFixed(4));
-                              break;
-                            }
-                            case isInteracting.current && 5: {
-                              editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
-                              updateRegionRect();
-                              break;
-                            }
-                          }
-                        },
-                        onChange: value => {
-                          switch (mode) {
-                            case 4:
-                            case 6: {
-                              overlay.current.style.removeProperty("--brushsize");
-                              break;
-                            }
-                            case isInteracting.current && 5: {
-                              editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
-                              updateRegionRect();
-                              break;
-                            }
-                          }
-                          setStrokeStyle(s => ({ ...s, width: value }));
+                  (mode === 4 || mode === 5) && jsx(Components.ColorInput, {
+                    colors: utils.paintingColors,
+                    value: strokeStyle.color,
+                    onChange: c => setStrokeStyle(s => ({ ...s, color: c }))
+                  }),
+                  (mode === 4 || mode === 5 || mode === 6) && jsx(Components.NumberSlider, {
+                    ref: auxRef,
+                    label: "Size",
+                    suffix: "px",
+                    minValue: 1,
+                    centerValue: 100,
+                    maxValue: 400,
+                    value: strokeStyle.width,
+                    onSlide: value => {
+                      switch (mode) {
+                        case 4:
+                        case 6: {
+                          const boxScale = canvasRect.current.width / canvasRef.current.width;
+                          const cs = utils.getScale(editor.current.viewportTransform);
+                          overlay.current.style.setProperty("--brushsize", (value * cs * boxScale).toFixed(4));
+                          break;
                         }
-                      }),
-                      mode === 5 && jsx(Components.FontSelector, { // to-do: Wrap in <Activity/> once Discord hits React 19.2.0
-                        value: font,
-                        onChange: f => setFont(f)
-                      }),
-                    ]
+                        case isInteracting.current && 5: {
+                          editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
+                          updateRegionRect();
+                          break;
+                        }
+                      }
+                    },
+                    onChange: value => {
+                      switch (mode) {
+                        case 4:
+                        case 6: {
+                          overlay.current.style.removeProperty("--brushsize");
+                          break;
+                        }
+                        case isInteracting.current && 5: {
+                          editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
+                          updateRegionRect();
+                          break;
+                        }
+                      }
+                      setStrokeStyle(s => ({ ...s, width: value }));
+                    }
+                  }),
+                  mode === 5 && jsx(Components.FontSelector, { // to-do: Wrap in <Activity/> once Discord hits React 19.2.0
+                    value: font,
+                    onChange: setFont
                   }),
                   mode === 0 && jsx(Components.IconButton, {
                     tooltip: fixedAspect ? "Preserve aspect ratio" : "Free region select",
@@ -2737,7 +2720,6 @@ module.exports = (meta) => {
                     label: "Angle",
                     style: { paddingInline: 8 },
                     suffix: "°",
-                    decimals: 0,
                     withSlider: false,
                     value: editor.current ? Number(utils.getAngle(editor.current.layerTransform).toFixed(1)) : 0,
                     onChange: value => {
@@ -2777,7 +2759,7 @@ module.exports = (meta) => {
                 width: dims.width,
                 height: dims.height,
                 layers,
-                onChange: () => { syncStates() }
+                onChange: syncStates
               }),
               jsx("div", {
                 className: "layer-actions",
@@ -2849,67 +2831,326 @@ module.exports = (meta) => {
       })
     },
 
+    /**
+     * @param {{
+     *  dimensions: {width: number, height: number}, onImageResize: (percentage: number) => void,
+     *  layerCount: number, onCanvasResize: ({width: number, height: number}) => void
+     * }}
+     */
+    Resizer({ dimensions, layerCount, onCanvasResize, onImageResize }) {
+      /** @type {React.RefObject<{mode: number, keepAspect: boolean}?>} */
+      const resize = useRef(BdApi.Data.load(meta.slug, "resize") ?? { mode: 0, keepAspect: false });
+      const menuData = useRef({ ...dimensions, canvasP: 100, imageP: 100 });
+
+      useEffect(() => {
+        Object.assign(menuData.current, { width: dimensions.width, height: dimensions.height, canvasP: 100, imageP: 100 });
+      }, [dimensions]);
+
+      const handleClick = e => {
+        Object.assign(menuData.current, { width: dimensions.width, height: dimensions.height, canvasP: 100, imageP: 100 });
+        const id = ContextMenu.open(e, ContextMenu.buildMenu([{
+          label: "resize-selector",
+          type: "custom",
+          render: () => jsx(Components.MenuItemSelect, {
+            label: "Resize...",
+            options: [
+              { label: "Canvas (px)", value: 0 },
+              { label: "Canvas (%)", value: 1 },
+              { label: "Image  (%)", value: 2 },
+            ],
+            initialValue: resize.current.mode,
+            onChange: v => {
+              resize.current.mode = v;
+              BdApi.Data.save(meta.slug, "resizeMode", v);
+            }
+          })
+        }, {
+          label: "resizer",
+          type: "custom",
+          render: () => jsx("div", {
+            className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+            children: [
+              jsx("style", null, `@scope {
+                :scope {
+                  display: grid;
+                  justify-content: stretch;
+                  font-size: 1rem;
+                  cursor: auto;
+                }
+
+                .number-input-wrapper label { font-size: 0.875em }
+                #resizer-x .number-input { anchor-name: --resizer-x }
+                #resizer-y .number-input { anchor-name: --resizer-y }
+
+                .resizer-lock {
+                  position: absolute;
+                  top: anchor(--resizer-x center);
+                  bottom: anchor(--resizer-y center);
+                  right: max(anchor(--resizer-x left) + 8px, anchor(--resizer-y left) + 8px);
+                  display: grid;
+                  
+                  .icon-button {
+                    background: none;
+                    padding: 0;
+                    width: auto;
+                    height: auto;
+                    svg {
+                      width: 14px;
+                      height: 14px;
+                    }
+                  }
+                  &::before,
+                  &::after {
+                    content: "";
+                    position: relative;
+                    left: 50%;
+                    width: calc(50% + 4px);
+                    border-inline-start: 1px solid hsl(from currentColor h s l / 0.5);
+                  }
+                  &::before {
+                    border-block-start: 1px solid hsl(from currentColor h s l / 0.5);
+                    border-start-start-radius: 4px;
+                  }
+                  &::after {
+                    border-block-end: 1px solid hsl(from currentColor h s l / 0.5);
+                    border-end-start-radius: 4px;
+                  }
+                }
+              }`),
+              resize.current.mode === 0 && jsx(Fragment, null,
+                jsx(Components.NumberSlider, {
+                  id: "resizer-x",
+                  value: menuData.current.width,
+                  minValue: 1,
+                  label: "Width",
+                  suffix: "px",
+                  withSlider: false,
+                  onChange: v => {
+                    menuData.current.width = Math.round(v);
+                    if (resize.current.keepAspect) {
+                      menuData.current.height = Math.round(menuData.current.width * dimensions.height / dimensions.width);
+                    }
+                  }
+                }),
+                jsx(Components.NumberSlider, {
+                  id: "resizer-y",
+                  value: menuData.current.height,
+                  minValue: 1,
+                  label: "Height",
+                  suffix: "px",
+                  withSlider: false,
+                  onChange: v => {
+                    menuData.current.height = Math.round(v);
+                    if (resize.current.keepAspect) {
+                      menuData.current.width = Math.round(menuData.current.height * dimensions.width / dimensions.height);
+                    }
+                  }
+                }),
+                jsx("div", {
+                  className: "resizer-lock",
+                  children: jsx(Components.IconButton, {
+                    d: resize.current.keepAspect ? utils.paths.Lock : utils.paths.LockOpen,
+                    onClick: (e) => {
+                      resize.current.keepAspect = !resize.current.keepAspect;
+                      if (resize.current.keepAspect) {
+                        menuData.current.height = Math.round(menuData.current.width * dimensions.height / dimensions.width);
+                      }
+                      e.currentTarget.blur();
+                      e.currentTarget.focus();
+                    }
+                  })
+                })
+              ),
+              resize.current.mode === 1 && jsx(Components.NumberSlider, {
+                value: menuData.current.canvasP,
+                minValue: 0.1,
+                label: "Scale",
+                decimals: 1,
+                suffix: "%",
+                withSlider: false,
+                onChange: v => { menuData.current.canvasP = v }
+              }),
+              resize.current.mode === 2 && jsx(Components.NumberSlider, {
+                value: menuData.current.imageP,
+                minValue: 0.1,
+                label: "Scale",
+                decimals: 1,
+                suffix: "%",
+                withSlider: false,
+                onChange: v => { menuData.current.imageP = v }
+              })
+            ]
+          })
+        }, { type: "separator" }, {
+          label: "size-indicator",
+          type: "custom",
+          render: () => jsx("div", {
+            children: [
+              jsx("style", null, `@scope { :scope {
+                display: flex;
+                align-items: flex-end;
+                justify-content: flex-end;
+                gap: 0.25rem;
+                padding-inline: 0.5rem;
+                font-size: smaller;
+              } }`),
+              jsx("span", { style: { marginRight: "auto" } },
+                `${((resize.current.mode === 0 ? menuData.current.width * menuData.current.height :
+                  resize.current.mode === 1 ? Math.round(dimensions.width * dimensions.height * menuData.current.canvasP ** 2 / 100 ** 2) :
+                    Math.round(dimensions.width * dimensions.height * menuData.current.imageP ** 2 / 100 ** 2)) * layerCount / 65536).toFixed(2)} MiB`
+              ),
+              jsx("span", null,
+                resize.current.mode === 0 ? menuData.current.width :
+                  resize.current.mode === 1 ? Math.round(dimensions.width * menuData.current.canvasP / 100) :
+                    Math.round(dimensions.width * menuData.current.imageP / 100)
+              ),
+              jsx("span", null, "⨯"),
+              jsx("span", null,
+                resize.current.mode === 0 ? menuData.current.height :
+                  resize.current.mode === 1 ? Math.round(dimensions.height * menuData.current.canvasP / 100) :
+                    Math.round(dimensions.height * menuData.current.imageP / 100)
+              ),
+            ]
+          })
+        }, {
+          label: "save",
+          type: "custom",
+          render: () => jsx(BdApi.Components.ErrorBoundary, {
+            fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
+            children: jsx("div", {
+              style: { minWidth: 200 },
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              children: jsx(internals.ManaButton[internals.keys.ManaButton], {
+                size: "sm",
+                fullWidth: true,
+                text: "Apply",
+                onClick: () => {
+                  switch (resize.current.mode) {
+                    case 0: {
+                      onCanvasResize({ width: menuData.current.width, height: menuData.current.height });
+                      break;
+                    }
+                    case 1: {
+                      const newWidth = Math.round(dimensions.width * menuData.current.canvasP / 100);
+                      const newHeight = Math.round(dimensions.height * menuData.current.canvasP / 100);
+                      onCanvasResize({ width: newWidth, height: newHeight });
+                      break;
+                    }
+                    case 2: {
+                      onImageResize(menuData.current.imageP / 100)
+                      break;
+                    }
+                  }
+                  ContextMenu.close(id);
+                }
+              })
+            })
+          })
+        }]), {
+          align: "top",
+          position: "left"
+        })
+      };
+
+      return jsx("span", {
+        className: "canvas-dims",
+        children: jsx(internals.ManaButton[internals.keys.ManaButton], {
+          variant: "secondary",
+          fullWidth: true,
+          size: "sm",
+          text: jsx("div", {
+            className: "canvas-dims-resizer",
+            children: [
+              jsx("span", { className: "canvas-dims-resizer-number" }, dimensions.width),
+              jsx("span", null, "⨯"),
+              jsx("span", { className: "canvas-dims-resizer-number" }, dimensions.height),
+            ]
+          }),
+          onClick: handleClick
+        }),
+      })
+    },
+
     /** @param {{onChange?: (e: {exportType?: string, smoothing?: string | false, background?: string}) => void}} */
     Settings({ onChange }) {
       const [exportType, setExportType] = hooks.useStoredState("exportType", "image/webp");
       const [smoothing, setSmoothing] = hooks.useStoredState("smoothing", "auto");
-      const [background, setBackground] = hooks.useStoredState("backgroundColor", "#393946")
+      const [background, setBackground] = hooks.useStoredState("backgroundColor", "#303038")
 
       const exportOptions = useRef([{ label: "jpg", value: "image/jpeg" }, { label: "png", value: "image/png" }, { label: "webp", value: "image/webp" }]);
       const smoothingOptions = useRef(["Auto", "High", "Medium", "Low", "Off"].map(e => ({ label: e, value: e.toLowerCase() })))
 
-      const handleClick = useCallback((e) => {
-        ContextMenu.open(e, ContextMenu.buildMenu([
-          {
-            label: "background",
-            type: "custom",
-            render: () => jsx("div", {
-              className: utils.clsx(
-                internals.contextMenuClass?.item,
-                internals.contextMenuClass?.labelContainer,
-                "menu-item-color-root"
-              ),
-              children: [
-                jsx("span", null, "Background color"),
-                jsx(Components.ColorInput, {
-                  colors: utils.backgroundColors,
-                  value: background,
-                  onChange: bg => {
-                    setBackground(bg);
-                    onChange({ background: bg })
-                  }
-                })
-              ]
-            })
-          }, {
-            label: "Smoothing",
-            type: "custom",
-            render: () => jsx(Components.MenuItemSelect, {
-              text: "Image smoothing",
-              options: smoothingOptions.current,
-              initialValue: smoothing,
-              onChange: s => {
-                setSmoothing(s);
-                onChange?.({ smoothing: s })
-              }
-            })
-          }, {
-            label: "Export",
-            type: "custom",
-            render: () => jsx(Components.MenuItemSelect, {
-              text: "Export as",
-              options: exportOptions.current,
-              initialValue: exportType,
-              onChange: e => {
-                setExportType(e);
-              }
-            })
-          }
-        ]), {
+      const handleClick = (e) => {
+        ContextMenu.open(e, ContextMenu.buildMenu([{
+          label: "background",
+          type: "custom",
+          render: () => jsx("div", {
+            className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+            children: [
+              jsx("style", null, `@scope {
+                :scope { 
+                  display: grid;
+                  grid-template-columns: 1fr;
+                  gap: 4px;
+                }
+                .bd-color-picker-container {
+                  display: grid;
+                  gap: 4px;
+                }
+                .bd-color-picker-swatch {
+                  max-width: 156px;
+                  margin: 0 !important;
+                  display: grid;
+                  place-items: center;
+                  grid-template-columns: repeat(auto-fill, minmax(21px, 1fr));
+                }
+                .bd-color-picker {
+                  width: 155px;
+                  height: 56px;
+                  outline: 1px solid var(--border-normal);
+                }
+                .bd-color-picker-swatch-item {
+                  margin: 3px;
+                  outline: 1px solid var(--border-normal);
+                }
+              }`),
+              jsx("span", null, "Background color"),
+              jsx(Components.ColorInput, {
+                colors: utils.backgroundColors,
+                value: background,
+                onChange: bg => {
+                  setBackground(bg);
+                  onChange({ background: bg })
+                }
+              })
+            ]
+          })
+        }, {
+          label: "Smoothing",
+          type: "custom",
+          render: () => jsx(Components.MenuItemSelect, {
+            label: "Image smoothing",
+            options: smoothingOptions.current,
+            initialValue: smoothing,
+            onChange: s => {
+              setSmoothing(s);
+              onChange?.({ smoothing: s })
+            }
+          })
+        }, {
+          label: "Export",
+          type: "custom",
+          render: () => jsx(Components.MenuItemSelect, {
+            label: "Export as",
+            options: exportOptions.current,
+            initialValue: exportType,
+            onChange: setExportType
+          })
+        }]), {
           align: "bottom",
           position: "left"
         })
-      }, [smoothing, exportType, background]);
+      };
 
       return jsx(Components.IconButton, {
         tooltip: "Settings",
@@ -2920,24 +3161,25 @@ module.exports = (meta) => {
 
     /**
      * @template T
-     * @param {{
-     *   initialValue: T, options: { label: string, value: T }[],
-     *   onChange?: (newValue: T) => void, text?: string
-     * }}
+     * @param {{ initialValue: T, options: { label: string, value: T }[], onChange?: (newValue: T) => void, label?: string }}
      */
-    MenuItemSelect({ initialValue, options, onChange, text }) {
+    MenuItemSelect({ initialValue, options, onChange, label }) {
       const [value, setValue] = useState(initialValue);
 
       return jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
+        fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
         children: jsx("div", {
-          className: utils.clsx(
-            internals.contextMenuClass?.item,
-            internals.contextMenuClass?.labelContainer,
-            "menu-item-select-root"
-          ),
+          className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
           children: [
-            jsx("span", null, text),
+            jsx("style", null, `@scope {
+              :scope {
+                display: grid;
+                grid-template-columns: 1fr;
+                gap: 4px;
+              }
+              .select { display: unset }
+            }`),
+            label && jsx("span", null, label),
             jsx(internals.Select[internals.keys.SingleSelect], {
               options: options,
               value: value,
@@ -3002,7 +3244,7 @@ module.exports = (meta) => {
       }, []);
 
       return jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, rgb(214, 54, 63))" } }, "Component Error"),
+        fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
         children: jsx("div", {
           className: "font-selector",
           children: [
@@ -3061,7 +3303,7 @@ module.exports = (meta) => {
 
     /**
      * @param {{
-     *  value: number, onChange?: (e: number) => void, withSlider?: boolean, suffix?: string, label?: string
+     *  value: number, onChange?: (e: number) => void, withSlider?: boolean, suffix?: string, label?: string,
      *  ref?: React.RefObject<any>, minValue?: number, centerValue?: number, maxValue?: number,
      *  onSlide?: (e: number) => void, decimals?: number, expScaling?: boolean, className?: string
      * }} props
@@ -3156,7 +3398,7 @@ module.exports = (meta) => {
 
       const handleWheel = useCallback(e => {
         if (document.activeElement !== e.currentTarget || !e.deltaY || e.buttons) return;
-        const delta = -Math.sign(e.deltaY) * (decimals ? 10 ** (-1 * decimals) : 1) * (e.ctrlKey ? 100 : e.shiftKey ? 10 : 1);
+        const delta = -Math.sign(e.deltaY) * (decimals ? 10 ** (-1 * decimals) : 1) * ((e.ctrlKey || e.metaKey) ? 100 : e.shiftKey ? 10 : 1);
         setTextValue(val => {
           val = (Number(val) + delta).toFixed(decimals ?? 0);
           return `${Math.max(Number(val), minValue ?? Number(val))}`;
@@ -3188,9 +3430,37 @@ module.exports = (meta) => {
 
       return jsx("div", {
         ...restProps,
-        className: utils.clsx(className, "number-input-root", withSlider && "with-slider"),
+        className: utils.clsx(className, "number-input-wrapper", withSlider && "with-slider"),
         children: [
-          label && jsx("label", { htmlFor: id }, `${label}: `),
+          jsx("style", null, `@scope {
+            :scope {
+              display: flex;
+              align-items: center;
+              flex-wrap: wrap;
+              row-gap: 6px;
+              color: var(--interactive-text-active);
+
+              &.with-slider { padding-inline: 8px }
+            }
+            .slider-wrapper {
+              cursor: inherit;
+              flex-basis: 100%;
+              margin-top: 6px;
+            }
+            .number-input {
+              border: 1px solid var(--border-normal);
+              border-radius: 6px;
+              padding: 0.25rem 0.5rem;
+              margin: 2px;
+              background: var(--interactive-background-active);
+              color: currentColor;
+              width: 2.5rem;
+              margin-left: auto;
+              text-align: right;
+              font-size: smaller;
+            }
+          }`),
+          label && jsx("label", { htmlFor: id, style: { cursor: "inherit" } }, `${label}: `),
           jsx("input", {
             className: "number-input",
             id: id,
@@ -3204,7 +3474,7 @@ module.exports = (meta) => {
             onMouseEnter: handleMouseEnter,
             onMouseLeave: handleMouseLeave
           }),
-          suffix != null && jsx("span", { style: { alignContent: 'center' } }, suffix),
+          suffix != null && jsx("span", null, suffix),
           withSlider && internals.keys.MenuSliderControl && jsx("div", {
             ...pointerHanders,
             className: "slider-wrapper",
@@ -3279,8 +3549,28 @@ module.exports = (meta) => {
       const handleMouseLeave = useCallback(e => e.currentTarget.blur(), []);
 
       return jsx("div", {
-        className: utils.clsx(className, "text-input-root"),
+        className: utils.clsx(className),
         children: [
+          jsx("style", null, `@scope {
+            :scope {
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              gap: 16px;
+              padding: 4px 8px;
+              color: var(--interactive-text-active);
+            }
+            .text-input {
+              border: 1px solid var(--border-normal);
+              border-radius: 6px;
+              padding: 4px;
+              background: var(--interactive-background-active);
+              flex: 0 0 45%;
+              min-width: 0;
+              color: currentColor;
+            }
+            label { cursor: inherit }
+          )`),
           label && jsx("label", { htmlFor: id }, label),
           jsx("input", {
             id,
@@ -3298,7 +3588,7 @@ module.exports = (meta) => {
 
     /** @param {{ onChange?: (value: string) => void, onSubmit?: () => void, ref?: React.RefObject<any> }} */
     TextAreaHidden({ onChange, onSubmit, ref }) {
-      /** @type {React.RefObject<HTMLTextAreaElement | null>} */
+      /** @type {React.RefObject<HTMLTextAreaElement?>} */
       const textarea = useRef(null);
 
       useImperativeHandle(ref, () => ({
@@ -3313,7 +3603,7 @@ module.exports = (meta) => {
         onChange?.(e.target.value);
       }, [onChange])
 
-      /** @type {(e: React.FocusEvent) => void} */
+      /** @type {(e: React.FocusEvent<HTMLTextAreaElement) => void} */
       const handleBlur = useCallback(() => {
         textarea.current.hidden = true;
         onSubmit?.();
@@ -3321,7 +3611,7 @@ module.exports = (meta) => {
       }, [onSubmit]);
 
       const handleKeyDown = useCallback(e => {
-        if (!e.ctrlKey && !e.shiftKey && (e.key === "Enter" || e.key === "Escape")) {
+        if (!(e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "Enter" || e.key === "Escape")) {
           textarea.current.blur();
           e.stopPropagation();
         }
@@ -3365,15 +3655,21 @@ module.exports = (meta) => {
 }
 
 .canvas-dims {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  gap: 4px;
-  color: var(--interactive-text-active);
+  justify-items: center;
   padding-bottom: 8px;
   border-bottom: 1px solid var(--border-normal);
-  .number-input {
-    text-align: center;
+}
+
+.canvas-dims-resizer {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  font-size: 1rem;
+  
+  > * { font-size: smaller }
+  > .canvas-dims-resizer-number {
+    border-bottom: 1px solid hsl(from currentColor h s l / 0.35);
+    padding-inline: 2px;
   }
 }
 
@@ -3414,17 +3710,13 @@ module.exports = (meta) => {
   }
 }
 
-.canvas.moving {
-  cursor: move;
-}
+.canvas.moving { cursor: move }
 
-.canvas.texting {
-  cursor: text;
-}
+.canvas.texting { cursor: text }
 
 @keyframes fade-in {
-  from {opacity: 0}
-  to {opacity: 1}
+  from { opacity: 0 }
+  to { opacity: 1 }
 }
 
 .canvas.rotating + .canvas-overlay::after {
@@ -3521,12 +3813,8 @@ module.exports = (meta) => {
       height: 2px;
       translate: 0 -1px;
     }
-    &::after {
-      right: -1px;
-    }
-    &::before {
-      left: -1px;
-    }
+    &::after { right: -1px }
+    &::before { left: -1px }
   }
 }
 
@@ -3591,9 +3879,7 @@ module.exports = (meta) => {
   width: 128px;
 }
 
-.select {
-  display: inline-block;
-}
+.select { display: inline-block }
 
 .icon-button {
   border-radius: 8px;
@@ -3687,14 +3973,12 @@ module.exports = (meta) => {
   color: var(--interactive-text-default);
   transition: background-color 200ms ease;
 
-  & > div[role=button] {
-    padding: 0;
-  }
+  > :last-child { padding: 0 }
   &.active {
-    anchor-name: --active-thumbnail;
+    anchor-name: --active-thumbnail
   }
   &:hover {
-    background: rgb(from var(--interactive-text-default) r g b / 0.1);
+    background: rgb(from var(--interactive-text-default) r g b / 0.1)
   }
 }
 
@@ -3720,9 +4004,7 @@ module.exports = (meta) => {
   background-color: var(--brand-500);
 }
 
-.layer-visibility {
-  min-width: 0;
-}
+.layer-visibility { min-width: 0 }
 
 .layer-label {
   display: -webkit-box;
@@ -3744,96 +4026,7 @@ module.exports = (meta) => {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
   align-items: center;
-}}
-
-@scope (.number-input-root) {
-  :scope {
-    display: flex;
-    flex-wrap: wrap;
-    row-gap: 6px;
-    color: var(--interactive-text-active);
-
-    &.with-slider {
-      padding-inline: 8px; 
-    }
-    & > label {
-      align-content: center;
-      cursor: inherit;
-    }
-    & > .slider-wrapper {
-      cursor: inherit;
-      flex-basis: 100%;
-      margin-top: 6px;
-    }
-  }
-  .number-input {
-    border: 1px solid var(--border-normal);
-    border-radius: 6px;
-    padding: 4px;
-    margin: 2px;
-    background: var(--interactive-background-active);
-    color: currentColor;
-    width: 3em;
-    margin-left: auto;
-    text-align: right;
-  }
 }
-
-@scope (.menu-item-select-root) {
-  :scope { 
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-  .select {
-    display: unset;
-  }
-}
-
-@scope (.menu-item-color-root) {
-  :scope { 
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 4px;
-  }
-  .bd-color-picker-container {
-    display: grid;
-    gap: 4px;
-  }
-  .bd-color-picker-swatch {
-    max-width: 156px;
-    margin: 0 !important;
-    display: grid;
-    place-items: center;
-    grid-template-columns: repeat(auto-fill, minmax(21px, 1fr));
-  }
-  .bd-color-picker {
-    width: 155px;
-    height: 56px;
-  }
-}
-
-@scope (.text-input-root) {
-  :scope {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 16px;
-    padding: 4px 8px;
-    color: var(--interactive-text-active);
-  }
-  label {
-    cursor: inherit;
-  }
-  .text-input {
-    border: 1px solid var(--border-normal);
-    border-radius: 6px;
-    padding: 4px;
-    background: var(--interactive-background-active);
-    flex: 0 0 50%;
-    min-width: 0;
-    color: currentColor;
-  }
 }`);
   }
 
