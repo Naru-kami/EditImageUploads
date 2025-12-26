@@ -184,6 +184,7 @@ module.exports = (meta) => {
         color: "#000",
         globalCompositeOperation: "source-over",
         text: "",
+        font: "1rem sans-serif"
       };
     }
 
@@ -484,20 +485,17 @@ module.exports = (meta) => {
     }
 
     #prepareMiddleCanvas() {
-      const s = this.#activeLayer.state;
-      s.alpha = 1;
-      this.#activeLayer.state = s;
-
+      const oldAlpha = this.#activeLayer.state.alpha;
+      this.#activeLayer.state.alpha = 1;
       this.#activeLayer.drawOn(this.#middleCache);
-
-      s.alpha = this.layers[this.#activeLayerIndex].state.alpha;
-      this.#activeLayer.state = s;
+      this.#activeLayer.state.alpha = oldAlpha;
     }
 
     /** @param {DOMPoint} startPoint @param {number} width @param {string} color */
     startDrawing(startPoint, width, color, globalCompositeOperation = "source-over") {
-      this.#prepareMiddleCanvas();
       const ctx = this.#middleCache.getContext("2d");
+      ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.#prepareMiddleCanvas();
       ctx.save();
       ctx.beginPath();
 
@@ -793,11 +791,9 @@ module.exports = (meta) => {
 
     /** @param {DOMPoint} point @param {string} font @param {string} color */
     insertTextAt(point, font, color) {
-      this.#prepareMiddleCanvas();
       const ctx = this.#middleCache.getContext("2d");
+      ctx.save();
       ctx.font = font;
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = color;
 
       this.#interactionCache.layerTransform_inv = new DOMMatrix()
         .translateSelf(
@@ -808,21 +804,25 @@ module.exports = (meta) => {
       const textMetrics = ctx.measureText("");
       const width = Math.ceil(textMetrics.actualBoundingBoxRight + textMetrics.actualBoundingBoxLeft);
       const height = Math.ceil(textMetrics.fontBoundingBoxDescent + textMetrics.fontBoundingBoxAscent);
+      ctx.restore();
 
       const to_inv = point.matrixTransform(this.viewportTransform_inv);
       this.#interactionCache.rect = new DOMRect(Math.round(to_inv.x), Math.round(to_inv.y - height / 2), width, height);
       this.#interactionCache.color = color;
+      this.#interactionCache.font = font;
     }
 
     updateText(text = this.#interactionCache.text, font = this.#interactionCache.font) {
       const ctx = this.#middleCache.getContext("2d");
-
+      ctx.save();
       ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      this.#prepareMiddleCanvas();
+
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = this.#interactionCache.color;
       ctx.font = font;
       this.#interactionCache.text = text;
-      this.#activeLayer.drawOn(this.#middleCache);
 
-      ctx.save();
       const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       const clipPath = new Path2D();
       clipPath.rect(availRect.x, availRect.y, availRect.width, availRect.height);
@@ -870,7 +870,7 @@ module.exports = (meta) => {
 
       const layerState = this.#activeLayer.addStroke({
         text: this.#interactionCache.text,
-        font: ctx.font,
+        font: this.#interactionCache.font,
         origin: new DOMPoint(this.#interactionCache.rect.x + 1, this.#interactionCache.rect.y),
         color: this.#interactionCache.color,
         globalCompositeOperation: "source-over",
@@ -904,9 +904,9 @@ module.exports = (meta) => {
 
     /** @param {1 | -1} x @param {-1 | 1} y */
     scale(x, y) {
-      const T = new DOMMatrix().scaleSelf(x, y);
+      const S = new DOMMatrix().scaleSelf(x, y);
       const layers = this.layers.map(({ layer }) => {
-        layer.previewTransformBy(T);
+        layer.previewTransformBy(S);
         return { layer, state: layer.finalizePreview() }
       });
       this.#state.state = { ...this.#state.state, layers };
@@ -914,9 +914,9 @@ module.exports = (meta) => {
 
     /** @param {90 | -90} angle  */
     rotate(angle) {
-      const T = new DOMMatrix().rotateSelf(angle);
+      const R = new DOMMatrix().rotateSelf(angle);
       const layers = this.layers.map(({ layer }) => {
-        layer.previewTransformBy(T);
+        layer.previewTransformBy(R);
         return { layer, state: layer.finalizePreview() }
       });
       this.#resizeCanvas(this.#state.state.height, this.#state.state.width);
@@ -1820,7 +1820,8 @@ module.exports = (meta) => {
           },
           icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerDown })
         }, {
-          label: "Delete Layer",
+          label: "Remove Layer",
+          color: "danger",
           disabled: layers.length <= 1,
           action: () => {
             if (editor.current.layers.length <= 1) return;
@@ -3961,26 +3962,28 @@ module.exports = (meta) => {
     bottom: min(anchor(bottom), 100% - anchor-size(height));
     height: anchor-size();
     background: rgb(from var(--interactive-text-default) r g b / 0.2);
+    border-radius: 4px;
     pointer-events: none;
     transition: bottom 200ms ease-out;
   }
 }
 
 .thumbnail {
-  display: grid;
   position: relative;
+  display: grid;
+  align-items: center;
   grid-template-columns: var(--thumbnail-height) 1fr min-content;
   justify-items: center;
   gap: 4px;
   flex: 0 0 var(--thumbnail-height);
+  outline: none;
+  border-radius: 4px;
   overflow: hidden;
-  align-items: center;
   padding: 4px;
   cursor: pointer;
   color: var(--interactive-text-default);
   transition: background-color 200ms ease;
 
-  > :last-child { padding: 0 }
   &.active {
     anchor-name: --active-thumbnail
   }
