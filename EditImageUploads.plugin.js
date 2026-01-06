@@ -8,7 +8,7 @@
 
 module.exports = (meta) => {
   /** @type {{React: typeof import("react")}} */
-  const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI, ContextMenu } = BdApi;
+  const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI, ContextMenu, Data } = BdApi;
 
   const {
     createElement: jsx, useState, useEffect, useLayoutEffect, useRef, useId,
@@ -147,7 +147,7 @@ module.exports = (meta) => {
       this.#viewportCanvas = canvas;
 
       /** @type {string} */
-      this.backgroundColor = BdApi.Data.load(meta.slug, "backgroundColor") ?? "#393946";
+      this.backgroundColor = Data.load(meta.slug, "backgroundColor") ?? "#393946";
       const initialScale = Math.min(canvas.width / bitmap.width * 0.96, canvas.height / bitmap.height * 0.96);
       this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
       this.#viewportTransform_inv = new DOMMatrix()
@@ -160,7 +160,7 @@ module.exports = (meta) => {
       [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(canv => {
         canv.getContext("2d").imageSmoothingEnabled = false;
       })
-      this.setImageSmoothing(BdApi.Data.load(meta.slug, "smoothing") ?? "auto");
+      this.setImageSmoothing(Data.load(meta.slug, "smoothing") ?? "auto");
 
       const layer = new Layer("Main", bitmap);
       this.#state = new utils.StateHistory({
@@ -270,7 +270,7 @@ module.exports = (meta) => {
     createNewLayer(bitmap) {
       const newLayer = new Layer(
         `Layer ${(this.layers.length)}`,
-        bitmap instanceof ImageBitmap ? bitmap : { width: 1, height: 1 }
+        bitmap instanceof ImageBitmap ? bitmap : { width: 2 - (this.#mainCanvas.width & 1), height: 2 - (this.#mainCanvas.height & 1) }
       );
       this.#state.state = {
         ...this.#state.state,
@@ -1177,7 +1177,7 @@ module.exports = (meta) => {
   }
 
   var utils = {
-    /** @param {Record<string, {id: number, filter: () => boolean}>} filters  */
+    /** @param {Record<string, {id: number, filter: () => boolean}>} filters */
     getBulk(filters) {
       let wrongOrMissed = false;
       const result = {};
@@ -1499,7 +1499,7 @@ module.exports = (meta) => {
     useStoredState(key, initialvalue) {
       const [val, setval] = useState(() => {
         /** @type {T | null} */
-        const stored = BdApi.Data.load(meta.slug, key);
+        const stored = Data.load(meta.slug, key);
         if (stored == null) {
           if (initialvalue instanceof Function) {
             return initialvalue();
@@ -1512,7 +1512,7 @@ module.exports = (meta) => {
       });
 
       useEffect(() => {
-        BdApi.Data.save(meta.slug, key, val);
+        Data.save(meta.slug, key, val);
       }, [val, key]);
 
       return [val, setval]
@@ -1967,7 +1967,7 @@ module.exports = (meta) => {
       useImperativeHandle(ref, () => ({
         replace({ draftType, upload }) {
           UI.showToast("Processing...", { type: "warning" });
-          editor.current?.toBlob({ type: BdApi.Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
+          editor.current?.toBlob({ type: Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
             internals.uploadDispatcher.setFile({
               channelId: upload.channelId,
               id: upload.id,
@@ -1995,7 +1995,7 @@ module.exports = (meta) => {
           if (!channelId) return;
 
           UI.showToast("Processing...", { type: "warning" });
-          editor.current?.toBlob({ type: BdApi.Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
+          editor.current?.toBlob({ type: Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
             internals.uploadDispatcher.addFile({
               file: {
                 file: new File([blob], `image.${(blob.type === "image/webp" ? "webp" : blob.type === "image/png" ? "png" : "jpg")}`, { type: blob.type }),
@@ -2186,7 +2186,7 @@ module.exports = (meta) => {
         addEventListener("resize", () => {
           const rect = canvasRef.current.offsetParent.getBoundingClientRect();
           editor.current.viewportDims = { width: ~~(rect.width), height: ~~(rect.height) };
-          editor.current.setImageSmoothing(BdApi.Data.load(meta.slug, "smoothing") ?? "auto")
+          editor.current.setImageSmoothing(Data.load(meta.slug, "smoothing") ?? "auto")
           editor.current.refreshViewport();
 
           updateClipRect();
@@ -2839,12 +2839,8 @@ module.exports = (meta) => {
      */
     Resizer({ dimensions, layerCount, onCanvasResize, onImageResize }) {
       /** @type {React.RefObject<{mode: number, keepAspect: boolean}?>} */
-      const resize = useRef(BdApi.Data.load(meta.slug, "resize") ?? { mode: 0, keepAspect: false });
+      const resize = useRef(Data.load(meta.slug, "resize") ?? { mode: 0, keepAspect: false });
       const menuData = useRef({ ...dimensions, canvasP: 100, imageP: 100 });
-
-      useEffect(() => {
-        Object.assign(menuData.current, { width: dimensions.width, height: dimensions.height, canvasP: 100, imageP: 100 });
-      }, [dimensions]);
 
       const handleClick = e => {
         Object.assign(menuData.current, { width: dimensions.width, height: dimensions.height, canvasP: 100, imageP: 100 });
@@ -2861,7 +2857,7 @@ module.exports = (meta) => {
             initialValue: resize.current.mode,
             onChange: v => {
               resize.current.mode = v;
-              BdApi.Data.save(meta.slug, "resizeMode", v);
+              Data.save(meta.slug, "resizeMode", v);
             }
           })
         }, {
