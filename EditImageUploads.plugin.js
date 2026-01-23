@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.0.0
+ * @version 0.0.1
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -21,22 +21,22 @@ module.exports = (meta) => {
     if (internals) return;
 
     internals = utils.getBulk({
-      uploadCard: { id: 898463, filter: Filters.bySource(".attachmentItemSmall]:") },
-      urlConverter: { id: 296182, filter: Filters.bySource(".searchParams.delete(\"width\"),") },
-      nativeUI: { id: 481060, filter: Filters.byKeys("showToast") },
-      Select: { id: 199849, filter: Filters.bySource("(\"SingleSelect\")") },
-      ModalSystem: { id: 466377, filter: Filters.bySource(".MODAL_ROOT_LEGACY,") },
-      ManaButton: { id: 906003, filter: Filters.bySource(".BUTTON_LOADING_STARTED_LABEL,") },
+      uploadCard: { id: 914905, filter: Filters.bySource(".attachmentItemSmall]:") },
+      urlConverter: { id: 803316, filter: Filters.bySource(".searchParams.delete(\"width\"),") },
+      nativeUI: { id: 397927, filter: Filters.byKeys("showToast") },
+      Select: { id: 843282, filter: Filters.bySource("(\"SingleSelect\")") },
+      ModalSystem: { id: 935462, filter: Filters.bySource(".MODAL_ROOT_LEGACY,") },
+      ManaButton: { id: 657718, filter: Filters.bySource(".BUTTON_LOADING_STARTED_LABEL,") },
 
-      actionButtonClass: { id: 945233, filter: Filters.byKeys("dangerous", "button") },
-      actionIconClass: { id: 348962, filter: m => m.actionBarIcon && !m.action },
-      sliderClass: { id: 30724, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
-      scrollbarClass: { id: 690651, filter: m => m.thin && !m.none },
-      contextMenuClass: { id: 564546, filter: Filters.byKeys("hintContainer") }
+      actionButtonClass: { id: 331215, filter: Filters.byKeys("dangerous", "button") },
+      actionIconClass: { id: 238855, filter: m => m.actionBarIcon && !m.action },
+      sliderClass: { id: 134971, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
+      scrollbarClass: { id: 588428, filter: m => m.thin && !m.none },
+      contextMenuClass: { id: 658122, filter: Filters.byKeys("hintContainer") }
     });
 
     Object.assign(internals, {
-      uploadDispatcher: Webpack.getByKeys("setFile"), // 166459
+      uploadDispatcher: Webpack.getByKeys("setFile"), // 608299
       SelectedChannelStore: Webpack.getStore("SelectedChannelStore"),
       keys: {
         ...utils.getKeysInModule(internals.uploadCard, { uploadCard: ".attachmentItemSmall]:" }),
@@ -57,7 +57,7 @@ module.exports = (meta) => {
         ...utils.getKeysInModule(internals.ModalSystem, {
           ModalRoot: ".MODAL_ROOT_LEGACY,",
           ModalContent: ",scrollbarType:",
-          ModalFooter: "footerSeparator]",
+          ModalFooter: ".HORIZONTAL_REVERSE,",
         })
       }
     });
@@ -270,7 +270,7 @@ module.exports = (meta) => {
     createNewLayer(bitmap) {
       const newLayer = new Layer(
         `Layer ${(this.layers.length)}`,
-        bitmap instanceof ImageBitmap ? bitmap : { width: 2 - (this.#mainCanvas.width & 1), height: 2 - (this.#mainCanvas.height & 1) }
+        bitmap instanceof ImageBitmap ? bitmap : { width: 2 - (this.#activeLayer.width & 1), height: 2 - (this.#activeLayer.height & 1) }
       );
       this.#state.state = {
         ...this.#state.state,
@@ -894,9 +894,9 @@ module.exports = (meta) => {
     #resizeCanvas(width, height) {
       this.#staleViewportInv = true;
       [this.#mainCanvas, this.#bottomCache, this.#middleCache, this.#topCache].forEach(c => {
-        c.getContext("2d").imageSmoothingEnabled = false;
         c.width = width;
         c.height = height;
+        c.getContext("2d").imageSmoothingEnabled = false;
       })
 
       this.layers.forEach(({ layer }) => { layer.staleThumbnail = true });
@@ -1608,7 +1608,7 @@ module.exports = (meta) => {
     /** @param {{d: string}} props */
     Icon({ d }) {
       return jsx("svg", {
-        className: internals.actionIconClass.actionBarIcon,
+        className: internals.actionIconClass?.actionBarIcon,
         "aria-hidden": "true",
         role: "img",
         xmlns: "http://www.w3.org/2000/svg",
@@ -1640,7 +1640,7 @@ module.exports = (meta) => {
               ...restProps,
               onClick: (e) => { if (onClick && !disabled) { e.stopPropagation(); onClick(e) } },
               onKeyDown: e => { if (!e.repeat && (e.key === "Enter" || e.key === " ") && !disabled) onClick?.(e) },
-              className: utils.clsx(internals.actionButtonClass.button, className, "icon-button", disabled && "disabled", active && "active"),
+              className: utils.clsx(internals.actionButtonClass?.button, className, "icon-button", disabled && "disabled", active && "active"),
               role: "button",
               tabIndex: disabled ? null : 0,
               children: jsx(Components.Icon, { d }),
@@ -2531,7 +2531,7 @@ module.exports = (meta) => {
             ]
           }),
           jsx("aside", {
-            className: utils.clsx("sidebar", internals.scrollbarClass.thin),
+            className: utils.clsx("sidebar", internals.scrollbarClass?.thin),
             children: [
               jsx(Components.Resizer, {
                 dimensions: dims,
@@ -2857,7 +2857,7 @@ module.exports = (meta) => {
             initialValue: resize.current.mode,
             onChange: v => {
               resize.current.mode = v;
-              Data.save(meta.slug, "resizeMode", v);
+              Data.save(meta.slug, "resize", resize.current);
             }
           })
         }, {
@@ -2953,6 +2953,7 @@ module.exports = (meta) => {
                       }
                       e.currentTarget.blur();
                       e.currentTarget.focus();
+                      Data.save(meta.slug, "resize", resize.current)
                     }
                   })
                 })
@@ -3405,7 +3406,7 @@ module.exports = (meta) => {
         if (e.data && /[^0-9e+\-.]+/.test(e.data)) e.preventDefault?.();
       }, []);
 
-      const handleMouseEnter = useCallback(e => !e.buttons && e.currentTarget.focus(), []);
+      const handleMouseEnter = useCallback(e => !e.buttons && !document.activeElement.matches(`.${meta.slug}Root textarea.hiddenVisually`) && e.currentTarget.focus(), []);
       const handleMouseLeave = useCallback(e => e.currentTarget.blur(), []);
 
       const pointerHanders = hooks.usePointerCapture({
@@ -3770,6 +3771,10 @@ module.exports = (meta) => {
   right: max(-2px, 100% - var(--cx2, 0px));
   top: max(-2px, var(--cy1, -2px));
   bottom: max(-2px, 100% - var(--cy2, 0px));
+  opacity: max(
+    min(1000 * (var(--cx2, 0) - var(--cx1, 0)), 1),
+    min(1000 * (var(--cy2, 0) - var(--cy1, 0)), 1)
+  );
 }
 
 .canvas.texting + .canvas-overlay > .cropper-border {
@@ -3781,14 +3786,6 @@ module.exports = (meta) => {
   right: max(-2px, 100% - var(--rx2, 0px));
   top: max(-2px, var(--ry1, -2px));
   bottom: max(-2px, 100% - var(--ry2, 0px));
-}
-
-.canvas.cropping.pointerdown + .canvas-overlay > .cropper-border,
-.canvas.selecting.pointerdown + .canvas-overlay > .cropper-region {
-  opacity: max(
-    min(1000 * (var(--cx2, 0) - var(--cx1, 0)), 100%),
-    min(1000 * (var(--cy2, 0) - var(--cy1, 0)), 100%)
-  );
 }
 
 @container overlay style(--line-from) {
