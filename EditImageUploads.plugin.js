@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.0.1
+ * @version 0.1.0
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -32,7 +32,7 @@ module.exports = (meta) => {
       actionIconClass: { id: 238855, filter: m => m.actionBarIcon && !m.action },
       sliderClass: { id: 134971, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
       scrollbarClass: { id: 588428, filter: m => m.thin && !m.none },
-      contextMenuClass: { id: 658122, filter: Filters.byKeys("hintContainer") }
+      contextMenuClass: { id: 658122, filter: Filters.byKeys("switchContainer") }
     });
 
     Object.assign(internals, {
@@ -62,6 +62,30 @@ module.exports = (meta) => {
       }
     });
     BdApi.Logger.info(meta.slug, "Initialized");
+
+    if (Data.load(meta.slug, "version") !== meta.version) {
+      UI.showChangelogModal({
+        title: meta.name,
+        subtitle: meta.version,
+        blurb: "Color adjustments are now here!",
+        changes: [{
+          title: "Added",
+          type: "added",
+          items: [
+            "Color adjustments:\nRight click a layer to access several adjustment options in the submenu. These adjustments will also apply to subsequently added drawings on the same layer."
+          ]
+        }, {
+          title: "Fixes",
+          type: "fixed",
+          items: [
+            "Fixes an issue with reordering layer thumbnails, where under special circumstances it would crash the modal.",
+            "Fixes an issue whereby drawn strokes are sometimes being clipped on down-scaled layers.",
+            "Some layer actions are now performed on the correct layer."
+          ]
+        }]
+      });
+      Data.save(meta.slug, "version", meta.version);
+    }
   }
 
   function start() {
@@ -306,22 +330,30 @@ module.exports = (meta) => {
       this.fullRender();
     }
 
-    /** @param {number} alpha @param {number} layerIndex */
-    setLayerAlpha(alpha, layerIndex, shouldPushToStack = false) {
-      if (!(layerIndex in this.layers) || alpha === this.layers[layerIndex].state.alpha) return;
-
+    /** 
+     * @typedef {Partial<{
+     *  blur: number, brightness: number, contrast: number, grayscale: number,
+     * ["hue-rotate"]: number, invert: number, saturate: number, sepia: number
+     * }>} LayerAdjustments
+     * 
+     * @param {(current: LayerAdjustments) => LayerAdjustments} setter
+     * @param {number} layerIndex
+     * @param {boolean} shouldPushToStack 
+     */
+    setLayerAdjustment(layerIndex, setter, shouldPushToStack) {
+      const adjustments = setter(this.layers[layerIndex].state.adjustments);
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
-      updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, alpha } };
+      updated.layers[layerIndex] = { ...updated.layers[layerIndex], state: { ...updated.layers[layerIndex].state, adjustments } };
       if (shouldPushToStack) {
         this.#state.state = updated;
-      };
+      }
       updated.layers[layerIndex].layer.state = updated.layers[layerIndex].state;
 
       this.render(layerIndex);
     }
 
     /** @param {number} layerIndex */
-    resetLayer(layerIndex) {
+    resetLayerTransform(layerIndex) {
       if (!(layerIndex in this.layers)) return;
 
       const updated = { ...this.#state.state, layers: [...this.#state.state.layers] };
@@ -332,16 +364,16 @@ module.exports = (meta) => {
       this.render(layerIndex);
     }
 
-    /** @param {(blob: Blob) => void} callback */
-    copyLayerContents(callback, layerIndex = this.#activeLayerIndex) {
+    /** @param {number} layerIndex */
+    async copyLayerContents(layerIndex) {
       if (!(layerIndex in this.layers)) return;
 
       const ctx = this.#middleCache.getContext("2d");
       ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
       this.layers[layerIndex].layer.drawOn(this.#middleCache);
-      this.#middleCache.convertToBlob({ type: 'image/png' })
-        .then(callback)
-        .then(() => { ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height) });
+      const blob = await this.#middleCache.convertToBlob({ type: 'image/png' });
+      ctx.clearRect(0, 0, this.#middleCache.width, this.#middleCache.height);
+      return blob;
     }
 
     async duplicateLayer(layerIndex = this.#activeLayerIndex) {
@@ -365,7 +397,7 @@ module.exports = (meta) => {
 
     /** @param {number} delta */
     moveLayers(delta, layerIndex = this.activeLayerIndex) {
-      if (!((layerIndex + delta) in this.layers) || delta === 0) return;
+      if (!((layerIndex + delta) in this.layers) || !(layerIndex in this.layers) || delta === 0) return;
 
       const activeLayer = this.#activeLayer;
 
@@ -485,10 +517,10 @@ module.exports = (meta) => {
     }
 
     #prepareMiddleCanvas() {
-      const oldAlpha = this.#activeLayer.state.alpha;
-      this.#activeLayer.state.alpha = 1;
+      const adjustments = { ...this.#activeLayer.state.adjustments };
+      this.setLayerAdjustment(this.#activeLayerIndex, () => ({}));
       this.#activeLayer.drawOn(this.#middleCache);
-      this.#activeLayer.state.alpha = oldAlpha;
+      this.setLayerAdjustment(this.#activeLayerIndex, () => adjustments);
     }
 
     /** @param {DOMPoint} startPoint @param {number} width @param {string} color */
@@ -553,9 +585,9 @@ module.exports = (meta) => {
         mainCtx.clearRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
 
-        mainCtx.globalAlpha = this.#activeLayer.state.alpha;
+        mainCtx.filter = this.#activeLayer.filter;
         mainCtx.drawImage(this.#middleCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
-        mainCtx.globalAlpha = 1;
+        mainCtx.filter = "none";
 
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
 
@@ -613,9 +645,9 @@ module.exports = (meta) => {
         const mainCtx = this.#mainCanvas.getContext("2d");
         mainCtx.clearRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
-        mainCtx.globalAlpha = this.#activeLayer.state.alpha;
+        mainCtx.filter = this.#activeLayer.filter;
         mainCtx.drawImage(this.#middleCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
-        mainCtx.globalAlpha = 1;
+        mainCtx.filter = "none";
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
 
         this.refreshViewport();
@@ -671,9 +703,9 @@ module.exports = (meta) => {
         const mainCtx = this.#mainCanvas.getContext("2d");
         mainCtx.clearRect(p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
         this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
-        mainCtx.globalAlpha = this.#activeLayer.state.alpha;
+        mainCtx.filter = this.#activeLayer.filter;
         mainCtx.drawImage(this.#middleCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
-        mainCtx.globalAlpha = 1;
+        mainCtx.filter = "none";
         this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y, p1.x, p1.y, p2.x - p1.x, p2.y - p1.y);
 
         this.refreshViewport();
@@ -822,6 +854,7 @@ module.exports = (meta) => {
       ctx.fillStyle = this.#interactionCache.color;
       ctx.font = font;
       this.#interactionCache.text = text;
+      this.#interactionCache.font = font;
 
       const availRect = this.#interactionCache.clipRect ?? new DOMRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       const clipPath = new Path2D();
@@ -841,9 +874,9 @@ module.exports = (meta) => {
       mainCtx.clearRect(0, 0, this.#mainCanvas.width, this.#mainCanvas.height);
       this.#activeLayerIndex > 0 && mainCtx.drawImage(this.#bottomCache, 0, 0);
 
-      mainCtx.globalAlpha = this.#activeLayer.state.alpha;
+      mainCtx.filter = this.#activeLayer.filter;
       mainCtx.drawImage(this.#middleCache, 0, 0);
-      mainCtx.globalAlpha = 1;
+      mainCtx.filter = "none";
 
       this.#activeLayerIndex < this.layers.length - 1 && mainCtx.drawImage(this.#topCache, 0, 0);
 
@@ -980,6 +1013,7 @@ module.exports = (meta) => {
     #state;
     #previewTransform;
     #subPixelCorrection;
+    #filter;
 
     /** @param {ImageBitmap | {width: number, height: number}} bitmap @param {string} name */
     constructor(name, bitmap) {
@@ -992,7 +1026,8 @@ module.exports = (meta) => {
       this.#state = {
         transform: new DOMMatrix(),
         isVisible: true,
-        alpha: 1,
+        /** @type {LayerAdjustments} */
+        adjustments: {},
         /**
          * @type {{
          *  color: string, width?: number, clipPath: Path2D, globalCompositeOperation: string,
@@ -1001,6 +1036,7 @@ module.exports = (meta) => {
          */
         strokes: [],
       };
+      this.#filter = "none";
       this.#previewTransform = new DOMMatrix();
       this.staleThumbnail = true;
       if (bitmap instanceof ImageBitmap) {
@@ -1009,6 +1045,7 @@ module.exports = (meta) => {
       }
     }
 
+    get filter() { return this.#filter }
     get width() { return this.#canvas.width }
     get height() { return this.#canvas.height }
     get state() { return this.#state }
@@ -1024,6 +1061,9 @@ module.exports = (meta) => {
         // removing strokes
         this.#drawImage();
         this.#drawStrokes(state.strokes);
+      }
+      if (this.#state.adjustments !== state.adjustments) {
+        this.#filter = Object.entries(state.adjustments).reduce((acc, [key, value]) => value != null ? `${acc} ${key}(${value}${utils.filterUnits[key] ?? ""})` : acc, "") || "none";
       }
       if (state !== this.#state) { this.staleThumbnail = true }
       this.#state = state;
@@ -1049,8 +1089,8 @@ module.exports = (meta) => {
     resizeFitStroke(strokeRect, strokeWidth = 0) {
       const canvasRect = new DOMRect(-this.width / 2, -this.height / 2, this.width, this.height);
 
-      const dx = Math.max(0, canvasRect.left - (strokeRect.left - strokeWidth / 2), (strokeRect.right + strokeWidth / 2) - canvasRect.right);
-      const dy = Math.max(0, canvasRect.top - (strokeRect.top - strokeWidth / 2), (strokeRect.bottom + strokeWidth / 2) - canvasRect.bottom);
+      const dx = Math.max(0, canvasRect.left - (strokeRect.left - strokeWidth / utils.getScale(this.#state.transform) / 2), (strokeRect.right + strokeWidth / utils.getScale(this.#state.transform) / 2) - canvasRect.right);
+      const dy = Math.max(0, canvasRect.top - (strokeRect.top - strokeWidth / utils.getScale(this.#state.transform) / 2), (strokeRect.bottom + strokeWidth / utils.getScale(this.#state.transform) / 2) - canvasRect.bottom);
 
       if (dx || dy) {
         this.#canvas.width += 2 * Math.ceil(dx);
@@ -1141,11 +1181,11 @@ module.exports = (meta) => {
       this.#subPixelCorrection.x = ((canvas.width - this.width) & 1) / 2;
       this.#subPixelCorrection.y = ((canvas.height - this.height) & 1) / 2;
 
-      if (!this.#state.isVisible || this.#state.alpha === 0 || this.#state.strokes.length === 0 && !this.#img) return;
+      if (!this.#state.isVisible || this.#state.adjustments.opacity === 0 || this.#state.strokes.length === 0 && !this.#img) return;
 
       const ctx = canvas.getContext("2d");
       ctx.save();
-      ctx.globalAlpha = this.#state.alpha;
+      ctx.filter = this.#filter;
       ctx.setTransform(new DOMMatrix()
         .translateSelf(canvas.width / 2 - this.#subPixelCorrection.x, canvas.height / 2 - this.#subPixelCorrection.y)
         .multiplySelf(this.#previewTransform)
@@ -1454,6 +1494,8 @@ module.exports = (meta) => {
       });
     },
 
+    /** @type {{[K in keyof LayerAdjustments]: string}} */
+    filterUnits: { opacity: "", blur: "px", brightness: "%", contrast: "%", grayscale: "%", "hue-rotate": "deg", invert: "%", saturate: "%", sepia: "%" },
     paintingColors: ["#000000", 0xffffff, 0xffea00, 0xff9100, 0xff1744, 0xff4081, 0xd500f9, 0x651fff, 0x2979ff, 0x10e5ff, 0x1de9b6, 0x10e676],
     backgroundColors: [0x303038, 0x373038, 0x383032, 0x383530, 0x353830, 0x303832, 0x303738, 0x363649, 0x473649, 0x49363c, 0x494136, 0x414936, 0x36493c, 0x364749],
 
@@ -1477,6 +1519,7 @@ module.exports = (meta) => {
       Pan: "M23 12 18.886 7.864v2.772h-5.5v-5.5h2.75L12 1 7.886 5.136h2.75v5.5H5.092V7.886L1 12l4.136 4.136v-2.75h5.5v5.5H7.886L12 23l4.136-4.114h-2.75v-5.5h5.5v2.75L23 12Z",
       Scale: "M16 3a1 1 0 100 2h1.586L11 11.586V10A1 1 0 009 10v3.75c0 .69.56 1.25 1.25 1.25H14a1 1 0 100-2H12.414L19 6.414V8a1 1 0 102 0V4.25C21 3.56 20.44 3 19.75 3ZM5 3l-.15.005A2 2 0 003 5V19l.005.15A2 2 0 005 21H19l.15-.005A2 2 0 0021 19V13l-.007-.117A1 1 0 0019 13v6H5V5h6l.117-.007A1 1 0 0011 3Z",
       ResetTransform: "M8 9H4q-.425 0-.712-.288T3 8V4q0-.425.288-.712T4 3t.713.288T5 4v2.35Q6.25 4.8 8.063 3.9T12 3q2.475 0 4.488 1.2T19.7 7.35q.2.35.113.75t-.438.6-.763.113T18 8.375q-.925-1.525-2.5-2.45T12 5q-1.425 0-2.687.525T7.1 7H8q.425 0 .713.288T9 8t-.288.713T8 9 M18.94 16.002 11.976 12.143 5.059 15.965l6.964 3.89Zm2.544-.877a1 1 0 01.002 1.749l-8.978 5a1 1 0 01-.973-.001l-9.022-5.04a1 1 0 01.003-1.749l8.978-4.96a1 1 0 01.968.001l9.022 5z",
+      ResetFilters: "M13.75 14.25h2.5q.325 0 .538.213T17 15t-.213.538-.537.212h-2.5q-.325 0-.537-.213T13 15t.213-.537.537-.213m.75 6v-.5h-.75q-.325 0-.537-.213T13 19t.213-.537.537-.213h.75v-.5q0-.325.213-.537T15.25 17t.538.213.212.537v2.5q0 .325-.213.538T15.25 21t-.537-.213-.213-.537m3.25-2h2.5q.325 0 .538.213T21 19t-.213.538-.537.212h-2.5q-.325 0-.537-.213T17 19t.213-.537.537-.213m.25-2v-2.5q0-.325.213-.537T18.75 13t.538.213.212.537v.5h.75q.325 0 .538.213T21 15t-.213.538-.537.212h-.75v.5q0 .325-.213.538T18.75 17t-.537-.213T18 16.25M12 5Q9.075 5 7.038 7.038T5 12q0 1.8.813 3.3T8 17.75V16q0-.425.288-.712T9 15t.713.288T10 16v4q0 .425-.288.713T9 21H5q-.425 0-.712-.288T4 20t.288-.712T5 19h1.35Q4.8 17.75 3.9 15.938T3 12q0-1.875.713-3.512t1.924-2.85 2.85-1.925T12 3q2.825 0 5.088 1.575t3.262 4.05q.15.4 0 .775t-.55.525-.788 0-.537-.55q-.775-1.95-2.513-3.162T12 5",
       AddLayer: "M18.94 12.002 11.976 8.143 5.059 11.965l6.964 3.89Zm2.544-.877a1 1 0 01.002 1.749l-8.978 5a1 1 0 01-.973-.001l-9.022-5.04a1 1 0 01.003-1.749l8.978-4.96a1 1 0 01.968.001l9.022 5zM12 22a1 1 0 00.485-.126l9-5-.971-1.748L12 19.856l-8.515-4.73-.971 1.748 9 5A1 1 0 0012 22m8-22h-2v3h-3v2h3v3h2V5h3V3h-3z",
       DuplicateLayer: "M14 16h-3v-2h3v-3h2v3h3v2h-3v3h-2zM20.5 9.5h-11v11h11zM20.5 7.5a2 2 0 012 2v11a2 2 0 01-2 2h-11a2 2 0 01-2-2v-11a2 2 0 012-2h11M3.5 14.5h3v2h-3a2 2 0 01-2-2v-11a2 2 0 012-2h11a2 2 0 012 2v3h-2v-3h-11z",
       CopyLayer: "M21.73 12H19A3 3 0 0116 9V6.27a3 3 0 01.88.61l4.25 4.24a3 3 0 01.6.88ZM6 18V10a4 4 0 014-4h4V9a5 5 0 005 5h3v4a4 4 0 01-4 4H10A4 4 0 016 18ZM3 16h.5a.5.5 0 00.5-.5V10a6 6 0 016-6h5.5a.5.5 0 00.5-.5V3A1 1 0 0015 2H10A8 8 0 002 10v5a1 1 0 001 1Z",
@@ -1729,85 +1772,268 @@ module.exports = (meta) => {
     },
 
     /**
+     * @typedef {{ visible: boolean, adjustments: LayerAdjustments, active: boolean, name: string, id: number }} LayerState
+     *
      * @param {{
-     *  layers: {id: number, name: string, visible: boolean, alpha: number, active: boolean}[]
+     *  layers: LayerState[],
      *  onChange: () => void, width: number, height: number, editor: React.RefObject<CanvasEditor>
      * }} props
      */
     LayerThumbnails({ layers, onChange, width, height, editor }) {
+      /** @type {React.RefObject<number?>} */
+      const dragIndex = useRef(null);
+      const stableLayers = useRef(layers);
+      /** @type {React.RefObject<(() => Promise<void>)[] >} */
+      const actions = useRef([]);
+      /** @type {React.RefObject<number?>} */
+      const timer = useRef(null);
+
+      useEffect(() => {
+        if (stableLayers.current.length !== layers.length) {
+          stableLayers.current = layers;
+        } else {
+          Object.assign(stableLayers.current, layers)
+        }
+      }, [layers]);
+
+      /** @type {(e: React.MouseEvent<HTMLLIElement>, i: number) => void} */
       const handleContextMenu = useCallback((e, i) => {
         (i !== editor.current.activeLayerIndex) && editor.current.sandwichLayer(i);
+
         ContextMenu.open(e, ContextMenu.buildMenu([{
           label: "Name",
           type: "custom",
           render: () => jsx(Components.TextInput, {
             className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
             label: "Name",
-            value: layers[i].name,
+            value: stableLayers.current[i].name,
             onChange: newName => { editor.current.layers[i].layer.name = newName; onChange() },
           })
         }, {
           label: "Visible",
           type: "toggle",
-          checked: layers[i].visible,
+          checked: stableLayers.current[i].visible,
           action: () => {
             editor.current.toggleLayerVisibility(i);
             onChange();
           }
         }, {
-          label: "Opacity",
-          type: "custom",
-          render: () => jsx(Components.NumberSlider, {
-            className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
-            value: layers[i].alpha,
-            minValue: 0,
-            maxValue: 1,
-            label: "Opacity",
-            decimals: 2,
-            expScaling: false,
-            onChange: alpha => {
-              if (alpha === editor.current.layers[i].state.alpha) return;
-              editor.current.setLayerAlpha(utils.clamp(0, alpha, 1), i, true);
-              onChange();
-            },
-            onSlide: alpha => editor.current.setLayerAlpha(alpha, i)
-          })
-        }, {
           label: "Reset Transform",
           disabled: editor.current.layers[i].state.transform.isIdentity,
           action: () => {
-            editor.current.resetLayer(i);
-            onChange();
+            actions.current.push(() => {
+              editor.current.resetLayerTransform(i);
+              onChange();
+            })
           },
           icon: () => jsx(Components.Icon, { d: utils.paths.ResetTransform })
+        }, {
+          label: "Color Adjustments",
+          type: "submenu",
+          items: [{
+            label: "Reset Adjustments",
+            action: () => {
+              actions.current.push(() => {
+                if (editor.current.layers[i].layer.filter === "none") return;
+
+                editor.current.setLayerAdjustment(i, () => ({}), true);
+                onChange();
+              })
+            },
+            icon: () => jsx(Components.Icon, { d: utils.paths.ResetFilters })
+          }, { type: "separator" }, {
+            label: "Opacity",
+            type: "custom",
+            render: () => jsx(Components.NumberSlider, {
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              value: stableLayers.current[i].adjustments.opacity ?? 1,
+              minValue: 0,
+              maxValue: 1,
+              label: "Opacity",
+              decimals: 2,
+              expScaling: false,
+              onChange: val => {
+                const opacity = val === 1 ? undefined : val;
+                if (opacity === editor.current.layers[i].state.adjustments.opacity) return;
+                editor.current.setLayerAdjustment(i, ({ opacity: o, ...p }) => ({ ...p, opacity }), true);
+                onChange();
+              },
+              onSlide: opacity => editor.current.setLayerAdjustment(i, ({ opacity: o, ...p }) => ({ ...p, opacity }))
+            })
+          }, {
+            label: "Brightness",
+            type: "custom",
+            render: () => jsx(Components.NumberSlider, {
+              label: "Brightness",
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              value: stableLayers.current[i].adjustments.brightness ?? 100,
+              minValue: 0,
+              maxValue: 300,
+              suffix: "%",
+              expScaling: false,
+              onChange: val => {
+                const brightness = val === 100 ? undefined : val;
+                if (brightness === editor.current.layers[i].state.adjustments.brightness) return;
+                editor.current.setLayerAdjustment(i, ({ brightness: b, ...p }) => ({ ...p, brightness }), true);
+                onChange();
+              },
+              onSlide: brightness => editor.current.setLayerAdjustment(i, ({ brightness: b, ...p }) => ({ ...p, brightness }))
+            })
+          }, {
+            label: "Contrast",
+            type: "custom",
+            render: () => jsx(Components.NumberSlider, {
+              label: "Contrast",
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              value: stableLayers.current[i].adjustments.contrast ?? 100,
+              minValue: 0,
+              maxValue: 300,
+              suffix: "%",
+              expScaling: false,
+              onChange: val => {
+                const contrast = val === 100 ? undefined : val;
+                if (contrast === editor.current.layers[i].state.adjustments.contrast) return;
+                editor.current.setLayerAdjustment(i, ({ contrast: c, ...p }) => ({ ...p, contrast }), true);
+                onChange();
+              },
+              onSlide: contrast => editor.current.setLayerAdjustment(i, ({ contrast: c, ...p }) => ({ ...p, contrast }))
+            })
+          }, {
+            label: "Greyscale",
+            type: "custom",
+            render: () => jsx(Components.NumberSlider, {
+              label: "Greyscale",
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              value: stableLayers.current[i].adjustments.grayscale ?? 0,
+              minValue: 0,
+              maxValue: 100,
+              suffix: "%",
+              expScaling: false,
+              onChange: val => {
+                const grayscale = val === 0 ? undefined : val;
+                if (grayscale === editor.current.layers[i].state.adjustments.grayscale) return;
+                editor.current.setLayerAdjustment(i, ({ grayscale: g, ...p }) => ({ ...p, grayscale }), true);
+                onChange();
+              },
+              onSlide: grayscale => editor.current.setLayerAdjustment(i, ({ grayscale: g, ...p }) => ({ ...p, grayscale }))
+            })
+          }, {
+            label: "Hue-Rotate",
+            type: "custom",
+            render: () => jsx(Components.NumberSlider, {
+              label: "Hue-Rotate",
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              value: stableLayers.current[i].adjustments["hue-rotate"] ?? 0,
+              minValue: 0,
+              maxValue: 360,
+              suffix: "°",
+              expScaling: false,
+              onChange: val => {
+                const hueRotate = val === 0 ? undefined : val;
+                if (hueRotate === editor.current.layers[i].state.adjustments["hue-rotate"]) return;
+                editor.current.setLayerAdjustment(i, ({ "hue-rotate": h, ...p }) => ({ ...p, "hue-rotate": hueRotate }), true);
+                onChange();
+              },
+              onSlide: hueRotate => editor.current.setLayerAdjustment(i, ({ "hue-rotate": h, ...p }) => ({ ...p, "hue-rotate": hueRotate }))
+            })
+          }, {
+            label: "Invert",
+            type: "custom",
+            render: () => jsx(Components.NumberSlider, {
+              label: "Invert",
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              value: stableLayers.current[i].adjustments.invert ?? 0,
+              minValue: 0,
+              maxValue: 100,
+              suffix: "%",
+              expScaling: false,
+              onChange: val => {
+                const invert = val === 0 ? undefined : val;
+                if (invert === editor.current.layers[i].state.adjustments.invert) return;
+                editor.current.setLayerAdjustment(i, ({ invert: i, ...p }) => ({ ...p, invert }), true);
+                onChange();
+              },
+              onSlide: invert => editor.current.setLayerAdjustment(i, ({ invert: i, ...p }) => ({ ...p, invert }))
+            })
+          }, {
+            label: "Saturate",
+            type: "custom",
+            render: () => jsx(Components.NumberSlider, {
+              label: "Saturate",
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              value: stableLayers.current[i].adjustments.saturate ?? 100,
+              minValue: 0,
+              maxValue: 300,
+              suffix: "%",
+              expScaling: false,
+              onChange: val => {
+                const saturate = val === 100 ? undefined : val;
+                if (saturate === editor.current.layers[i].state.adjustments.saturate) return;
+                editor.current.setLayerAdjustment(i, ({ saturate: s, ...p }) => ({ ...p, saturate }), true);
+                onChange();
+              },
+              onSlide: saturate => editor.current.setLayerAdjustment(i, ({ saturate: s, ...p }) => ({ ...p, saturate }))
+            })
+          }, {
+            label: "Sepia",
+            type: "custom",
+            render: () => jsx(Components.NumberSlider, {
+              label: "Sepia",
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              value: stableLayers.current[i].adjustments.sepia ?? 0,
+              minValue: 0,
+              maxValue: 100,
+              suffix: "%",
+              expScaling: false,
+              onChange: val => {
+                const sepia = val === 0 ? undefined : val;
+                if (sepia === editor.current.layers[i].state.adjustments.sepia) return;
+                editor.current.setLayerAdjustment(i, ({ sepia: s, ...p }) => ({ ...p, sepia }), true);
+                onChange();
+              },
+              onSlide: sepia => editor.current.setLayerAdjustment(i, ({ sepia: s, ...p }) => ({ ...p, sepia }))
+            })
+          }]
         }, { type: "separator" }, {
           label: "Copy Layer Contents",
           action: () => {
-            if (!DiscordNative?.clipboard?.copyImage) return;
+            actions.current.push(async () => {
+              if (!DiscordNative?.clipboard?.copyImage) return;
 
-            UI.showToast("Processing...", { type: "warning" });
-            editor.current.copyLayerContents(blob => {
-              blob.arrayBuffer().then(buffer => {
-                DiscordNative.clipboard.copyImage(new Uint8Array(buffer), "image.png");
-              }).then(() => {
-                UI.showToast("Layer copied", { type: "success" })
-              }).catch(() => {
-                UI.showToast("Failed to copy image", { type: "error" })
-              })
+              UI.showToast("Processing...", { type: "warning" });
+              try {
+                const blob = await editor.current.copyLayerContents(i);
+                if (!blob) throw new Error("Layer index out of range.");
+
+                const buffer = await blob.arrayBuffer();
+                await DiscordNative.clipboard.copyImage(new Uint8Array(buffer), "image.png");
+                UI.showToast("Layer copied", { type: "success" });
+              } catch (err) {
+                UI.showToast("Failed to copy image", { type: "error" });
+                BdApi.Logger.error(meta.slug, err)
+              }
             })
           },
           icon: () => jsx(Components.Icon, { d: utils.paths.CopyLayer })
         }, {
           label: "Duplicate Layer",
-          action: () => editor.current.duplicateLayer(i).then(onChange),
+          action: () => {
+            actions.current.push(async () => {
+              await editor.current.duplicateLayer(i);
+              onChange();
+            })
+          },
           icon: () => jsx(Components.Icon, { d: utils.paths.DuplicateLayer })
         }, { type: "separator" }, {
           label: "Move Layer Up",
-          disabled: i >= layers.length - 1,
+          disabled: i >= stableLayers.current.length - 1,
           action: () => {
             if (i >= editor.current.layers.length - 1) return;
-            editor.current.moveLayers(1, i);
-            onChange();
+
+            actions.current.push(() => {
+              editor.current.moveLayers(1, i);
+              onChange();
+            })
           },
           icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerUp })
         }, {
@@ -1815,26 +2041,49 @@ module.exports = (meta) => {
           disabled: i <= 0,
           action: () => {
             if (i <= 0) return;
-            editor.current.moveLayers(-1, i);
-            onChange();
+
+            actions.current.push(() => {
+              editor.current.moveLayers(-1, i);
+              onChange();
+            })
           },
           icon: () => jsx(Components.Icon, { d: utils.paths.MoveLayerDown })
         }, {
           label: "Remove Layer",
           color: "danger",
-          disabled: layers.length <= 1,
+          disabled: stableLayers.current.length <= 1,
           action: () => {
             if (editor.current.layers.length <= 1) return;
-            editor.current.deleteLayer(i);
-            onChange();
+
+            actions.current.push(() => {
+              editor.current.deleteLayer(i);
+              onChange();
+            })
           },
           icon: () => jsx(Components.Icon, { d: utils.paths.DeleteLayer })
         }]), {
           align: "bottom",
-          position: "left",
-          onClose: () => { (i !== editor.current.activeLayerIndex) && editor.current.sandwichLayer() }
+          position: "center",
+          onClose: () => {
+            // For some stupid reason, onClose is called before the action of a menu item.
+            // So use timeout to "wait" until the action is added to the set,
+            // then execute them as callbacks, and only then we can cleanup...
+            if (timer.current != null) {
+              clearTimeout(timer.current);
+              timer.current == null;
+            }
+            timer.current = setTimeout(async () => {
+              await Promise.all(actions.current.map(f => f()));
+              actions.current = [];
+              timer.current = null;
+
+              if (i !== editor.current.activeLayerIndex) {
+                editor.current.sandwichLayer();
+              }
+            })
+          }
         });
-      }, [onChange, layers]);
+      }, [onChange]);
 
       return jsx(BdApi.Components.ErrorBoundary, {
         fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
@@ -1849,20 +2098,22 @@ module.exports = (meta) => {
                 draggable: true,
                 onDragStart: (e) => {
                   e.currentTarget.classList.add("dragging");
-                  e.dataTransfer.clearData();
                   e.dataTransfer.setData("text/plain", String(i));
                   e.dataTransfer.effectAllowed = "move";
+                  dragIndex.current = i;
                 },
-                onDragEnd: (e) => { e.currentTarget.classList.remove("dragging") },
+                onDragEnd: (e) => {
+                  e.currentTarget.classList.remove("dragging");
+                  dragIndex.current = null;
+                },
                 onDragEnter: (e) => { e.currentTarget.classList.add("droptarget") },
                 onDragLeave: (e) => { !e.currentTarget.contains(e.relatedTarget) && e.currentTarget.classList.remove("droptarget") },
                 onDrop: (e) => {
                   e.currentTarget.classList.remove("droptarget");
-                  const idx = e.dataTransfer.getData("text/plain");
-                  const from = Number(idx);
-                  if (!idx || i === from) return;
-                  editor.current.moveLayers(i - from, from);
-                  onChange()
+                  if (dragIndex.current != null) {
+                    editor.current.moveLayers(i - dragIndex.current, dragIndex.current);
+                    onChange();
+                  }
                 },
                 onContextMenu: (e) => { handleContextMenu(e, i) },
                 onClick: (e) => {
@@ -1928,6 +2179,7 @@ module.exports = (meta) => {
     /** @param {{bitmap: ImageBitmap, ref: React.RefObject<any>}} props */
     ImageEditor({ bitmap, ref }) {
       const [canUndoRedo, setCanUndoRedo] = useState(0);
+      /** @type {[LayerState[], React.Dispatch<React.SetStateAction<LayerState[]>>]} */
       const [layers, setLayers] = useState(() => []);
       const [dims, setDims] = useState({ width: bitmap.width, height: bitmap.height });
 
@@ -2047,7 +2299,7 @@ module.exports = (meta) => {
         });
         setLayers(editor.current.layers.map((layer, i) => ({
           visible: layer.state.isVisible,
-          alpha: layer.state.alpha,
+          adjustments: layer.state.adjustments,
           active: i === editor.current.activeLayerIndex,
           name: layer.layer.name,
           id: layer.layer.id,
@@ -2062,7 +2314,7 @@ module.exports = (meta) => {
         editor.current = new CanvasEditor(canvasRef.current, bitmap);
         setLayers(editor.current.layers.map((layer, i) => ({
           visible: layer.state.isVisible,
-          alpha: layer.state.alpha,
+          adjustments: layer.state.adjustments,
           active: i === editor.current.activeLayerIndex,
           name: layer.layer.name,
           id: layer.layer.id
@@ -3310,6 +3562,7 @@ module.exports = (meta) => {
       const [sliderValue, setSliderValue] = useState(() => expScaling && withSlider ? utils.logScaling(value, { minValue, centerValue, maxValue }) : value);
       const id = useId();
       const oldValue = useRef(value);
+      /** @type {React.RefObject<HTMLInputElement?>} */
       const inputRef = useRef(null);
       const sliderRef = useRef(null);
 
@@ -3330,6 +3583,21 @@ module.exports = (meta) => {
           sliderRef.current?._reactInternals.stateNode.setState({ value: val });
         }
       }), [minValue, centerValue, maxValue]);
+
+      useEffect(() => {
+        const ctrl = new AbortController();
+        inputRef.current?.addEventListener("wheel", e => {
+          if (document.activeElement !== e.currentTarget || !e.deltaY || e.buttons) return;
+          const delta = -Math.sign(e.deltaY) * (decimals ? 10 ** (-1 * decimals) : 1) * ((e.ctrlKey || e.metaKey) ? 100 : e.shiftKey ? 10 : 1);
+          setTextValue(val => {
+            val = (Number(val) + delta).toFixed(decimals ?? 0);
+            return `${Math.max(Number(val), minValue ?? Number(val))}`;
+          });
+          e.preventDefault();
+        }, { signal: ctrl.signal, passive: false });
+
+        return () => { ctrl.abort() }
+      }, [])
 
       useEffect(() => {
         setTextValue(`${value}`);
@@ -3393,15 +3661,6 @@ module.exports = (meta) => {
         }
       }, []);
 
-      const handleWheel = useCallback(e => {
-        if (document.activeElement !== e.currentTarget || !e.deltaY || e.buttons) return;
-        const delta = -Math.sign(e.deltaY) * (decimals ? 10 ** (-1 * decimals) : 1) * ((e.ctrlKey || e.metaKey) ? 100 : e.shiftKey ? 10 : 1);
-        setTextValue(val => {
-          val = (Number(val) + delta).toFixed(decimals ?? 0);
-          return `${Math.max(Number(val), minValue ?? Number(val))}`;
-        });
-      }, []);
-
       const handleBeforeInput = useCallback(e => {
         if (e.data && /[^0-9e+\-.]+/.test(e.data)) e.preventDefault?.();
       }, []);
@@ -3463,17 +3722,16 @@ module.exports = (meta) => {
               font-size: smaller;
             }
           }`),
-          label && jsx("label", null, `${label}: `),
+          label && jsx("label", { htmlFor: id, children: `${label}: ` }),
           jsx("input", {
             className: "number-input",
-            id: id,
+            id,
             value: textValue,
             ref: inputRef,
             onBlur: handleTextCommit,
             onKeyDown: handleKeyDown,
             onChange: handleChange,
             onBeforeInput: handleBeforeInput,
-            onWheel: handleWheel,
             onMouseEnter: handleMouseEnter,
             onMouseLeave: handleMouseLeave
           }),
@@ -4007,9 +4265,10 @@ module.exports = (meta) => {
   background-color: var(--brand-500);
 }
 
-.layer-visibility {
+.icon-button.layer-visibility {
   min-width: 0;
-  padding: 0;
+  padding-inline: 0;
+  background-color: transparent;
   svg {
     width: 18px;
     height: 18px;
