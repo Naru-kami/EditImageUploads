@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.1.0
+ * @version 0.1.1
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -44,12 +44,12 @@ module.exports = (meta) => {
         ...utils.getKeysInModule(internals.Select, { SingleSelect: "(\"SingleSelect\")" }),
         ...utils.getKeysInModule(internals.urlConverter, {
           convertable: "canSaveImage",
-          toMediaUrl: "return null",
+          toMediaUrl: "if(null!=",
           toCdnUrl: "searchParams"
         }),
         ...utils.getKeysInModule(internals.nativeUI, {
-          closeModal: ".onCloseCallback()",
-          closeModalInAllContexts: ".onCloseCallback)",
+          closeModal: ".onCloseCallback(),",
+          closeModalInAllContexts: "onCloseCallback?.()}",
           FocusRing: "FocusRing was given a focusTarget",
           MenuSliderControl: "moveGrabber",
           openModal: ",stackNextByDefault:",
@@ -64,26 +64,6 @@ module.exports = (meta) => {
     BdApi.Logger.info(meta.slug, "Initialized");
 
     if (Data.load(meta.slug, "version") !== meta.version) {
-      UI.showChangelogModal({
-        title: meta.name,
-        subtitle: meta.version,
-        blurb: "Color adjustments are now here!",
-        changes: [{
-          title: "Added",
-          type: "added",
-          items: [
-            "Color adjustments:\nRight click a layer to access several adjustment options in the submenu. These adjustments will also apply to subsequently added drawings on the same layer."
-          ]
-        }, {
-          title: "Fixes",
-          type: "fixed",
-          items: [
-            "Fixes an issue with reordering layer thumbnails, where under special circumstances it would crash the modal.",
-            "Fixes an issue whereby drawn strokes are sometimes being clipped on down-scaled layers.",
-            "Some layer actions are now performed on the correct layer."
-          ]
-        }]
-      });
       Data.save(meta.slug, "version", meta.version);
     }
   }
@@ -1245,7 +1225,7 @@ module.exports = (meta) => {
     /** @param {object} mod @param {Record<string, string>} strs */
     getKeysInModule(mod, strs) {
       let size = Object.keys(strs).length;
-      const found = {};
+      const found = Object.keys(strs).reduce((p, c) => (p[c] = undefined, p), {});
 
       outer: for (const key in mod) {
         const src = mod[key]?.toString?.();
