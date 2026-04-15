@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.1.1
+ * @version 0.1.2
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -24,15 +24,15 @@ module.exports = (meta) => {
       uploadCard: { id: 914905, filter: Filters.bySource(".attachmentItemSmall]:") },
       urlConverter: { id: 803316, filter: Filters.bySource(".searchParams.delete(\"width\"),") },
       nativeUI: { id: 397927, filter: Filters.byKeys("showToast") },
-      Select: { id: 843282, filter: Filters.bySource("(\"SingleSelect\")") },
+      Select: { id: 843282, filter: Filters.bySource('"text-only"!==') },
       ModalSystem: { id: 935462, filter: Filters.bySource(".MODAL_ROOT_LEGACY,") },
       ManaButton: { id: 657718, filter: Filters.bySource(".BUTTON_LOADING_STARTED_LABEL,") },
 
-      actionButtonClass: { id: 331215, filter: Filters.byKeys("dangerous", "button") },
-      actionIconClass: { id: 238855, filter: m => m.actionBarIcon && !m.action },
-      sliderClass: { id: 134971, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
-      scrollbarClass: { id: 588428, filter: m => m.thin && !m.none },
-      contextMenuClass: { id: 658122, filter: Filters.byKeys("switchContainer") }
+      actionButtonClass: { id: 264952, filter: Filters.byKeys("dangerous", "button") },
+      actionIconClass: { id: 637996, filter: m => m.actionBarIcon && !m.action },
+      contextMenuClass: { id: 945375, filter: Filters.byKeys("switchContainer") },
+      scrollbarClass: { id: 120773, filter: m => m.thin && !m.none },
+      sliderClass: { id: 920126, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
     });
 
     Object.assign(internals, {
@@ -41,7 +41,7 @@ module.exports = (meta) => {
       keys: {
         ...utils.getKeysInModule(internals.uploadCard, { uploadCard: ".attachmentItemSmall]:" }),
         ...utils.getKeysInModule(internals.ManaButton, { ManaButton: ".BUTTON_LOADING_STARTED_LABEL," }),
-        ...utils.getKeysInModule(internals.Select, { SingleSelect: "(\"SingleSelect\")" }),
+        ...utils.getKeysInModule(internals.Select, { SingleSelect: "({value:" }),
         ...utils.getKeysInModule(internals.urlConverter, {
           convertable: "canSaveImage",
           toMediaUrl: "if(null!=",
@@ -78,9 +78,8 @@ module.exports = (meta) => {
         args?.upload?.mimeType?.startsWith("image/") && !args?.upload?.mimeType?.endsWith("gif") &&
         !ret?.props?.actions?.props?.children?.some(e => e?.key === meta.slug)
       ) {
-        ret.props.actions.props.children.splice(0, 0, jsx(BdApi.Components.ErrorBoundary, {
+        ret.props.actions.props.children.splice(0, 0, jsx(Components.ErrorBoundary, {
           key: meta.slug,
-          fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
           children: jsx(Components.UploadIcon, { args })
         }))
       }
@@ -102,9 +101,8 @@ module.exports = (meta) => {
               const convertable = internals.urlConverter[internals.keys.convertable](args.item.original ?? args.item.url)
               const mediaUrl = convertable ? internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url) : args.item.url;
               const url = internals.urlConverter[internals.keys.toCdnUrl](mediaUrl, args.item.contentType, args.item.originalContentType);
-              url && ret.props.children.unshift(jsx(BdApi.Components.ErrorBoundary, {
+              url && ret.props.children.unshift(jsx(Components.ErrorBoundary, {
                 key: meta.slug,
-                fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
                 children: jsx(Components.RemixIcon, { url })
               }))
             } catch { }
@@ -1206,7 +1204,7 @@ module.exports = (meta) => {
         const exports = Webpack.getById(filters[name].id);
         const id = filters[name].id;
 
-        if (exports && filters[name].filter(exports, { id, exports }, id)) {
+        if (exports && filters[name].filter(exports, { id, exports, loaded: true }, `${id}`)) {
           result[name] = exports;
           delete filters[name];
           continue;
@@ -1215,8 +1213,9 @@ module.exports = (meta) => {
       }
 
       if (wrongOrMissed) {
-        BdApi.Logger.warn(meta.slug, "Mismatched id for modules:", Object.keys(filters));
-        Object.assign(result, Webpack.getBulkKeyed(filters))
+        const missing = Webpack.getBulkKeyed(filters);
+        BdApi.Logger.warn(meta.slug, "Mismatched id for modules:", missing);
+        Object.assign(result, missing);
       }
 
       return result;
@@ -1628,6 +1627,14 @@ module.exports = (meta) => {
   }
 
   var Components = {
+    /** @param {React.PropsWithChildren<{fallback?: React.ReactNode}>} props */
+    ErrorBoundary({ fallback, ...restProps }) {
+      return jsx(BdApi.Components.ErrorBoundary, {
+        ...restProps,
+        fallback: fallback ?? jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error")
+      })
+    },
+
     /** @param {{d: string}} props */
     Icon({ d }) {
       return jsx("svg", {
@@ -1653,8 +1660,7 @@ module.exports = (meta) => {
      * }} props
      */
     IconButton({ onClick, tooltip, d, disabled, active, className }) {
-      return jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
+      return jsx(Components.ErrorBoundary, {
         children: jsx(BdApi.Components.Tooltip, {
           spacing: 11,
           text: tooltip,
@@ -2065,67 +2071,64 @@ module.exports = (meta) => {
         });
       }, [onChange]);
 
-      return jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
-        children: jsx("div", {
-          className: utils.clsx("thumbnails", internals.scrollbarClass?.thin),
-          children: jsx("ul", {
-            className: "thumbnails-wrapper",
-            children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
-              key: state.id,
-              children: jsx("li", {
-                tabIndex: 0,
-                draggable: true,
-                onDragStart: (e) => {
-                  e.currentTarget.classList.add("dragging");
-                  e.dataTransfer.setData("text/plain", String(i));
-                  e.dataTransfer.effectAllowed = "move";
-                  dragIndex.current = i;
-                },
-                onDragEnd: (e) => {
-                  e.currentTarget.classList.remove("dragging");
-                  dragIndex.current = null;
-                },
-                onDragEnter: (e) => { e.currentTarget.classList.add("droptarget") },
-                onDragLeave: (e) => { !e.currentTarget.contains(e.relatedTarget) && e.currentTarget.classList.remove("droptarget") },
-                onDrop: (e) => {
-                  e.currentTarget.classList.remove("droptarget");
-                  if (dragIndex.current != null) {
-                    editor.current.moveLayers(i - dragIndex.current, dragIndex.current);
-                    onChange();
-                  }
-                },
-                onContextMenu: (e) => { handleContextMenu(e, i) },
-                onClick: (e) => {
-                  if (editor.current.activeLayerIndex === i) return;
-                  editor.current.activeLayerIndex = i;
-                  e.currentTarget.scrollIntoView({ block: "nearest" })
+      return jsx(Components.ErrorBoundary, null, jsx("div", {
+        className: utils.clsx("thumbnails", internals.scrollbarClass?.thin),
+        children: jsx("ul", {
+          className: "thumbnails-wrapper",
+          children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
+            key: state.id,
+            children: jsx("li", {
+              tabIndex: 0,
+              draggable: true,
+              onDragStart: (e) => {
+                e.currentTarget.classList.add("dragging");
+                e.dataTransfer.setData("text/plain", String(i));
+                e.dataTransfer.effectAllowed = "move";
+                dragIndex.current = i;
+              },
+              onDragEnd: (e) => {
+                e.currentTarget.classList.remove("dragging");
+                dragIndex.current = null;
+              },
+              onDragEnter: (e) => { e.currentTarget.classList.add("droptarget") },
+              onDragLeave: (e) => { !e.currentTarget.contains(e.relatedTarget) && e.currentTarget.classList.remove("droptarget") },
+              onDrop: (e) => {
+                e.currentTarget.classList.remove("droptarget");
+                if (dragIndex.current != null) {
+                  editor.current.moveLayers(i - dragIndex.current, dragIndex.current);
                   onChange();
-                },
-                onKeyDown: (e) => {
-                  if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
-                    e.currentTarget.click();
-                  }
-                },
-                className: utils.clsx("thumbnail", state.active && "active"),
-                children: [
-                  jsx(Components.Thumbnail, { index: i, editor, width, height }),
-                  jsx("span", { className: "layer-label" }, state.name),
-                  jsx(Components.IconButton, {
-                    className: "layer-visibility",
-                    tooltip: state.visible ? "Visible" : "Hidden",
-                    d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
-                    onClick: () => {
-                      editor.current.toggleLayerVisibility(i);
-                      onChange();
-                    },
-                  }),
-                ]
-              })
-            }))
-          })
+                }
+              },
+              onContextMenu: (e) => { handleContextMenu(e, i) },
+              onClick: (e) => {
+                if (editor.current.activeLayerIndex === i) return;
+                editor.current.activeLayerIndex = i;
+                e.currentTarget.scrollIntoView({ block: "nearest" })
+                onChange();
+              },
+              onKeyDown: (e) => {
+                if (e.target === e.currentTarget && (e.key === "Enter" || e.key === " ")) {
+                  e.currentTarget.click();
+                }
+              },
+              className: utils.clsx("thumbnail", state.active && "active"),
+              children: [
+                jsx(Components.Thumbnail, { index: i, editor, width, height }),
+                jsx("span", { className: "layer-label" }, state.name),
+                jsx(Components.IconButton, {
+                  className: "layer-visibility",
+                  tooltip: state.visible ? "Visible" : "Hidden",
+                  d: state.visible ? utils.paths.Visibility : utils.paths.VisibilityOff,
+                  onClick: () => {
+                    editor.current.toggleLayerVisibility(i);
+                    onChange();
+                  },
+                }),
+              ]
+            })
+          }))
         })
-      })
+      }))
     },
 
     /** @param {{index: number, editor: React.RefObject<CanvasEditor>, width: number, height: number}} */
@@ -2163,7 +2166,7 @@ module.exports = (meta) => {
       const [layers, setLayers] = useState(() => []);
       const [dims, setDims] = useState({ width: bitmap.width, height: bitmap.height });
 
-      const [mode, _setMode] = useState(4);
+      const [mode, _setMode] = useState(null);
       const [font, setFont] = hooks.useStoredState("font", () => ({ family: "gg sans", weight: 500 }));
       const [fixedAspect, setFixedAspect] = hooks.useStoredState("fixedAspectRatio", true);
       const [strokeStyle, setStrokeStyle] = hooks.useStoredState("strokeStyle", () => ({ width: 25, color: "#000000" }));
@@ -2939,10 +2942,10 @@ module.exports = (meta) => {
                       setStrokeStyle(s => ({ ...s, width: value }));
                     }
                   }),
-                  mode === 5 && jsx(Components.FontSelector, { // to-do: Wrap in <Activity/> once Discord hits React 19.2.0
+                  mode === 5 && jsx(Components.ErrorBoundary, null, jsx(Components.FontSelector, { // to-do: Wrap in <Activity/> once Discord hits React 19.2.0
                     value: font,
                     onChange: setFont
-                  }),
+                  })),
                   mode === 0 && jsx(Components.IconButton, {
                     tooltip: fixedAspect ? "Preserve aspect ratio" : "Free region select",
                     d: fixedAspect ? utils.paths.Lock : utils.paths.LockOpen,
@@ -3079,7 +3082,7 @@ module.exports = (meta) => {
         const id = ContextMenu.open(e, ContextMenu.buildMenu([{
           label: "resize-selector",
           type: "custom",
-          render: () => jsx(Components.MenuItemSelect, {
+          render: () => jsx(Components.ErrorBoundary, null, jsx(Components.MenuItemSelect, {
             label: "Resize...",
             options: [
               { label: "Canvas (px)", value: 0 },
@@ -3091,7 +3094,7 @@ module.exports = (meta) => {
               resize.current.mode = v;
               Data.save(meta.slug, "resize", resize.current);
             }
-          })
+          }))
         }, {
           label: "resizer",
           type: "custom",
@@ -3244,37 +3247,34 @@ module.exports = (meta) => {
         }, {
           label: "save",
           type: "custom",
-          render: () => jsx(BdApi.Components.ErrorBoundary, {
-            fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
-            children: jsx("div", {
-              style: { minWidth: 200 },
-              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
-              children: jsx(internals.ManaButton[internals.keys.ManaButton], {
-                size: "sm",
-                fullWidth: true,
-                text: "Apply",
-                onClick: () => {
-                  switch (resize.current.mode) {
-                    case 0: {
-                      onCanvasResize({ width: menuData.current.width, height: menuData.current.height });
-                      break;
-                    }
-                    case 1: {
-                      const newWidth = Math.round(dimensions.width * menuData.current.canvasP / 100);
-                      const newHeight = Math.round(dimensions.height * menuData.current.canvasP / 100);
-                      onCanvasResize({ width: newWidth, height: newHeight });
-                      break;
-                    }
-                    case 2: {
-                      onImageResize(menuData.current.imageP / 100)
-                      break;
-                    }
+          render: () => jsx(Components.ErrorBoundary, null, jsx("div", {
+            style: { minWidth: 200 },
+            className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+            children: jsx(internals.ManaButton[internals.keys.ManaButton], {
+              size: "sm",
+              fullWidth: true,
+              text: "Apply",
+              onClick: () => {
+                switch (resize.current.mode) {
+                  case 0: {
+                    onCanvasResize({ width: menuData.current.width, height: menuData.current.height });
+                    break;
                   }
-                  ContextMenu.close(id);
+                  case 1: {
+                    const newWidth = Math.round(dimensions.width * menuData.current.canvasP / 100);
+                    const newHeight = Math.round(dimensions.height * menuData.current.canvasP / 100);
+                    onCanvasResize({ width: newWidth, height: newHeight });
+                    break;
+                  }
+                  case 2: {
+                    onImageResize(menuData.current.imageP / 100)
+                    break;
+                  }
                 }
-              })
+                ContextMenu.close(id);
+              }
             })
-          })
+          }))
         }]), {
           align: "top",
           position: "left"
@@ -3357,7 +3357,7 @@ module.exports = (meta) => {
         }, {
           label: "Smoothing",
           type: "custom",
-          render: () => jsx(Components.MenuItemSelect, {
+          render: () => jsx(Components.ErrorBoundary, null, jsx(Components.MenuItemSelect, {
             label: "Image smoothing",
             options: smoothingOptions.current,
             initialValue: smoothing,
@@ -3365,16 +3365,16 @@ module.exports = (meta) => {
               setSmoothing(s);
               onChange?.({ smoothing: s })
             }
-          })
+          }))
         }, {
           label: "Export",
           type: "custom",
-          render: () => jsx(Components.MenuItemSelect, {
+          render: () => jsx(Components.ErrorBoundary, null, jsx(Components.MenuItemSelect, {
             label: "Export as",
             options: exportOptions.current,
             initialValue: exportType,
             onChange: setExportType
-          })
+          }))
         }]), {
           align: "bottom",
           position: "left"
@@ -3395,31 +3395,28 @@ module.exports = (meta) => {
     MenuItemSelect({ initialValue, options, onChange, label }) {
       const [value, setValue] = useState(initialValue);
 
-      return jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
-        children: jsx("div", {
-          className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
-          children: [
-            jsx("style", null, `@scope {
-              :scope {
-                display: grid;
-                grid-template-columns: 1fr;
-                gap: 4px;
-              }
-              .select { display: unset }
-            }`),
-            label && jsx("span", null, label),
-            jsx(internals.Select[internals.keys.SingleSelect], {
-              options: options,
-              value: value,
-              className: "select",
-              onChange: v => {
-                setValue(v);
-                onChange?.(v);
-              }
-            })
-          ]
-        })
+      return jsx("div", {
+        className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+        children: [
+          jsx("style", null, `@scope {
+            :scope {
+              display: grid;
+              grid-template-columns: 1fr;
+              gap: 4px;
+            }
+            .select { display: unset }
+          }`),
+          label && jsx("span", null, label),
+          jsx(internals.Select[internals.keys.SingleSelect], {
+            options: options,
+            value: value,
+            className: "select",
+            onChange: v => {
+              setValue(v);
+              onChange?.(v);
+            }
+          })
+        ]
       })
     },
 
@@ -3472,43 +3469,40 @@ module.exports = (meta) => {
         });
       }, []);
 
-      return jsx(BdApi.Components.ErrorBoundary, {
-        fallback: jsx("div", { style: { color: "var(--red-430, #d6363f)" } }, "Component Error"),
-        children: jsx("div", {
-          className: "font-selector",
-          children: [
-            jsx(internals.Select[internals.keys.SingleSelect], {
-              options: familyOptions,
-              value: family,
-              className: "select",
-              onChange: f => {
-                setFamily(f);
-                onChange({ family: f, weight });
-              },
-              renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: option.value } }, option.value),
-              renderOptionLabel: option => jsx("span", {
-                ref: node => { option.value === family && node?.scrollIntoView({ block: "nearest" }) },
-                style: { fontFamily: option.label, scrollMarginBlock: "24px" },
-                children: option.label
-              }),
+      return jsx("div", {
+        className: "font-selector",
+        children: [
+          jsx(internals.Select[internals.keys.SingleSelect], {
+            options: familyOptions,
+            value: family,
+            className: "select",
+            onChange: f => {
+              setFamily(f);
+              onChange({ family: f, weight });
+            },
+            renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: option.value } }, option.value),
+            renderOptionLabel: option => jsx("span", {
+              ref: node => { option.value === family && node?.scrollIntoView({ block: "nearest" }) },
+              style: { fontFamily: option.label, scrollMarginBlock: "24px" },
+              children: option.label
             }),
-            jsx(internals.Select[internals.keys.SingleSelect], {
-              options: weightOptions,
-              value: weight,
-              className: "select",
-              onChange: w => {
-                setWeight(w);
-                onChange({ family, weight: w });
-              },
-              renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: family, fontWeight: option.value } }, option.value),
-              renderOptionLabel: option => jsx("span", {
-                ref: node => { option.value === weight && node?.scrollIntoView({ block: "nearest" }) },
-                style: { fontFamily: family, fontWeight: option.label, scrollMarginBlock: "24px" },
-                children: option.label
-              }),
-            })
-          ]
-        })
+          }),
+          jsx(internals.Select[internals.keys.SingleSelect], {
+            options: weightOptions,
+            value: weight,
+            className: "select",
+            onChange: w => {
+              setWeight(w);
+              onChange({ family, weight: w });
+            },
+            renderOptionValue: ([option]) => jsx("span", { style: { fontFamily: family, fontWeight: option.value } }, option.value),
+            renderOptionLabel: option => jsx("span", {
+              ref: node => { option.value === weight && node?.scrollIntoView({ block: "nearest" }) },
+              style: { fontFamily: family, fontWeight: option.label, scrollMarginBlock: "24px" },
+              children: option.label
+            }),
+          })
+        ]
       })
     },
 
