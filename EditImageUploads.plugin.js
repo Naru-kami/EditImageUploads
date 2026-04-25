@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.1.2
+ * @version 0.1.3
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -11,8 +11,8 @@ module.exports = (meta) => {
   const { React, Patcher, Webpack, Webpack: { Filters }, DOM, UI, ContextMenu, Data } = BdApi;
 
   const {
-    createElement: jsx, useState, useEffect, useLayoutEffect, useRef, useId,
-    useImperativeHandle, useCallback, Fragment, cloneElement, useTransition
+    createElement: jsx, useState, useEffect, useLayoutEffect, useRef,
+    useImperativeHandle, useCallback, Fragment, useTransition, useId,
   } = React;
 
   var internals, ctrl;
@@ -20,46 +20,37 @@ module.exports = (meta) => {
   function init() {
     if (internals) return;
 
-    internals = utils.getBulk({
-      uploadCard: { id: 914905, filter: Filters.bySource(".attachmentItemSmall]:") },
-      urlConverter: { id: 803316, filter: Filters.bySource(".searchParams.delete(\"width\"),") },
-      nativeUI: { id: 397927, filter: Filters.byKeys("showToast") },
-      Select: { id: 843282, filter: Filters.bySource('"text-only"!==') },
-      ModalSystem: { id: 935462, filter: Filters.bySource(".MODAL_ROOT_LEGACY,") },
-      ManaButton: { id: 657718, filter: Filters.bySource(".BUTTON_LOADING_STARTED_LABEL,") },
+    internals = Webpack.getBulkKeyed({
+      SingleSelect: { firstId: 843282, filter: Filters.byStrings("renderLeading:", ",onChange:"), searchExports: true },
+      ModalSystem: { firstId: 935462, filter: Filters.byStrings(".MODAL_ROOT_LEGACY,"), searchExports: true },
+      ManaButton: { firstId: 657718, filter: Filters.byStrings(".BUTTON_LOADING_STARTED_LABEL,"), searchExports: true },
 
-      actionButtonClass: { id: 264952, filter: Filters.byKeys("dangerous", "button") },
-      actionIconClass: { id: 637996, filter: m => m.actionBarIcon && !m.action },
-      contextMenuClass: { id: 945375, filter: Filters.byKeys("switchContainer") },
-      scrollbarClass: { id: 120773, filter: m => m.thin && !m.none },
-      sliderClass: { id: 920126, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
+      openModal: { firstId: 192308, filter: Filters.byStrings('"stack":"replace"'), searchExports: true },
+      closeModal: { firstId: 192308, filter: Filters.byStrings(".onCloseCallback(),"), searchExports: true },
+      closeModalInAllContexts: { firstId: 192308, filter: Filters.byStrings("onCloseCallback?.()}"), searchExports: true },
+      FocusRing: { firstId: 187322, filter: Filters.byStrings("FocusRing was given a focusTarget"), searchExports: true },
+      MenuSliderControl: { firstId: 106236, filter: Filters.byStrings("moveGrabber"), searchExports: true },
+
+      actionButtonClass: { firstId: 874280, filter: Filters.byKeys("dangerous", "button") },
+      actionIconClass: { firstId: 389116, filter: m => m.actionBarIcon && !m.action },
+      contextMenuClass: { firstId: 32271, filter: Filters.byKeys("switchContainer") },
+      scrollbarClass: { firstId: 457845, filter: m => m.thin && !m.none },
+      sliderClass: { firstId: 375905, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
     });
 
     Object.assign(internals, {
-      uploadDispatcher: Webpack.getByKeys("setFile"), // 608299
+      uploadDispatcher: Webpack.getByKeys("setFile", { firstId: 608299 }),
       SelectedChannelStore: Webpack.getStore("SelectedChannelStore"),
-      keys: {
-        ...utils.getKeysInModule(internals.uploadCard, { uploadCard: ".attachmentItemSmall]:" }),
-        ...utils.getKeysInModule(internals.ManaButton, { ManaButton: ".BUTTON_LOADING_STARTED_LABEL," }),
-        ...utils.getKeysInModule(internals.Select, { SingleSelect: "({value:" }),
-        ...utils.getKeysInModule(internals.urlConverter, {
-          convertable: "canSaveImage",
-          toMediaUrl: "if(null!=",
-          toCdnUrl: "searchParams"
-        }),
-        ...utils.getKeysInModule(internals.nativeUI, {
-          closeModal: ".onCloseCallback(),",
-          closeModalInAllContexts: "onCloseCallback?.()}",
-          FocusRing: "FocusRing was given a focusTarget",
-          MenuSliderControl: "moveGrabber",
-          openModal: ",stackNextByDefault:",
-        }),
-        ...utils.getKeysInModule(internals.ModalSystem, {
-          ModalRoot: ".MODAL_ROOT_LEGACY,",
-          ModalContent: ",scrollbarType:",
-          ModalFooter: ".HORIZONTAL_REVERSE,",
-        })
-      }
+      urlConverter: Webpack.getMangled(Filters.bySource(".searchParams.delete(\"width\"),"), {
+        isConvertable: Filters.byStrings("canSaveImage"),
+        toMediaUrl: Filters.byStrings("if(null!="),
+        toCdnUrl: Filters.byStrings("searchParams"),
+      }, { firstId: 803316 }),
+      ModalSystem: Webpack.getMangled(Filters.bySource(".MODAL_ROOT_LEGACY,"), {
+        ModalRoot: Filters.byStrings(".MODAL_ROOT_LEGACY,"),
+        ModalContent: Filters.byStrings(",scrollbarType:"),
+        ModalFooter: Filters.byStrings(".HORIZONTAL_REVERSE,"),
+      }, { firstId: 935462 }),
     });
     BdApi.Logger.info(meta.slug, "Initialized");
 
@@ -71,9 +62,10 @@ module.exports = (meta) => {
   function start() {
     init();
 
-    if (!["ModalRoot", "ModalContent", "ModalFooter", "openModal"].every(key => key in internals.keys)) return;
+    if (!["ModalRoot", "ModalContent", "ModalFooter"].every(key => key in internals.ModalSystem) || !("openModal" in internals)) return;
 
-    internals.keys.uploadCard && Patcher.after(meta.slug, internals.uploadCard, internals.keys.uploadCard, (_, [args], ret) => {
+    const [uploadCard, uploadCardkey] = Webpack.getWithKey(Filters.byStrings(".attachmentItemSmall]:"), { firstId: 914905 });
+    uploadCardkey && Patcher.after(meta.slug, uploadCard, uploadCardkey, (_, [args], ret) => {
       if (
         args?.upload?.mimeType?.startsWith("image/") && !args?.upload?.mimeType?.endsWith("gif") &&
         !ret?.props?.actions?.props?.children?.some(e => e?.key === meta.slug)
@@ -86,30 +78,28 @@ module.exports = (meta) => {
     });
 
     ctrl = new AbortController()
-    Webpack.waitForModule(Filters.bySource("children:[\"IMAGE\"==="), ctrl).then(m => { // 73249
+    Webpack.waitForModule(Filters.bySource('FOCUS_SENSITIVE="FOCUS_SENSITIVE"'), ctrl).then(m => { // 358731
       if (!m) return;
 
-      const key = Object.keys(m).find(k => m[k].type?.toString().includes("children:[\"IMAGE\"==="));
-      key && Patcher.after(meta.slug, m[key], "type", (_, [args], res) => {
-        if (args.item.type !== "IMAGE" || args.item.srcIsAnimated || args.item.animated) return res;
+      const key = Object.keys(m).find(k => m[k]?.type?.toString().includes('FOCUS_SENSITIVE'));
+      key && Patcher.after(meta.slug, m[key], "type", (_, [props], res) => {
+        if (props.mode !== "FOCUS_SENSITIVE") return;
 
-        return cloneElement(res, {
-          children: className => {
-            const ret = res.props.children(className);
+        const item = res.props.children.find(child => child.type === Fragment)?.props.children[0].props.item;
+        if (item?.type !== "IMAGE" || item?.srcIsAnimated || item?.animated) return res;
 
-            try {
-              const convertable = internals.urlConverter[internals.keys.convertable](args.item.original ?? args.item.url)
-              const mediaUrl = convertable ? internals.urlConverter[internals.keys.toMediaUrl](args.item.original, args.item.url) : args.item.url;
-              const url = internals.urlConverter[internals.keys.toCdnUrl](mediaUrl, args.item.contentType, args.item.originalContentType);
-              url && ret.props.children.unshift(jsx(Components.ErrorBoundary, {
-                key: meta.slug,
-                children: jsx(Components.RemixIcon, { url })
-              }))
-            } catch { }
+        try {
+          const convertable = internals.urlConverter.isConvertable(item.original ?? item.url)
+          const mediaUrl = convertable ? internals.urlConverter.toMediaUrl(item.original, item.url) : item.url;
+          const url = internals.urlConverter.toCdnUrl(mediaUrl, item.contentType, item.originalContentType);
+          url && res.props.children.unshift(jsx(Components.ErrorBoundary, {
+            key: meta.slug,
+            children: jsx(Components.RemixIcon, { url })
+          }))
+        } catch { }
 
-            return ret;
-          }
-        })
+        return res;
+
       })
     })
 
@@ -1195,56 +1185,6 @@ module.exports = (meta) => {
   }
 
   var utils = {
-    /** @param {Record<string, {id: number, filter: () => boolean}>} filters */
-    getBulk(filters) {
-      let wrongOrMissed = false;
-      const result = {};
-
-      for (const name in filters) {
-        const exports = Webpack.getById(filters[name].id);
-        const id = filters[name].id;
-
-        if (exports && filters[name].filter(exports, { id, exports, loaded: true }, `${id}`)) {
-          result[name] = exports;
-          delete filters[name];
-          continue;
-        }
-        wrongOrMissed = true;
-      }
-
-      if (wrongOrMissed) {
-        const missing = Webpack.getBulkKeyed(filters);
-        BdApi.Logger.warn(meta.slug, "Mismatched id for modules:", missing);
-        Object.assign(result, missing);
-      }
-
-      return result;
-    },
-
-    /** @param {object} mod @param {Record<string, string>} strs */
-    getKeysInModule(mod, strs) {
-      let size = Object.keys(strs).length;
-      const found = Object.keys(strs).reduce((p, c) => (p[c] = undefined, p), {});
-
-      outer: for (const key in mod) {
-        const src = mod[key]?.toString?.();
-        if (!src) continue;
-
-        for (const name in strs) {
-          const search = strs[name];
-          if (!src.includes(search)) continue;
-
-          found[name] = key;
-          delete strs[name];
-          size--;
-
-          if (size) break;
-          else break outer;
-        }
-      }
-      return found;
-    },
-
     /** @param {...string} classNames */
     clsx(...classNames) { return classNames.filter(Boolean).join(" ") },
 
@@ -1428,32 +1368,32 @@ module.exports = (meta) => {
 
     /** @param {{onSubmit: () => void, bitmap: ImageBitmap, userActions: React.RefObject<any>}} */
     openEditor({ onSubmit, bitmap, userActions }) {
-      const id = internals.nativeUI[internals.keys.openModal]?.(e => {
+      const id = internals.openModal?.(e => {
         const channelId = internals.SelectedChannelStore.getCurrentlySelectedChannelId();
 
-        return jsx(BdApi.Components.ErrorBoundary, null, jsx(internals.ModalSystem[internals.keys.ModalRoot], {
+        return jsx(BdApi.Components.ErrorBoundary, null, jsx(internals.ModalSystem.ModalRoot, {
           ...e,
           animation: "subtle",
           size: "dynamic",
           className: `${meta.slug}Root`,
           children: [
-            jsx(internals.ModalSystem[internals.keys.ModalFooter], {
+            jsx(internals.ModalSystem.ModalFooter, {
               className: "modal-footer",
               children: internals.uploadDispatcher && channelId ? [
-                jsx(internals.ManaButton[internals.keys.ManaButton], {
+                jsx(internals.ManaButton, {
                   text: "Save",
                   variant: "active",
                   type: "submit",
                   onClick: () => {
                     onSubmit?.();
-                    internals.nativeUI[internals.keys.closeModal](id);
+                    internals.closeModal?.(id);
                   }
                 }),
-                jsx(internals.ManaButton[internals.keys.ManaButton], {
+                jsx(internals.ManaButton, {
                   text: "Cancel",
                   variant: "secondary",
                   onClick: () => {
-                    internals.nativeUI[internals.keys.closeModal](id);
+                    internals.closeModal?.(id);
                   }
                 })
               ] : jsx("div", {
@@ -1461,7 +1401,7 @@ module.exports = (meta) => {
                 children: "Unable to save. Please use [Ctrl] + [C] instead."
               })
             }),
-            jsx(internals.ModalSystem[internals.keys.ModalContent], {
+            jsx(internals.ModalSystem.ModalContent, {
               className: "image-editor",
               children: jsx(Components.ImageEditor, {
                 bitmap,
@@ -1664,7 +1604,7 @@ module.exports = (meta) => {
         children: jsx(BdApi.Components.Tooltip, {
           spacing: 11,
           text: tooltip,
-          children: ({ onContextMenu, ...restProps }) => jsx(internals.nativeUI[internals.keys.FocusRing], {
+          children: ({ onContextMenu, ...restProps }) => jsx(internals.FocusRing, {
             children: jsx("div", {
               ...restProps,
               onClick: (e) => { if (onClick && !disabled) { e.stopPropagation(); onClick(e) } },
@@ -1687,12 +1627,13 @@ module.exports = (meta) => {
 
       useEffect(() => () => ctrl.current.abort(), []);
 
-      return !isPending ? jsx(BdApi.Components.Tooltip, {
+      return jsx(BdApi.Components.Tooltip, {
         spacing: 11,
         position: "bottom",
         text: "Edit Image",
-        children: ({ onContextMenu, ...tooltipProps }) => jsx(internals.ManaButton[internals.keys.ManaButton], {
+        children: ({ onContextMenu, ...tooltipProps }) => jsx(internals.ManaButton, {
           ...tooltipProps,
+          loading: isPending,
           size: "sm",
           variant: "icon-only",
           icon: () => jsx(Components.Icon, { d: utils.paths.Main }),
@@ -1706,7 +1647,7 @@ module.exports = (meta) => {
                 const blob = await response.blob();
                 const bitmap = await createImageBitmap(blob);
 
-                internals.nativeUI[internals.keys.closeModalInAllContexts]?.("Media Viewer Modal");
+                internals.closeModalInAllContexts?.("Media Viewer Modal");
                 utils.openEditor({
                   onSubmit: () => { userActions.current?.upload() },
                   userActions,
@@ -1721,8 +1662,6 @@ module.exports = (meta) => {
             })
           },
         })
-      }) : jsx(BdApi.Components.Spinner, {
-        type: BdApi.Components.Spinner.Type.SPINNING_CIRCLE_SIMPLE
       })
     },
 
@@ -2075,7 +2014,7 @@ module.exports = (meta) => {
         className: utils.clsx("thumbnails", internals.scrollbarClass?.thin),
         children: jsx("ul", {
           className: "thumbnails-wrapper",
-          children: layers.map((state, i) => jsx(internals.nativeUI[internals.keys.FocusRing], {
+          children: layers.map((state, i) => jsx(internals.FocusRing, {
             key: state.id,
             children: jsx("li", {
               tabIndex: 0,
@@ -3250,7 +3189,7 @@ module.exports = (meta) => {
           render: () => jsx(Components.ErrorBoundary, null, jsx("div", {
             style: { minWidth: 200 },
             className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
-            children: jsx(internals.ManaButton[internals.keys.ManaButton], {
+            children: jsx(internals.ManaButton, {
               size: "sm",
               fullWidth: true,
               text: "Apply",
@@ -3283,7 +3222,7 @@ module.exports = (meta) => {
 
       return jsx("span", {
         className: "canvas-dims",
-        children: jsx(internals.ManaButton[internals.keys.ManaButton], {
+        children: jsx(internals.ManaButton, {
           variant: "secondary",
           fullWidth: true,
           size: "sm",
@@ -3407,7 +3346,7 @@ module.exports = (meta) => {
             .select { display: unset }
           }`),
           label && jsx("span", null, label),
-          jsx(internals.Select[internals.keys.SingleSelect], {
+          jsx(internals.SingleSelect, {
             options: options,
             value: value,
             className: "select",
@@ -3472,7 +3411,7 @@ module.exports = (meta) => {
       return jsx("div", {
         className: "font-selector",
         children: [
-          jsx(internals.Select[internals.keys.SingleSelect], {
+          jsx(internals.SingleSelect, {
             options: familyOptions,
             value: family,
             className: "select",
@@ -3487,7 +3426,7 @@ module.exports = (meta) => {
               children: option.label
             }),
           }),
-          jsx(internals.Select[internals.keys.SingleSelect], {
+          jsx(internals.SingleSelect, {
             options: weightOptions,
             value: weight,
             className: "select",
@@ -3710,10 +3649,10 @@ module.exports = (meta) => {
             onMouseLeave: handleMouseLeave
           }),
           suffix != null && jsx("span", null, suffix),
-          withSlider && internals.keys.MenuSliderControl && jsx("div", {
+          withSlider && internals.MenuSliderControl && jsx("div", {
             ...pointerHanders,
             className: "slider-wrapper",
-            children: jsx(internals.nativeUI[internals.keys.MenuSliderControl], {
+            children: jsx(internals.MenuSliderControl, {
               ref: sliderRef,
               mini: true,
               className: internals.sliderClass?.slider,
