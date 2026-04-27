@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.1.3
+ * @version 0.1.4
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -21,7 +21,6 @@ module.exports = (meta) => {
     if (internals) return;
 
     internals = Webpack.getBulkKeyed({
-      SingleSelect: { firstId: 843282, filter: Filters.byStrings("renderLeading:", ",onChange:"), searchExports: true },
       ModalSystem: { firstId: 935462, filter: Filters.byStrings(".MODAL_ROOT_LEGACY,"), searchExports: true },
       ManaButton: { firstId: 657718, filter: Filters.byStrings(".BUTTON_LOADING_STARTED_LABEL,"), searchExports: true },
 
@@ -78,7 +77,9 @@ module.exports = (meta) => {
     });
 
     ctrl = new AbortController()
-    Webpack.waitForModule(Filters.bySource('FOCUS_SENSITIVE="FOCUS_SENSITIVE"'), ctrl).then(m => { // 358731
+    Webpack.waitForModule(Filters.bySource('FOCUS_SENSITIVE="FOCUS_SENSITIVE"'), {
+      firstId: 358731, signal: ctrl.signal
+    }).then(m => {
       if (!m) return;
 
       const key = Object.keys(m).find(k => m[k]?.type?.toString().includes('FOCUS_SENSITIVE'));
@@ -99,9 +100,14 @@ module.exports = (meta) => {
         } catch { }
 
         return res;
-
       })
-    })
+    });
+
+    Webpack.waitForModule(Filters.byStrings("renderLeading:", ",onChange:"), {
+      firstId: 843282, signal: ctrl.signal, searchExports: true
+    }).then(f => {
+      internals.SingleSelect = f
+    });
 
     generateCSS();
   }
