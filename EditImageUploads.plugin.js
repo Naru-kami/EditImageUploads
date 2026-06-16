@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.1.4
+ * @version 0.2.0
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -34,7 +34,7 @@ module.exports = (meta) => {
       actionIconClass: { firstId: 389116, filter: m => m.actionBarIcon && !m.action },
       contextMenuClass: { firstId: 32271, filter: Filters.byKeys("switchContainer") },
       scrollbarClass: { firstId: 457845, filter: m => m.thin && !m.none },
-      sliderClass: { firstId: 375905, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
+      sliderClass: { firstId: 598286, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
     });
 
     Object.assign(internals, {
@@ -54,6 +54,17 @@ module.exports = (meta) => {
     BdApi.Logger.info(meta.slug, "Initialized");
 
     if (Data.load(meta.slug, "version") !== meta.version) {
+      UI.showChangelogModal({
+        title: meta.name,
+        subtitle: meta.version,
+        changes: [{
+          title: "Added",
+          type: "added",
+          items: [
+            "Export Quality:\n\nAdded an option to change the export quality under the modal settings. Can only applies to lossy compression types (jpg, webp). This can be helpful to reduce the final image size.\n\nValue can range from 0 (maximum compression) to 1 (maximum quality). Defaults to 1."
+          ]
+        }]
+      });
       Data.save(meta.slug, "version", meta.version);
     }
   }
@@ -2147,7 +2158,10 @@ module.exports = (meta) => {
       useImperativeHandle(ref, () => ({
         replace({ draftType, upload }) {
           UI.showToast("Processing...", { type: "warning" });
-          editor.current?.toBlob({ type: Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
+          editor.current?.toBlob({
+            type: Data.load(meta.slug, "exportType") ?? "image/webp",
+            quality: Data.load(meta.slug, "exportQuality") ?? 1,
+          }).then(blob => {
             internals.uploadDispatcher.setFile({
               channelId: upload.channelId,
               id: upload.id,
@@ -2175,7 +2189,10 @@ module.exports = (meta) => {
           if (!channelId) return;
 
           UI.showToast("Processing...", { type: "warning" });
-          editor.current?.toBlob({ type: Data.load(meta.slug, "exportType") ?? "image/webp" }).then(blob => {
+          editor.current?.toBlob({
+            type: Data.load(meta.slug, "exportType") ?? "image/webp",
+            quality: Data.load(meta.slug, "exportQuality") ?? 1,
+          }).then(blob => {
             internals.uploadDispatcher.addFile({
               file: {
                 file: new File([blob], `image.${(blob.type === "image/webp" ? "webp" : blob.type === "image/png" ? "png" : "jpg")}`, { type: blob.type }),
@@ -3248,11 +3265,14 @@ module.exports = (meta) => {
     /** @param {{onChange?: (e: {exportType?: string, smoothing?: string | false, background?: string}) => void}} */
     Settings({ onChange }) {
       const [exportType, setExportType] = hooks.useStoredState("exportType", "image/webp");
+      const [exportQuality, setExportQuality] = hooks.useStoredState("exportQuality", 1);
       const [smoothing, setSmoothing] = hooks.useStoredState("smoothing", "auto");
       const [background, setBackground] = hooks.useStoredState("backgroundColor", "#303038")
 
       const exportOptions = useRef([{ label: "jpg", value: "image/jpeg" }, { label: "png", value: "image/png" }, { label: "webp", value: "image/webp" }]);
-      const smoothingOptions = useRef(["Auto", "High", "Medium", "Low", "Off"].map(e => ({ label: e, value: e.toLowerCase() })))
+      const smoothingOptions = useRef(["Auto", "High", "Medium", "Low", "Off"].map(e => ({ label: e, value: e.toLowerCase() })));
+      /** @type {React.RefObject<{setValue: (value: number) => void}>} */
+      const exportQualityRef = useRef(null);
 
       const handleClick = (e) => {
         ContextMenu.open(e, ContextMenu.buildMenu([{
@@ -3314,12 +3334,30 @@ module.exports = (meta) => {
         }, {
           label: "Export",
           type: "custom",
-          render: () => jsx(Components.ErrorBoundary, null, jsx(Components.MenuItemSelect, {
-            label: "Export as",
-            options: exportOptions.current,
-            initialValue: exportType,
-            onChange: setExportType
-          }))
+          render: () => jsx(Components.ErrorBoundary, null, jsx(Fragment, null,
+            jsx(Components.MenuItemSelect, {
+              label: "Export as",
+              options: exportOptions.current,
+              initialValue: exportType,
+              onChange: setExportType
+            }),
+            jsx(Components.NumberSlider, {
+              className: utils.clsx(internals.contextMenuClass?.item, internals.contextMenuClass?.labelContainer),
+              value: exportQuality,
+              minValue: 0,
+              maxValue: 1,
+              label: "Export Quality",
+              decimals: 2,
+              expScaling: false,
+              ref: exportQualityRef,
+              onChange: val => {
+                const value = utils.clamp(0, val, 1);
+                setExportQuality(value);
+                exportQualityRef.current.setValue(value);
+              }
+            })
+          )
+          )
         }]), {
           align: "bottom",
           position: "left"
