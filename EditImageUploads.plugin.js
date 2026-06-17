@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.2.0
+ * @version 0.2.1
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -59,9 +59,17 @@ module.exports = (meta) => {
         subtitle: meta.version,
         changes: [{
           title: "Added",
+          blurb: "in 0.2.0",
           type: "added",
           items: [
             "Export Quality:\n\nAdded an option to change the export quality under the modal settings. Can only applies to lossy compression types (jpg, webp). This can be helpful to reduce the final image size.\n\nValue can range from 0 (maximum compression) to 1 (maximum quality). Defaults to 1."
+          ]
+        }, {
+          title: "Fixes",
+          blurb: "in 0.2.1",
+          type: "fixed",
+          items: [
+            "Fixes an issue whereby text font selection would not load properly under special circumstances.",
           ]
         }]
       });
@@ -2515,7 +2523,7 @@ module.exports = (meta) => {
               const boxScale = canvasRect.current.width / canvasRef.current.width;
               const startX = (e.clientX - canvasRect.current.x) / boxScale;
               const startY = (e.clientY - canvasRect.current.y) / boxScale;
-              editor.current.insertTextAt(new DOMPoint(startX, startY), `${font.weight} ${strokeStyle.width}px ${font.family}`, strokeStyle.color);
+              editor.current.insertTextAt(new DOMPoint(startX, startY), `${font.weight} ${strokeStyle.width}px "${font.family.replaceAll('"', '\\"')}"`, strokeStyle.color);
               editor.current.updateText();
               updateRegionRect();
               break;
@@ -2617,7 +2625,7 @@ module.exports = (meta) => {
                 const boxScale = canvasRect.current.width / canvasRef.current.width;
                 const startX = (e.clientX - canvasRect.current.x) / boxScale;
                 const startY = (e.clientY - canvasRect.current.y) / boxScale;
-                editor.current.insertTextAt(new DOMPoint(startX, startY), `${font.weight} ${strokeStyle.width}px ${font.family}`, strokeStyle.color);
+                editor.current.insertTextAt(new DOMPoint(startX, startY), `${font.weight} ${strokeStyle.width}px "${font.family.replaceAll('"', '\\"')}"`, strokeStyle.color);
                 editor.current.updateText();
                 updateRegionRect();
                 break;
@@ -2872,6 +2880,7 @@ module.exports = (meta) => {
                     centerValue: 100,
                     maxValue: 400,
                     value: strokeStyle.width,
+                    checkOnChange: false,
                     onSlide: value => {
                       switch (mode) {
                         case 4:
@@ -2882,7 +2891,7 @@ module.exports = (meta) => {
                           break;
                         }
                         case isInteracting.current && 5: {
-                          editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
+                          editor.current.updateText(undefined, `${font.weight} ${value}px "${font.family.replaceAll('"', '\\"')}"`);
                           updateRegionRect();
                           break;
                         }
@@ -2895,13 +2904,13 @@ module.exports = (meta) => {
                           overlay.current.style.removeProperty("--brushsize");
                           break;
                         }
-                        case isInteracting.current && 5: {
-                          editor.current.updateText(undefined, `${font.weight} ${value}px ${font.family}`);
+                        case isInteracting.current && strokeStyle.width !== value && 5: {
+                          editor.current.updateText(undefined, `${font.weight} ${value}px "${font.family.replaceAll('"', '\\"')}"`);
                           updateRegionRect();
                           break;
                         }
                       }
-                      setStrokeStyle(s => ({ ...s, width: value }));
+                      strokeStyle.width !== value && setStrokeStyle(s => ({ ...s, width: value }));
                     }
                   }),
                   mode === 5 && jsx(Components.ErrorBoundary, null, jsx(Components.FontSelector, { // to-do: Wrap in <Activity/> once Discord hits React 19.2.0
@@ -3411,10 +3420,18 @@ module.exports = (meta) => {
       const [familyOptions, setFamilyOptions] = useState(() => []);
       const [weightOptions, setWeightsOptions] = useState(() => []);
 
+      const checkFont = useCallback((weight, family) => {
+        try {
+          return document.fonts.check(`${weight} 1rem "${family.replaceAll('"', '\\"')}"`);
+        } catch {
+          return false;
+        }
+      }, [])
+
       const getWeightsOptions = useCallback((f) => {
         return Array.from({ length: 9 }, (_, i) => {
           const w = (i + 1) * 100;
-          const loaded = document.fonts.check(`${w} 1rem ${f}`);
+          const loaded = checkFont(w, f);
           return loaded ? { value: w, label: w } : null;
         }).filter(Boolean)
       }, []);
@@ -3437,9 +3454,9 @@ module.exports = (meta) => {
           const merged = [...new Set(defaults.concat(docFonts))];
           merged.sort((a, b) => a.localeCompare(b));
 
-          setFamilyOptions(merged.filter(f => document.fonts.check(`1rem ${f}`)).map(e => ({ value: e, label: e })));
+          setFamilyOptions(merged.filter(f => checkFont("normal", f)).map(e => ({ value: e, label: e })));
 
-          const purifiedFamily = !merged.includes(family) || !document.fonts.check(`1rem ${family}`) ? "gg sans" : family;
+          const purifiedFamily = !merged.includes(family) || !checkFont("normal", family) ? "gg sans" : family;
           setFamily(purifiedFamily);
 
           const wo = getWeightsOptions(purifiedFamily);
@@ -3510,11 +3527,11 @@ module.exports = (meta) => {
     /**
      * @param {{
      *  value: number, onChange?: (e: number) => void, withSlider?: boolean, suffix?: string, label?: string,
-     *  ref?: React.RefObject<any>, minValue?: number, centerValue?: number, maxValue?: number,
+     *  ref?: React.RefObject<any>, minValue?: number, centerValue?: number, maxValue?: number, checkOnChange?: boolean,
      *  onSlide?: (e: number) => void, decimals?: number, expScaling?: boolean, className?: string
      * }} props
      */
-    NumberSlider({ value, onChange, className, suffix, ref, minValue, centerValue, maxValue, decimals, onSlide, label, withSlider = true, expScaling = true, ...restProps }) {
+    NumberSlider({ value, onChange, className, suffix, ref, minValue, centerValue, maxValue, decimals, onSlide, label, checkOnChange = true, withSlider = true, expScaling = true, ...restProps }) {
       const [textValue, setTextValue] = useState(`${value}`);
       const [sliderValue, setSliderValue] = useState(() => expScaling && withSlider ? utils.logScaling(value, { minValue, centerValue, maxValue }) : value);
       const id = useId();
@@ -3572,9 +3589,9 @@ module.exports = (meta) => {
 
       const handleTextCommit = useCallback(() => {
         const newValue = !Number.isNaN(Number(textValue)) && textValue !== "" ? Math.max(minValue ?? Number(textValue), Number(textValue)) : oldValue.current;
-        if (oldValue.current === newValue) return;
+        if (checkOnChange && oldValue.current === newValue) return;
 
-        oldValue.current = newValue
+        oldValue.current = newValue;
         setTextValue(`${oldValue.current}`);
         onChange?.(oldValue.current);
 
@@ -3595,7 +3612,7 @@ module.exports = (meta) => {
       const handleSliderCommit = useCallback(newValue => {
         let val = expScaling ? utils.expScaling(newValue / 100, { minValue, centerValue, maxValue }) : newValue;
         val = Number(val.toFixed(decimals ?? 0));
-        if (val === oldValue.current) return;
+        if (checkOnChange && val === oldValue.current) return;
 
         setTextValue(`${val}`);
         oldValue.current = val;
