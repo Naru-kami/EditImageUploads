@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.2.1
+ * @version 0.2.2
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -27,54 +27,34 @@ module.exports = (meta) => {
       openModal: { firstId: 192308, filter: Filters.byStrings('"stack":"replace"'), searchExports: true },
       closeModal: { firstId: 192308, filter: Filters.byStrings(".onCloseCallback(),"), searchExports: true },
       closeModalInAllContexts: { firstId: 192308, filter: Filters.byStrings("onCloseCallback?.()}"), searchExports: true },
-      FocusRing: { firstId: 187322, filter: Filters.byStrings("FocusRing was given a focusTarget"), searchExports: true },
-      MenuSliderControl: { firstId: 106236, filter: Filters.byStrings("moveGrabber"), searchExports: true },
+      FocusRing: { firstId: 559106, filter: Filters.byStrings("FocusRing was given a focusTarget"), searchExports: true },
+      MenuSliderControl: { firstId: 299163, filter: Filters.byStrings("moveGrabber"), searchExports: true },
 
-      actionButtonClass: { firstId: 874280, filter: Filters.byKeys("dangerous", "button") },
-      actionIconClass: { firstId: 389116, filter: m => m.actionBarIcon && !m.action },
-      contextMenuClass: { firstId: 32271, filter: Filters.byKeys("switchContainer") },
-      scrollbarClass: { firstId: 457845, filter: m => m.thin && !m.none },
-      sliderClass: { firstId: 598286, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
+      actionButtonClass: { firstId: 738745, filter: Filters.byKeys("dangerous", "button") },
+      actionIconClass: { firstId: 343005, filter: m => m.actionBarIcon && !m.action },
+      contextMenuClass: { firstId: 798819, filter: Filters.byKeys("switchContainer") },
+      scrollbarClass: { firstId: 465410, filter: m => m.thin && !m.none },
+      sliderClass: { firstId: 889553, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
+
+      uploadDispatcher: { firstId: 608299, filter: Filters.byKeys("setFile") },
+      urlConverter: {
+        firstId: 803316, filter: Filters.bySource(".searchParams.delete(\"width\"),"), map: {
+          isConvertable: Filters.byStrings("canSaveImage"),
+          toMediaUrl: Filters.byStrings("if(null!="),
+          toCdnUrl: Filters.byStrings("searchParams"),
+        }
+      },
+      ModalSystem: {
+        firstId: 935462, filter: Filters.bySource(".MODAL_ROOT_LEGACY,"), map: {
+          ModalRoot: Filters.byStrings(".MODAL_ROOT_LEGACY,"),
+          ModalContent: Filters.byStrings(",scrollbarType:"),
+          ModalFooter: Filters.byStrings(".HORIZONTAL_REVERSE,"),
+        }
+      }
     });
 
-    Object.assign(internals, {
-      uploadDispatcher: Webpack.getByKeys("setFile", { firstId: 608299 }),
-      SelectedChannelStore: Webpack.getStore("SelectedChannelStore"),
-      urlConverter: Webpack.getMangled(Filters.bySource(".searchParams.delete(\"width\"),"), {
-        isConvertable: Filters.byStrings("canSaveImage"),
-        toMediaUrl: Filters.byStrings("if(null!="),
-        toCdnUrl: Filters.byStrings("searchParams"),
-      }, { firstId: 803316 }),
-      ModalSystem: Webpack.getMangled(Filters.bySource(".MODAL_ROOT_LEGACY,"), {
-        ModalRoot: Filters.byStrings(".MODAL_ROOT_LEGACY,"),
-        ModalContent: Filters.byStrings(",scrollbarType:"),
-        ModalFooter: Filters.byStrings(".HORIZONTAL_REVERSE,"),
-      }, { firstId: 935462 }),
-    });
     BdApi.Logger.info(meta.slug, "Initialized");
-
-    if (Data.load(meta.slug, "version") !== meta.version) {
-      UI.showChangelogModal({
-        title: meta.name,
-        subtitle: meta.version,
-        changes: [{
-          title: "Added",
-          blurb: "in 0.2.0",
-          type: "added",
-          items: [
-            "Export Quality:\n\nAdded an option to change the export quality under the modal settings. Can only applies to lossy compression types (jpg, webp). This can be helpful to reduce the final image size.\n\nValue can range from 0 (maximum compression) to 1 (maximum quality). Defaults to 1."
-          ]
-        }, {
-          title: "Fixes",
-          blurb: "in 0.2.1",
-          type: "fixed",
-          items: [
-            "Fixes an issue whereby text font selection would not load properly under special circumstances.",
-          ]
-        }]
-      });
-      Data.save(meta.slug, "version", meta.version);
-    }
+    Data.save(meta.slug, "version", meta.version);
   }
 
   function start() {
@@ -95,30 +75,51 @@ module.exports = (meta) => {
       }
     });
 
-    ctrl = new AbortController()
+    ctrl = new AbortController();
     Webpack.waitForModule(Filters.bySource('FOCUS_SENSITIVE="FOCUS_SENSITIVE"'), {
-      firstId: 358731, signal: ctrl.signal
+      firstId: 947056, signal: ctrl.signal
     }).then(m => {
       if (!m) return;
 
-      const key = Object.keys(m).find(k => m[k]?.type?.toString().includes('FOCUS_SENSITIVE'));
-      key && Patcher.after(meta.slug, m[key], "type", (_, [props], res) => {
-        if (props.mode !== "FOCUS_SENSITIVE") return;
+      Patcher.after(meta.slug, m, Object.keys(m)[0], (_, __, res) => {
+        return React.cloneElement(res, {
+          children: (className) => {
+            const ret = res.props.children(className);
+            const topBarIdx = ret?.props?.children?.props?.children?.findIndex?.(child => child?.props?.item);
+            if (topBarIdx === -1) return ret;
 
-        const item = res.props.children.find(child => child.type === Fragment)?.props.children[0].props.item;
-        if (item?.type !== "IMAGE" || item?.srcIsAnimated || item?.animated) return res;
+            const topBar = ret.props.children.props.children;
+            const item = topBar[topBarIdx].props.item;
+            if (item?.type !== "IMAGE" || item?.srcIsAnimated || item?.animated) return ret;
 
-        try {
-          const convertable = internals.urlConverter.isConvertable(item.original ?? item.url)
-          const mediaUrl = convertable ? internals.urlConverter.toMediaUrl(item.original, item.url) : item.url;
-          const url = internals.urlConverter.toCdnUrl(mediaUrl, item.contentType, item.originalContentType);
-          url && res.props.children.unshift(jsx(Components.ErrorBoundary, {
-            key: meta.slug,
-            children: jsx(Components.RemixIcon, { url })
-          }))
-        } catch { }
+            topBar[topBarIdx] = topBar[topBarIdx].type(topBar[topBarIdx].props);
+            const ImageMediaControlsIdx = topBar[topBarIdx].props?.children?.findIndex?.(child => child?.props?.item);
+            if (ImageMediaControlsIdx === -1) return ret;
 
-        return res;
+            const ImageMediaControls = topBar[topBarIdx].props.children;
+            const controls = ImageMediaControls[ImageMediaControlsIdx].type.type(ImageMediaControls[ImageMediaControlsIdx].props);
+
+            ImageMediaControls[ImageMediaControlsIdx] = React.cloneElement(controls, {
+              children: (className) => {
+                const child = controls.props.children(className);
+
+                try {
+                  const convertable = internals.urlConverter.isConvertable(item.original ?? item.url)
+                  const mediaUrl = convertable ? internals.urlConverter.toMediaUrl(item.original, item.url) : item.url;
+                  const url = internals.urlConverter.toCdnUrl(mediaUrl, item.contentType, item.originalContentType);
+                  url && child.props.children.unshift(jsx(Components.ErrorBoundary, {
+                    key: meta.slug,
+                    children: jsx(Components.RemixIcon, { url })
+                  }))
+                } catch { }
+
+                return child;
+              }
+            })
+
+            return ret;
+          }
+        });
       })
     });
 
@@ -1394,7 +1395,7 @@ module.exports = (meta) => {
     /** @param {{onSubmit: () => void, bitmap: ImageBitmap, userActions: React.RefObject<any>}} */
     openEditor({ onSubmit, bitmap, userActions }) {
       const id = internals.openModal?.(e => {
-        const channelId = internals.SelectedChannelStore.getCurrentlySelectedChannelId();
+        const channelId = Webpack.Stores.SelectedChannelStore.getCurrentlySelectedChannelId();
 
         return jsx(BdApi.Components.ErrorBoundary, null, jsx(internals.ModalSystem.ModalRoot, {
           ...e,
@@ -2193,7 +2194,7 @@ module.exports = (meta) => {
           });
         },
         upload() {
-          const channelId = internals.SelectedChannelStore.getCurrentlySelectedChannelId();
+          const channelId = Webpack.Stores.SelectedChannelStore.getCurrentlySelectedChannelId();
           if (!channelId) return;
 
           UI.showToast("Processing...", { type: "warning" });
