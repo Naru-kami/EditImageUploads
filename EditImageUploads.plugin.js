@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.2.2
+ * @version 0.2.3
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -21,6 +21,7 @@ module.exports = (meta) => {
     if (internals) return;
 
     internals = Webpack.getBulkKeyed({
+      MediaViewModal: { firstId: 256905, raw: true, filter: Filters.bySource("openModalLazy", "Media Viewer Modal") },
       ModalSystem: { firstId: 935462, filter: Filters.byStrings(".MODAL_ROOT_LEGACY,"), searchExports: true },
       ManaButton: { firstId: 657718, filter: Filters.byStrings(".BUTTON_LOADING_STARTED_LABEL,"), searchExports: true },
 
@@ -28,22 +29,14 @@ module.exports = (meta) => {
       closeModal: { firstId: 192308, filter: Filters.byStrings(".onCloseCallback(),"), searchExports: true },
       closeModalInAllContexts: { firstId: 192308, filter: Filters.byStrings("onCloseCallback?.()}"), searchExports: true },
       FocusRing: { firstId: 559106, filter: Filters.byStrings("FocusRing was given a focusTarget"), searchExports: true },
-      MenuSliderControl: { firstId: 299163, filter: Filters.byStrings("moveGrabber"), searchExports: true },
+      MenuSliderControl: { firstId: 205513, filter: Filters.byStrings("moveGrabber"), searchExports: true },
 
       actionButtonClass: { firstId: 738745, filter: Filters.byKeys("dangerous", "button") },
       actionIconClass: { firstId: 343005, filter: m => m.actionBarIcon && !m.action },
       contextMenuClass: { firstId: 798819, filter: Filters.byKeys("switchContainer") },
-      scrollbarClass: { firstId: 465410, filter: m => m.thin && !m.none },
-      sliderClass: { firstId: 889553, filter: m => m.sliderContainer && m.slider && !m.infoContainer },
+      scrollbarClass: { firstId: 6095, filter: Filters.byKeys("thin", "customTheme") },
 
       uploadDispatcher: { firstId: 608299, filter: Filters.byKeys("setFile") },
-      urlConverter: {
-        firstId: 803316, filter: Filters.bySource(".searchParams.delete(\"width\"),"), map: {
-          isConvertable: Filters.byStrings("canSaveImage"),
-          toMediaUrl: Filters.byStrings("if(null!="),
-          toCdnUrl: Filters.byStrings("searchParams"),
-        }
-      },
       ModalSystem: {
         firstId: 935462, filter: Filters.bySource(".MODAL_ROOT_LEGACY,"), map: {
           ModalRoot: Filters.byStrings(".MODAL_ROOT_LEGACY,"),
@@ -52,6 +45,7 @@ module.exports = (meta) => {
         }
       }
     });
+    internals.MediaViewModal && BdApi.Utils.forceLoad(internals.MediaViewModal.id);
 
     BdApi.Logger.info(meta.slug, "Initialized");
     Data.save(meta.slug, "version", meta.version);
@@ -120,13 +114,23 @@ module.exports = (meta) => {
             return ret;
           }
         });
-      })
+      });
+    });
+
+    Webpack.waitForModule(Filters.bySource(".searchParams.delete(\"width\"),"), {
+      firstId: 803316, signal: ctrl.signal, map: {
+        isConvertable: Filters.byStrings("canSaveImage"),
+        toMediaUrl: Filters.byStrings("if(null!="),
+        toCdnUrl: Filters.byStrings("searchParams"),
+      }
+    }).then(f => {
+      internals.urlConverter = f;
     });
 
     Webpack.waitForModule(Filters.byStrings("renderLeading:", ",onChange:"), {
       firstId: 843282, signal: ctrl.signal, searchExports: true
     }).then(f => {
-      internals.SingleSelect = f
+      internals.SingleSelect = f;
     });
 
     generateCSS();
@@ -166,8 +170,10 @@ module.exports = (meta) => {
 
       /** @type {string} */
       this.backgroundColor = Data.load(meta.slug, "backgroundColor") ?? "#393946";
-      const initialScale = Math.min(canvas.width / bitmap.width * 0.96, canvas.height / bitmap.height * 0.96);
-      this.#viewportTransform = new DOMMatrix().scaleSelf(initialScale, initialScale);
+      const initialScale = Data.load(meta.slug, "initialScale") ?? "contain";
+      const value = initialScale === "contain" ? Math.min(Math.max(0, canvas.width - 12) / bitmap.width, Math.max(0, canvas.height - 12) / bitmap.height) :
+        initialScale === "cover" ? Math.max(Math.max(0, canvas.width - 12) / bitmap.width, Math.max(0, canvas.height - 12) / bitmap.height) : initialScale;
+      this.#viewportTransform = new DOMMatrix().scaleSelf(value, value);
       this.#viewportTransform_inv = new DOMMatrix()
         .translateSelf(this.#viewportCanvas.width / 2, this.#viewportCanvas.height / 2)
         .multiplySelf(this.#viewportTransform)
@@ -471,11 +477,18 @@ module.exports = (meta) => {
       this.#staleViewportInv = true;
     }
 
-    resetViewport() {
-      const scale = Math.min(this.#viewportCanvas.width / this.#mainCanvas.width * 0.96, this.#viewportCanvas.height / this.#mainCanvas.height * 0.96);
-      this.#viewportTransform = new DOMMatrix().scaleSelf(scale, scale);
-      this.#imageSmoothing === "auto" && this.#autoSmooth();
+    /** @param {"contain" | "cover" | number} s */
+    scaleViewportTo(s, refresh = true) {
+      const value = s === "contain" ? Math.min(Math.max(0, this.#viewportCanvas.width - 12) / this.#mainCanvas.width, Math.max(0, this.#viewportCanvas.height - 12) / this.#mainCanvas.height) :
+        s === "cover" ? Math.max(Math.max(0, this.#viewportCanvas.width - 12) / this.#mainCanvas.width, Math.max(0, this.#viewportCanvas.height - 12) / this.#mainCanvas.height) : s;
+      this.#viewportTransform = new DOMMatrix().scaleSelf(value, value);
+      refresh && this.refreshViewport();
       this.#staleViewportInv = true;
+    }
+
+    resetViewport() {
+      this.scaleViewportTo(Data.load(meta.slug, "initialScale") ?? "contain", false);
+      this.#imageSmoothing === "auto" && this.#autoSmooth();
     }
 
     refreshViewport() {
@@ -2024,7 +2037,7 @@ module.exports = (meta) => {
               timer.current == null;
             }
             timer.current = setTimeout(async () => {
-              await Promise.all(actions.current.map(f => f()));
+              await Promise.allSettled(actions.current.map(f => f()));
               actions.current = [];
               timer.current = null;
 
@@ -2414,6 +2427,8 @@ module.exports = (meta) => {
             }
           }
         }, { signal: ctrl.signal, capture: true });
+
+        Promise.allSettled(Array.from(document.fonts).filter(f => f.status !== "loaded").map(f => f.load()));
 
         return () => {
           ctrl.abort();
@@ -2914,7 +2929,7 @@ module.exports = (meta) => {
                       strokeStyle.width !== value && setStrokeStyle(s => ({ ...s, width: value }));
                     }
                   }),
-                  mode === 5 && jsx(Components.ErrorBoundary, null, jsx(Components.FontSelector, { // to-do: Wrap in <Activity/> once Discord hits React 19.2.0
+                  mode === 5 && jsx(Components.ErrorBoundary, null, jsx(Components.FontSelector, {
                     value: font,
                     onChange: setFont
                   })),
@@ -3024,9 +3039,10 @@ module.exports = (meta) => {
                     disabled: !(canUndoRedo & 1)
                   }),
                   jsx(Components.Settings, {
-                    onChange: ({ smoothing, background }) => {
+                    onChange: ({ smoothing, background, initialScale }) => {
                       if (smoothing != null) editor.current.setImageSmoothing(smoothing);
                       if (background != null) editor.current.backgroundColor = background;
+                      if (initialScale != null) editor.current.scaleViewportTo(initialScale);
                       editor.current.refreshViewport();
                     }
                   })
@@ -3272,17 +3288,19 @@ module.exports = (meta) => {
       })
     },
 
-    /** @param {{onChange?: (e: {exportType?: string, smoothing?: string | false, background?: string}) => void}} */
+    /** @param {{onChange?: (e: {initialScale?: "contain" | "cover" | number, smoothing?: string | false, background?: string}) => void}} */
     Settings({ onChange }) {
       const [exportType, setExportType] = hooks.useStoredState("exportType", "image/webp");
       const [exportQuality, setExportQuality] = hooks.useStoredState("exportQuality", 1);
       const [smoothing, setSmoothing] = hooks.useStoredState("smoothing", "auto");
-      const [background, setBackground] = hooks.useStoredState("backgroundColor", "#303038")
+      const [background, setBackground] = hooks.useStoredState("backgroundColor", "#303038");
+      const [initialScale, setInitialScale] = hooks.useStoredState("initialScale", "contain");
 
       const exportOptions = useRef([{ label: "jpg", value: "image/jpeg" }, { label: "png", value: "image/png" }, { label: "webp", value: "image/webp" }]);
       const smoothingOptions = useRef(["Auto", "High", "Medium", "Low", "Off"].map(e => ({ label: e, value: e.toLowerCase() })));
       /** @type {React.RefObject<{setValue: (value: number) => void}>} */
       const exportQualityRef = useRef(null);
+      const scaleOptions = useRef([{ label: "Contain", value: "contain" }, { label: "Cover", value: "cover" }, { label: "100%", value: 1 }]);
 
       const handleClick = (e) => {
         ContextMenu.open(e, ContextMenu.buildMenu([{
@@ -3324,11 +3342,23 @@ module.exports = (meta) => {
                 value: background,
                 onChange: bg => {
                   setBackground(bg);
-                  onChange({ background: bg })
+                  onChange?.({ background: bg })
                 }
               })
             ]
           })
+        }, {
+          label: "initialScale",
+          type: "custom",
+          render: () => jsx(Components.ErrorBoundary, null, jsx(Components.MenuItemSelect, {
+            label: "Initial Scale",
+            options: scaleOptions.current,
+            initialValue: initialScale,
+            onChange: s => {
+              setInitialScale(s);
+              onChange?.({ initialScale: s });
+            }
+          }))
         }, {
           label: "Smoothing",
           type: "custom",
@@ -3338,7 +3368,7 @@ module.exports = (meta) => {
             initialValue: smoothing,
             onChange: s => {
               setSmoothing(s);
-              onChange?.({ smoothing: s })
+              onChange?.({ smoothing: s });
             }
           }))
         }, {
@@ -3449,7 +3479,7 @@ module.exports = (meta) => {
       }, [])
 
       useLayoutEffect(() => {
-        Promise.all(Array.from(document.fonts, f => f.load())).finally(() => {
+        Promise.allSettled(Array.from(document.fonts).filter(f => f.status !== "loaded").map(f => f.load())).finally(() => {
           const defaults = ['Arial', 'Arial Black', 'cursive', 'fantasy', 'Garamond', 'Georgia', 'Helvetica', 'monospace', 'sans-serif', 'serif', 'system-ui', 'Tahoma', 'Times New Roman', 'Verdana'];
           const docFonts = Array.from(document.fonts, e => e.family);
           const merged = [...new Set(defaults.concat(docFonts))];
@@ -3717,7 +3747,6 @@ module.exports = (meta) => {
             children: jsx(internals.MenuSliderControl, {
               ref: sliderRef,
               mini: true,
-              className: internals.sliderClass?.slider,
               initialValue: sliderValue,
               minValue: !expScaling ? minValue : undefined,
               maxValue: !expScaling ? maxValue : undefined,
