@@ -2,7 +2,7 @@
  * @name EditImageUploads
  * @author Narukami
  * @description Adds an option to edit images before sending.
- * @version 0.2.3
+ * @version 0.2.4
  * @source https://github.com/Naru-kami/EditImageUploads
  */
 
@@ -20,21 +20,27 @@ module.exports = (meta) => {
   function init() {
     if (internals) return;
 
+    const classNameModules = Object.entries({
+      actionButtonClass: { firstId: 738745, filter: ["dangerous", "button"] },
+      contextMenuClass: { firstId: 798819, filter: ["switchContainer"] },
+      scrollbarClass: { firstId: 6095, filter: ["thin", "customTheme"] },
+    });
+
     internals = Webpack.getBulkKeyed({
-      MediaViewModal: { firstId: 256905, raw: true, filter: Filters.bySource("openModalLazy", "Media Viewer Modal") },
-      ModalSystem: { firstId: 935462, filter: Filters.byStrings(".MODAL_ROOT_LEGACY,"), searchExports: true },
+      ...classNameModules.reduce((p, [key, filter]) => {
+        Object.assign(p, { [key]: { ...filter, filter: Filters.byKeys(...filter.filter) } });
+        return p;
+      }, {}),
+
+      // MediaViewModal: { firstId: 256905, raw: true, filter: Filters.bySource("modalKey", "Media Viewer Modal") },
       ManaButton: { firstId: 657718, filter: Filters.byStrings(".BUTTON_LOADING_STARTED_LABEL,"), searchExports: true },
 
       openModal: { firstId: 192308, filter: Filters.byStrings('"stack":"replace"'), searchExports: true },
       closeModal: { firstId: 192308, filter: Filters.byStrings(".onCloseCallback(),"), searchExports: true },
       closeModalInAllContexts: { firstId: 192308, filter: Filters.byStrings("onCloseCallback?.()}"), searchExports: true },
+      Tooltip: { firstId: 866665, filter: Filters.byStrings("tooltipId", "onExitComplete"), searchExports: true },
       FocusRing: { firstId: 559106, filter: Filters.byStrings("FocusRing was given a focusTarget"), searchExports: true },
       MenuSliderControl: { firstId: 205513, filter: Filters.byStrings("moveGrabber"), searchExports: true },
-
-      actionButtonClass: { firstId: 738745, filter: Filters.byKeys("dangerous", "button") },
-      actionIconClass: { firstId: 343005, filter: m => m.actionBarIcon && !m.action },
-      contextMenuClass: { firstId: 798819, filter: Filters.byKeys("switchContainer") },
-      scrollbarClass: { firstId: 6095, filter: Filters.byKeys("thin", "customTheme") },
 
       uploadDispatcher: { firstId: 608299, filter: Filters.byKeys("setFile") },
       ModalSystem: {
@@ -45,7 +51,14 @@ module.exports = (meta) => {
         }
       }
     });
-    internals.MediaViewModal && BdApi.Utils.forceLoad(internals.MediaViewModal.id);
+    // internals.MediaViewModal?.id && BdApi.Utils.forceLoad(internals.MediaViewModal.id);
+
+    classNameModules.filter(([key]) => internals[key] == null).forEach(([key, { firstId, filter }]) => {
+      const m = utils.getByClassName(...filter, { firstId });
+      if (!m) return;
+
+      Object.assign(internals, { [key]: utils.polyfillClasses(m) });
+    });
 
     BdApi.Logger.info(meta.slug, "Initialized");
     Data.save(meta.slug, "version", meta.version);
@@ -1224,6 +1237,42 @@ module.exports = (meta) => {
   }
 
   var utils = {
+    getByClassName() {
+      var options;
+      var cls = [...arguments];
+      let lastArg = cls[cls.length - 1];
+      if (typeof lastArg === "object" && !Array.isArray(lastArg)) {
+        cls.pop();
+        options = lastArg;
+      }
+
+      return Webpack.getModule(m => {
+        const exports = Object.values(m).filter(val => typeof val === "string");
+        return cls.every(cls =>
+          exports.some(val => val.startsWith(`${cls}_`) || val.startsWith(`${cls}-`))
+        )
+      }, options);
+    },
+
+    /** @param {Record<string, string>} obj */
+    polyfillClasses(obj) {
+      const descriptors = Object.getOwnPropertyDescriptors(obj);
+      for (const descriptor of Object.values(descriptors)) {
+        descriptor.enumerable = false;
+      }
+      const mod = Object.defineProperties(Object.create(Object.getPrototypeOf(obj)), descriptors);
+
+      for (const value of Object.values(obj)) {
+        if (typeof value !== "string") continue;
+
+        const underscore = value.indexOf("_");
+        const dash = value.indexOf("-");
+        const polyfilled = value.substring(0, underscore > 0 ? underscore : dash > 0 ? dash : value.length);
+        Object.defineProperty(mod, polyfilled, { value, enumerable: true });
+      }
+      return mod;
+    },
+
     /** @param {...string} classNames */
     clsx(...classNames) { return classNames.filter(Boolean).join(" ") },
 
@@ -1614,17 +1663,18 @@ module.exports = (meta) => {
       })
     },
 
-    /** @param {{d: string}} props */
-    Icon({ d }) {
+    /** @param {{d: string} & React.SVGProps} props */
+    Icon({ d, ...restProps }) {
       return jsx("svg", {
-        className: internals.actionIconClass?.actionBarIcon,
         "aria-hidden": "true",
         role: "img",
         xmlns: "http://www.w3.org/2000/svg",
-        width: "16",
-        height: "16",
+        display: "block",
+        width: "20",
+        height: "20",
         fill: "none",
         viewBox: "0 0 24 24",
+        ...restProps,
         children: jsx("path", {
           fill: "currentColor",
           d
@@ -1640,12 +1690,12 @@ module.exports = (meta) => {
      */
     IconButton({ onClick, tooltip, d, disabled, active, className }) {
       return jsx(Components.ErrorBoundary, {
-        children: jsx(BdApi.Components.Tooltip, {
+        children: jsx(internals.Tooltip, {
           spacing: 11,
           text: tooltip,
-          children: ({ onContextMenu, ...restProps }) => jsx(internals.FocusRing, {
+          asContainer: true,
+          children: jsx(internals.FocusRing, {
             children: jsx("div", {
-              ...restProps,
               onClick: (e) => { if (onClick && !disabled) { e.stopPropagation(); onClick(e) } },
               onKeyDown: e => { if (!e.repeat && (e.key === "Enter" || e.key === " ") && !disabled) onClick?.(e) },
               className: utils.clsx(internals.actionButtonClass?.button, className, "icon-button", disabled && "disabled", active && "active"),
@@ -1666,12 +1716,12 @@ module.exports = (meta) => {
 
       useEffect(() => () => ctrl.current.abort(), []);
 
-      return jsx(BdApi.Components.Tooltip, {
+      return jsx(internals.Tooltip, {
+        asContainer: true,
         spacing: 11,
         position: "bottom",
         text: "Edit Image",
-        children: ({ onContextMenu, ...tooltipProps }) => jsx(internals.ManaButton, {
-          ...tooltipProps,
+        children: jsx(internals.ManaButton, {
           loading: isPending,
           size: "sm",
           variant: "icon-only",
